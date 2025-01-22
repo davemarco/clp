@@ -1,5 +1,6 @@
 #include "Archive.hpp"
 
+#include <memory>
 #include <sys/stat.h>
 
 #include <cstring>
@@ -13,6 +14,7 @@
 #include "../../Utils.hpp"
 #include "../ArchiveMetadata.hpp"
 #include "../Constants.hpp"
+#include "adaptor/ReaderAdaptor.hpp"
 
 using std::string;
 using std::unordered_set;
@@ -20,54 +22,18 @@ using std::vector;
 
 namespace clp::streaming_archive::reader {
 void Archive::open(string const& path) {
-    // Determine whether path is file or directory
-    struct stat path_stat = {};
-    char const* path_c_str = path.c_str();
-    if (0 != stat(path_c_str, &path_stat)) {
-        SPDLOG_ERROR("Failed to stat {}, errno={}", path_c_str, errno);
-        throw OperationFailed(ErrorCode_errno, __FILENAME__, __LINE__);
-    }
-    if (!S_ISDIR(path_stat.st_mode)) {
-        SPDLOG_ERROR("{} is not a directory", path_c_str);
-        throw OperationFailed(ErrorCode_Unsupported, __FILENAME__, __LINE__);
-    }
     m_path = path;
+    std::shared_ptr<ReaderAdaptor> archive_reader_adaptor = ReaderAdaptor::create(m_path);
 
-    // Read the metadata file
-    string metadata_file_path = path + '/' + cMetadataFileName;
-    archive_format_version_t format_version{};
-    try {
-        FileReader file_reader{metadata_file_path};
-        ArchiveMetadata const metadata{file_reader};
-        format_version = metadata.get_archive_format_version();
-    } catch (TraceableException& traceable_exception) {
-        auto error_code = traceable_exception.get_error_code();
-        if (ErrorCode_errno == error_code) {
-            SPDLOG_CRITICAL(
-                    "streaming_archive::reader::Archive: Failed to read archive metadata file "
-                    "{} at {}:{} - errno={}",
-                    metadata_file_path.c_str(),
-                    traceable_exception.get_filename(),
-                    traceable_exception.get_line_number(),
-                    errno
-            );
-        } else {
-            SPDLOG_CRITICAL(
-                    "streaming_archive::reader::Archive: Failed to read archive metadata file "
-                    "{} at {}:{} - error={}",
-                    metadata_file_path.c_str(),
-                    traceable_exception.get_filename(),
-                    traceable_exception.get_line_number(),
-                    error_code
-            );
-        }
-        throw;
-    }
+    ArchiveMetadata metadata = archive_reader_adaptor->get_archive_metadata();
 
-    // Check archive matches format version
-    if (cArchiveFormatVersion != format_version) {
-        SPDLOG_ERROR("streaming_archive::reader::Archive: Archive uses an unsupported format.");
-        throw OperationFailed(ErrorCode_BadParam, __FILENAME__, __LINE__);
+    if (cArchiveFormatVersion != metadata.get_archive_format_version()) {
+        throw Archive::OperationFailed{
+            clp::ErrorCode::ErrorCode_Failure,
+            __FILENAME__,
+            __LINE__,
+            "Archive uses an unsupported format."
+        };
     }
 
     auto metadata_db_path = boost::filesystem::path(path) / cMetadataDBFileName;

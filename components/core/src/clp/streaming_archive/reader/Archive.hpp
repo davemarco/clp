@@ -21,17 +21,24 @@ namespace clp::streaming_archive::reader {
 class Archive {
 public:
     // Types
-    class OperationFailed : public TraceableException {
-    public:
+class OperationFailed : public TraceableException {
+        public:
         // Constructors
-        OperationFailed(ErrorCode error_code, char const* const filename, int line_number)
-                : TraceableException(error_code, filename, line_number) {}
+        OperationFailed(
+                ErrorCode error_code,
+                char const* const filename,
+                int line_number,
+                std::string message = "streaming_archive::reader::Archive operation failed"
+        )
+                : TraceableException{error_code, filename, line_number},
+                m_message{std::move(message)} {}
 
         // Methods
-        char const* what() const noexcept override {
-            return "streaming_archive::reader::Archive operation failed";
-        }
-    };
+        [[nodiscard]] auto what() const noexcept -> char const* override { return m_message.c_str(); }
+
+        private:
+        std::string m_message;
+        };
 
     // Methods
     /**
