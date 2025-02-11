@@ -13,9 +13,7 @@
 #include <json/single_include/nlohmann/json.hpp>
 #include <log_surgeon/LogEvent.hpp>
 #include <log_surgeon/LogParser.hpp>
-#include <spdlog.h>
 
-#include "../../Defs.h"
 #include "../../EncodedVariableInterpreter.hpp"
 #include "../../ir/types.hpp"
 #include "../../spdlog_with_specializations.hpp"
@@ -73,7 +71,7 @@ void Archive::open(UserConfig const& user_config) {
     }
     auto const& archive_path_string = archive_path.string();
     m_local_metadata = std::make_optional<ArchiveMetadata>(
-            cArchiveFormatVersion,
+            cArchiveFormatVersion::Version,
             m_creator_id_as_string,
             m_creation_num
     );
@@ -247,7 +245,10 @@ void Archive::close() {
     m_metadata_db.close();
 
     if (m_use_single_file_archive) {
-        create_single_file_archive();
+        single_file_archive::write_single_file_archive(
+                m_path,
+                static_cast<size_t>(m_next_segment_id)
+        );
     }
 
     m_creator_id_as_string.clear();
@@ -297,11 +298,8 @@ void Archive::change_ts_pattern(TimestampPattern const* pattern) {
     m_file->change_ts_pattern(pattern);
 }
 
-void Archive::write_msg(
-        epochtime_t timestamp,
-        string const& message,
-        size_t num_uncompressed_bytes
-) {
+void
+Archive::write_msg(epochtime_t timestamp, string const& message, size_t num_uncompressed_bytes) {
     // Encode message and add components to dictionaries
     vector<encoded_variable_t> encoded_vars;
     vector<variable_dictionary_id_t> var_ids;
@@ -338,9 +336,7 @@ void Archive::write_msg_using_schema(LogEventView const& log_view) {
             m_old_ts_pattern = timestamp_pattern;
         }
     }
-    if (get_data_size_of_dictionaries() >= m_target_data_size_of_dicts
-        && false == m_use_single_file_archive)
-    {
+    if (get_data_size_of_dictionaries() >= m_target_data_size_of_dicts) {
         split_file_and_archive(
                 m_archive_user_config,
                 m_path_for_compression,
@@ -658,31 +654,6 @@ void Archive::update_metadata() {
         std::cout << json_msg.dump(-1, ' ', true, nlohmann::json::error_handler_t::ignore)
                   << std::endl;
     }
-}
-
-void Archive::create_single_file_archive() {
-    std::filesystem::path multi_file_archive_path = m_path;
-
-    auto segment_ids
-            = clp::streaming_archive::single_file_archive::get_segment_ids(m_next_segment_id - 1);
-
-    if (false == m_local_metadata.has_value()) {
-        throw OperationFailed(ErrorCode_Failure, __FILENAME__, __LINE__);
-    }
-
-    auto& multi_file_archive_metadata = m_local_metadata.value();
-    auto packed_metadata
-            = clp::streaming_archive::single_file_archive::create_single_file_archive_metadata(
-                    multi_file_archive_metadata,
-                    multi_file_archive_path,
-                    segment_ids
-            );
-
-    clp::streaming_archive::single_file_archive::write_single_file_archive(
-            multi_file_archive_path,
-            packed_metadata,
-            segment_ids
-    );
 }
 
 // Explicitly declare template specializations so that we can define the template methods in this

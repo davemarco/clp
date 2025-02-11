@@ -25,15 +25,40 @@ void Archive::open(string const& path) {
     m_path = path;
     std::shared_ptr<ReaderAdaptor> archive_reader_adaptor = ReaderAdaptor::create(m_path);
 
-    ArchiveMetadata metadata = archive_reader_adaptor->get_archive_metadata();
+    // Read the metadata file
+    string metadata_file_path = path + '/' + cMetadataFileName;
+    archive_format_version_t format_version{};
+    try {
+        auto const metadata = ArchiveMetadata::create_from_file(metadata_file_path);
+        format_version = metadata.get_archive_format_version();
+    } catch (TraceableException& traceable_exception) {
+        auto error_code = traceable_exception.get_error_code();
+        if (ErrorCode_errno == error_code) {
+            SPDLOG_CRITICAL(
+                    "streaming_archive::reader::Archive: Failed to read archive metadata file "
+                    "{} at {}:{} - errno={}",
+                    metadata_file_path.c_str(),
+                    traceable_exception.get_filename(),
+                    traceable_exception.get_line_number(),
+                    errno
+            );
+        } else {
+            SPDLOG_CRITICAL(
+                    "streaming_archive::reader::Archive: Failed to read archive metadata file "
+                    "{} at {}:{} - error={}",
+                    metadata_file_path.c_str(),
+                    traceable_exception.get_filename(),
+                    traceable_exception.get_line_number(),
+                    error_code
+            );
+        }
+        throw;
+    }
 
-    if (cArchiveFormatVersion != metadata.get_archive_format_version()) {
-        throw Archive::OperationFailed{
-            clp::ErrorCode::ErrorCode_Failure,
-            __FILENAME__,
-            __LINE__,
-            "Archive uses an unsupported format."
-        };
+    // Check archive matches format version
+    if (cArchiveFormatVersion::Version != format_version) {
+        SPDLOG_ERROR("streaming_archive::reader::Archive: Archive uses an unsupported format.");
+        throw OperationFailed(ErrorCode_BadParam, __FILENAME__, __LINE__);
     }
 
     auto metadata_db_path = boost::filesystem::path(path) / cMetadataDBFileName;
@@ -127,11 +152,8 @@ bool Archive::get_next_message(File& file, Message& msg) {
     return file.get_next_message(msg);
 }
 
-bool Archive::decompress_message(
-        File& file,
-        Message const& compressed_msg,
-        string& decompressed_msg
-) {
+bool
+Archive::decompress_message(File& file, Message const& compressed_msg, string& decompressed_msg) {
     if (false == decompress_message_without_ts(compressed_msg, decompressed_msg)) {
         return false;
     }
@@ -164,10 +186,8 @@ bool Archive::decompress_message(
     return true;
 }
 
-bool Archive::decompress_message_without_ts(
-        Message const& compressed_msg,
-        string& decompressed_msg
-) {
+bool
+Archive::decompress_message_without_ts(Message const& compressed_msg, string& decompressed_msg) {
     decompressed_msg.clear();
 
     // Build original message content
