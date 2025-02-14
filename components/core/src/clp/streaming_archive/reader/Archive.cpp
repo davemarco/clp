@@ -69,7 +69,9 @@ void Archive::open(string const& path) {
         );
         throw OperationFailed(ErrorCode_FileNotFound, __FILENAME__, __LINE__);
     }
-    m_metadata_db.open(metadata_db_path.string());
+
+    m_metadata_db = std::make_shared<MetadataDB>(archive_reader_adaptor);
+    m_metadata_db->open_read_only(metadata_db_path.string());
 
     // Open log-type dictionary
     string logtype_dict_path = m_path;

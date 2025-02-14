@@ -7,6 +7,7 @@
 
 #include "../SQLiteDB.hpp"
 #include "writer/File.hpp"
+#include "reader/adaptor/ReaderAdaptor.hpp"
 
 namespace clp::streaming_archive {
 class MetadataDB {
@@ -125,10 +126,11 @@ public:
     };
 
     // Constructors
-    MetadataDB() : m_is_open(false) {}
+    MetadataDB(std::shared_ptr<reader::ReaderAdaptor>& adaptor) : m_adaptor(adaptor), m_is_open(false) {}
 
     // Methods
     void open(std::string const& path);
+    void open_read_only(std::string const& path);
     void close();
 
     void update_files(std::vector<writer::File*> const& files);
@@ -160,9 +162,12 @@ public:
     }
 
 private:
+    void init();
+
     // Variables
     bool m_is_open;
 
+    std::shared_ptr<reader::ReaderAdaptor> m_adaptor;
     SQLiteDB m_db;
     std::unique_ptr<SQLitePreparedStatement> m_transaction_begin_statement;
     std::unique_ptr<SQLitePreparedStatement> m_transaction_end_statement;

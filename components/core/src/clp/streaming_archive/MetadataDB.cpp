@@ -35,6 +35,9 @@ using std::string;
 using std::to_string;
 using std::vector;
 
+
+    constexpr size_t cReadBlockSize = 4096;
+
 namespace clp::streaming_archive {
 static void
 create_tables(vector<std::pair<string, string>> const& file_field_names_and_types, SQLiteDB& db) {
@@ -426,6 +429,38 @@ size_t MetadataDB::FileIterator::get_segment_variables_pos() const {
     );
 }
 
+void MetadataDB::open_read_only(string const& path) {
+    if (m_is_open) {
+        throw OperationFailed(ErrorCode_NotReady, __FILENAME__, __LINE__);
+    }
+
+    auto db_reader = m_adaptor->checkout_reader_for_section(path);
+
+    std::array<char, cReadBlockSize> read_buffer{};
+    std::vector<char> buf;
+
+    while (true) {
+        size_t num_bytes_read{};
+        auto const error_code = db_reader->try_read(read_buffer.data(), cReadBlockSize, num_bytes_read);
+        if (ErrorCode_EndOfFile == error_code) {
+            break;
+        }
+        if (ErrorCode_Success != error_code) {
+            throw OperationFailed(error_code, __FILENAME__, __LINE__);
+        }
+        size_t current_size = buf.size();
+        buf.resize(current_size + num_bytes_read);
+        buf.insert(buf.end(), read_buffer.data(), read_buffer.data() + num_bytes_read);
+    }
+
+    m_adaptor->checkin_reader_for_section(path);
+
+    m_db.deserialize(buf);
+
+    init();
+    m_is_open = true;
+}
+
 void MetadataDB::open(string const& path) {
     if (m_is_open) {
         throw OperationFailed(ErrorCode_NotReady, __FILENAME__, __LINE__);
@@ -433,6 +468,117 @@ void MetadataDB::open(string const& path) {
 
     m_db.open(path);
 
+    init();
+    m_is_open = true;
+}
+
+void MetadataDB::close() {
+    m_transaction_begin_statement.reset(nullptr);
+    m_transaction_end_statement.reset(nullptr);
+    m_upsert_file_statement.reset(nullptr);
+    m_insert_empty_directories_statement.reset(nullptr);
+    if (false == m_db.close()) {
+        SPDLOG_ERROR(
+                "streaming_archive::MetadataDB: Failed to close database - {}",
+                m_db.get_error_message()
+        );
+        throw OperationFailed(ErrorCode_Failure, __FILENAME__, __LINE__);
+    }
+    m_is_open = false;
+}
+
+void MetadataDB::update_files(vector<writer::File*> const& files) {
+    m_transaction_begin_statement->step();
+    for (auto file : files) {
+        auto const id_as_string = file->get_id_as_string();
+        auto const orig_file_id_as_string = file->get_orig_file_id_as_string();
+        m_upsert_file_statement->bind_text(
+                enum_to_underlying_type(FilesTableFieldIndexes::Id) + 1,
+                id_as_string,
+                false
+        );
+        m_upsert_file_statement->bind_text(
+                enum_to_underlying_type(FilesTableFieldIndexes::OrigFileId) + 1,
+                orig_file_id_as_string,
+                false
+        );
+        m_upsert_file_statement->bind_text(
+                enum_to_underlying_type(FilesTableFieldIndexes::Path) + 1,
+                file->get_orig_path(),
+                false
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::BeginTimestamp) + 1,
+                file->get_begin_ts()
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::EndTimestamp) + 1,
+                file->get_end_ts()
+        );
+        m_upsert_file_statement->bind_text(
+                enum_to_underlying_type(FilesTableFieldIndexes::TimestampPatterns) + 1,
+                file->get_encoded_timestamp_patterns(),
+                true
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::NumUncompressedBytes) + 1,
+                (int64_t)file->get_num_uncompressed_bytes()
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::BeginMessageIx) + 1,
+                (int64_t)file->get_begin_message_ix()
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::NumMessages) + 1,
+                (int64_t)file->get_num_messages()
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::NumVariables) + 1,
+                (int64_t)file->get_num_variables()
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::IsSplit) + 1,
+                (int64_t)file->is_split()
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::SplitIx) + 1,
+                (int64_t)file->get_split_ix()
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::SegmentId) + 1,
+                (int64_t)file->get_segment_id()
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::SegmentTimestampsPosition) + 1,
+                (int64_t)file->get_segment_timestamps_pos()
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::SegmentLogtypesPosition) + 1,
+                (int64_t)file->get_segment_logtypes_pos()
+        );
+        m_upsert_file_statement->bind_int64(
+                enum_to_underlying_type(FilesTableFieldIndexes::SegmentVariablesPosition) + 1,
+                (int64_t)file->get_segment_variables_pos()
+        );
+
+        m_upsert_file_statement->step();
+        m_upsert_file_statement->reset();
+    }
+    m_transaction_end_statement->step();
+
+    m_transaction_begin_statement->reset();
+    m_transaction_end_statement->reset();
+}
+
+void MetadataDB::add_empty_directories(vector<string> const& empty_directory_paths) {
+    for (auto const& path : empty_directory_paths) {
+        m_insert_empty_directories_statement->bind_text(1, path, false);
+        m_insert_empty_directories_statement->step();
+        m_insert_empty_directories_statement->reset();
+    }
+}
+
+void MetadataDB::init() {
     vector<std::pair<string, string>> file_field_names_and_types(
             enum_to_underlying_type(FilesTableFieldIndexes::Length)
     );
@@ -577,112 +723,6 @@ void MetadataDB::open(string const& path) {
     m_insert_empty_directories_statement = make_unique<SQLitePreparedStatement>(
             m_db.prepare_statement(statement_buffer.data(), statement_buffer.size())
     );
-    m_is_open = true;
 }
 
-void MetadataDB::close() {
-    m_transaction_begin_statement.reset(nullptr);
-    m_transaction_end_statement.reset(nullptr);
-    m_upsert_file_statement.reset(nullptr);
-    m_insert_empty_directories_statement.reset(nullptr);
-    if (false == m_db.close()) {
-        SPDLOG_ERROR(
-                "streaming_archive::MetadataDB: Failed to close database - {}",
-                m_db.get_error_message()
-        );
-        throw OperationFailed(ErrorCode_Failure, __FILENAME__, __LINE__);
-    }
-    m_is_open = false;
-}
-
-void MetadataDB::update_files(vector<writer::File*> const& files) {
-    m_transaction_begin_statement->step();
-    for (auto file : files) {
-        auto const id_as_string = file->get_id_as_string();
-        auto const orig_file_id_as_string = file->get_orig_file_id_as_string();
-        m_upsert_file_statement->bind_text(
-                enum_to_underlying_type(FilesTableFieldIndexes::Id) + 1,
-                id_as_string,
-                false
-        );
-        m_upsert_file_statement->bind_text(
-                enum_to_underlying_type(FilesTableFieldIndexes::OrigFileId) + 1,
-                orig_file_id_as_string,
-                false
-        );
-        m_upsert_file_statement->bind_text(
-                enum_to_underlying_type(FilesTableFieldIndexes::Path) + 1,
-                file->get_orig_path(),
-                false
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::BeginTimestamp) + 1,
-                file->get_begin_ts()
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::EndTimestamp) + 1,
-                file->get_end_ts()
-        );
-        m_upsert_file_statement->bind_text(
-                enum_to_underlying_type(FilesTableFieldIndexes::TimestampPatterns) + 1,
-                file->get_encoded_timestamp_patterns(),
-                true
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::NumUncompressedBytes) + 1,
-                (int64_t)file->get_num_uncompressed_bytes()
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::BeginMessageIx) + 1,
-                (int64_t)file->get_begin_message_ix()
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::NumMessages) + 1,
-                (int64_t)file->get_num_messages()
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::NumVariables) + 1,
-                (int64_t)file->get_num_variables()
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::IsSplit) + 1,
-                (int64_t)file->is_split()
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::SplitIx) + 1,
-                (int64_t)file->get_split_ix()
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::SegmentId) + 1,
-                (int64_t)file->get_segment_id()
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::SegmentTimestampsPosition) + 1,
-                (int64_t)file->get_segment_timestamps_pos()
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::SegmentLogtypesPosition) + 1,
-                (int64_t)file->get_segment_logtypes_pos()
-        );
-        m_upsert_file_statement->bind_int64(
-                enum_to_underlying_type(FilesTableFieldIndexes::SegmentVariablesPosition) + 1,
-                (int64_t)file->get_segment_variables_pos()
-        );
-
-        m_upsert_file_statement->step();
-        m_upsert_file_statement->reset();
-    }
-    m_transaction_end_statement->step();
-
-    m_transaction_begin_statement->reset();
-    m_transaction_end_statement->reset();
-}
-
-void MetadataDB::add_empty_directories(vector<string> const& empty_directory_paths) {
-    for (auto const& path : empty_directory_paths) {
-        m_insert_empty_directories_statement->bind_text(1, path, false);
-        m_insert_empty_directories_statement->step();
-        m_insert_empty_directories_statement->reset();
-    }
-}
 }  // namespace clp::streaming_archive

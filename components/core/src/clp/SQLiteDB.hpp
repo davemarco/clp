@@ -2,6 +2,7 @@
 #define CLP_SQLITEDB_HPP
 
 #include <string>
+#include <vector>
 
 #include "ErrorCode.hpp"
 #include "sqlite3/sqlite3.h"
@@ -30,6 +31,7 @@ public:
 
     // Methods
     void open(std::string const& path);
+    void deserialize(std::vector<char>& buffer);
     bool close();
 
     SQLitePreparedStatement prepare_statement(char const* statement, size_t statement_length);

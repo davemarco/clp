@@ -202,7 +202,7 @@ private:
 
     SegmentManager m_segment_manager;
 
-    MetadataDB m_metadata_db;
+    std::shared_ptr<MetadataDB> m_metadata_db;
 };
 }  // namespace clp::streaming_archive::reader
 
