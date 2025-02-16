@@ -8,7 +8,7 @@ include(../../args.cmake)
 ExternalProject_add(
     msgpack-cxx
     GIT_REPOSITORY https://github.com/msgpack/msgpack-c
-    GIT_TAG cpp-6.1.0
+    GIT_TAG cpp-7.0.0
     PREFIX msgpack-cxx
     CMAKE_ARGS ${CMAKE_ARGS}
     DEPENDS boost-install

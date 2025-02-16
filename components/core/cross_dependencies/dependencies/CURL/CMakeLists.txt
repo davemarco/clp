@@ -8,7 +8,7 @@ include(../../args.cmake)
 ExternalProject_add(
     CURL
     GIT_REPOSITORY https://github.com/curl/curl
-    GIT_TAG curl-8_5_0
+    GIT_TAG curl-7_68_0
     PREFIX CURL
     CMAKE_ARGS ${CMAKE_ARGS} -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON
     DEPENDS libressl-install

@@ -14,6 +14,15 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Options/options.cmake")
 validate_and_setup_all_clp_dependency_flags()
 convert_clp_dependency_properties_to_variables()
 
+#Added for project
+if (CROSS_COMPILE)
+    message(STATUS "CMAKE_SYSTEM_NAME:${CMAKE_SYSTEM_NAME}")
+    list(APPEND CMAKE_FIND_ROOT_PATH ${DEP_DIRECTORY})
+    list(APPEND CMAKE_PREFIX_PATH ${DEP_DIRECTORY})
+    link_directories(${DEP_DIRECTORY}/lib)
+endif()
+message(STATUS "CMAKE_FIND_ROOT_PATH:${CMAKE_FIND_ROOT_PATH}")
+
 if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(default_build_type "Release")
     message(STATUS "No build type specified. Setting to '${default_build_type}'.")
@@ -337,13 +346,7 @@ endif()
 add_subdirectory(src/clp/regex_utils)
 add_subdirectory(src/clp/string_utils)
 
-add_subdirectory(src/clp/clg)
-add_subdirectory(src/clp/clo)
-add_subdirectory(src/clp/clp)
-add_subdirectory(src/glt/glt)
-add_subdirectory(src/clp/make_dictionaries_readable)
 add_subdirectory(src/clp_s)
-add_subdirectory(src/reducer)
 
 set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/ArchiveReader.cpp
