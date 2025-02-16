@@ -16,6 +16,7 @@ set(mariadbclient_LIBNAME "mariadb")
 
 include(cmake/Modules/FindLibraryDependencies.cmake)
 
+
 # Run pkg-config
 find_package(PkgConfig)
 pkg_check_modules(mariadbclient_PKGCONF QUIET "lib${mariadbclient_LIBNAME}")

@@ -7,6 +7,8 @@ project(cross_dependencies)
 # Dependency step targets must be declared before set as required for another dependency
 # As a result, dependencies neccesary for others should be higher in list
 
+add_subdirectory(dependencies/mongocxx)
+add_subdirectory(dependencies/mariadb-connector-c)
 add_subdirectory(dependencies/boost)
 add_subdirectory(dependencies/fmt)
 add_subdirectory(dependencies/libLZMA)

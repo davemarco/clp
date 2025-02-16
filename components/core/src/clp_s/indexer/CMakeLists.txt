@@ -85,7 +85,7 @@ target_link_libraries(indexer
         PRIVATE
         absl::flat_hash_map
         Boost::iostreams Boost::program_options Boost::url
-        ${CURL_LIBRARIES}
+        CURL::libcurl
         clp::string_utils
         MariaDBClient::MariaDBClient
         OpenSSL::Crypto
