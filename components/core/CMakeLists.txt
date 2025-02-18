@@ -17,6 +17,11 @@ if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "${default_build_type}" CACHE STRING "Choose the type of build." FORCE)
 endif()
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pg -g")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pg -g")
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Set general compressor
