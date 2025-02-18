@@ -1,6 +1,6 @@
 # Linux Overview
 
-Instructions to cross-compile using local linux
+Instructions to compile using local linux without sudo
 
 
 ### Build & Install Dependencies
@@ -15,16 +15,13 @@ Instructions to cross-compile using local linux
 
   Set the following to configure paths (normally you should just use paths from sample command
   below):
-  - toolchain file path (CMAKE_TOOLCHAIN_FILE)
   - install path (CMAKE_INSTALL_PREFIX)
   - root path (CMAKE_FIND_ROOT_PATH)
-
 
   ```shell
   cmake \
     -DCMAKE_INSTALL_PREFIX=$PWD/../install \
     -DCMAKE_FIND_ROOT_PATH=$PWD/../install \
-    -DCMAKE_INSTALL_RPATH=$PWD/../install/lib \
     -S ../../
 
 * Build dependencies:
@@ -43,9 +40,7 @@ Instructions to cross-compile using local linux
 
 * Generate project files configured for linux:
 
-  ```
-
-    ```shell
+      ```shell
    cmake \
     -DDEP_DIRECTORY=$PWD/../cross_dependencies/linux/install \
     -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON \
