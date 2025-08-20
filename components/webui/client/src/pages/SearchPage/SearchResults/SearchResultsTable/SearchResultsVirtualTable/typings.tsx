@@ -33,13 +33,21 @@ const searchResultsTableColumns: NonNullable<TableProps<SearchResult>["columns"]
         defaultSortOrder: "descend",
         key: "timestamp",
         render: (timestamp: number) => dayjs.utc(timestamp).format(DATETIME_FORMAT_TEMPLATE),
-        sorter: (a, b) => {
+        sorter: (a, b, sortOrder) => {
             const timestampDiff = a.timestamp - b.timestamp;
             if (0 !== timestampDiff) {
                 return timestampDiff;
             }
 
-            return a._id.localeCompare(b._id);
+            const idCompare = a._id.localeCompare(b._id);
+            return idCompare;
+
+            // Force secondary sort to always be ascending for MongoDB ID. Search results
+            // are created with monotonically increasing document IDs. Since results are
+            // streamed, later results with the same timestamp can jump above earlier ones
+            // if results are sorted descending on ID. Ascending sort for MongoDB ID prevents
+            // this and keeps first-loaded results stable in the table.
+            //return `ascend` === sortOrder ? idCompare: -idCompare;
         },
 
         // Specifying a third sort direction removes ability for user to cancel sorting.
