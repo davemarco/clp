@@ -77,6 +77,6 @@ export type {
 export {
     cancelQuery,
     clearQueryResults,
-    submitQuery,
     querySynchronous,
+    submitQuery,
 };
