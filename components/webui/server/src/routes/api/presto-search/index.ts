@@ -14,6 +14,8 @@ import {ErrorSchema} from "../../../schemas/error.js";
 import {
     PrestoQueryJobCreationSchema,
     PrestoQueryJobSchema,
+    PrestoQuerySynchronousResponseSchema,
+    PrestoSynchronousSchema,
 } from "../../../schemas/presto-search.js";
 import {MAX_PRESTO_SEARCH_RESULTS} from "./typings.js";
 import {insertPrestoRowsToMongo} from "./utils.js";
@@ -252,6 +254,56 @@ const plugin: FastifyPluginAsyncTypebox = async (fastify) => {
             reply.code(StatusCodes.NO_CONTENT);
 
             return null;
+        }
+    );
+
+    fastify.post(
+        "/query-synchronous",
+        {
+            schema: {
+                body: PrestoQueryJobCreationSchema,
+                response: {
+                    [StatusCodes.OK]: PrestoSynchronousSchema,
+                },
+                tags: ["Presto Search"],
+            },
+        },
+        async (request, reply) => {
+            const {queryString} = request.body;
+            let results: any[] = [];
+            let columns: any[] = [];
+            try {
+                await new Promise<void>((resolve, reject) => {
+                    Presto.client.execute({
+                        data: (_, data, cols) => {
+
+                            request.log.info(
+                                `Received ${data.length} rows from Presto query `
+                            );
+
+                            if (columns.length === 0 && cols) {
+                                columns = cols;
+                            }
+                            if (data && data.length > 0) {
+                                results.push(...data);
+                            }
+                        },
+                        error: (error) => {
+                            reject(error);
+                        },
+                        query: queryString,
+                        success: () => {
+                            resolve();
+                        },
+                        timeout: null,
+                    });
+                });
+            } catch (error) {
+                request.log.error(error, "Error during Presto synchronous query");
+                throw error;
+            }
+            reply.code(StatusCodes.OK);
+            return {results, columns};
         }
     );
 };

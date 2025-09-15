@@ -17,7 +17,25 @@ const PrestoQueryJobSchema = Type.Object({
     searchJobId: StringSchema,
 });
 
+/**
+ * Schema for Presto column metadata.
+ */
+const PrestoColumnSchema = Type.Object({
+    name: Type.String(),
+    type: Type.String(),
+    typeSignature: Type.Any(),
+});
+
+/**
+ * Schema for Presto synchronous query results.
+ */
+const PrestoSynchronousSchema = Type.Object({
+    results: Type.Array(Type.Any()),
+    columns: Type.Array(PrestoColumnSchema),
+});
+
 export {
     PrestoQueryJobCreationSchema,
     PrestoQueryJobSchema,
+    PrestoSynchronousSchema,
 };

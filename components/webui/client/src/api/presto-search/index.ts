@@ -56,6 +56,28 @@ const clearQueryResults = (payload: PrestoQueryJobSchema): Promise<AxiosResponse
     return axios.delete("/api/presto-search/results", {data: payload});
 };
 
+// PrestoResultsSchema type for synchronous results
+export type PrestoResultsSchema = {
+    results: any[];
+    columns: Array<{
+        name: string;
+        type: string;
+        typeSignature: any;
+    }>;
+};
+
+/**
+ * Sends post request to server for synchronous presto query.
+ *
+ * @param payload
+ * @return
+ */
+const querySynchronous = async (
+    payload: PrestoQueryJobCreationSchema
+): Promise<AxiosResponse<PrestoResultsSchema>> => {
+    return axios.post<PrestoResultsSchema>("/api/presto-search/query-synchronous", payload);
+};
+
 export type {
     PrestoQueryJobCreationSchema,
     PrestoQueryJobSchema,
@@ -65,4 +87,5 @@ export {
     cancelQuery,
     clearQueryResults,
     submitQuery,
+    querySynchronous,
 };
