@@ -11,16 +11,10 @@ import {ErrorSchema} from "@webui/common/schemas/error";
 import {
     PrestoQueryJobCreationSchema,
     PrestoQueryJobSchema,
-<<<<<<< HEAD
-    PrestoQuerySynchronousResponseSchema,
-    PrestoSynchronousSchema,
-} from "../../../schemas/presto-search.js";
-=======
 } from "@webui/common/schemas/presto-search";
 import {StatusCodes} from "http-status-codes";
 
 import settings from "../../../../settings.json" with {type: "json"};
->>>>>>> main
 import {MAX_PRESTO_SEARCH_RESULTS} from "./typings.js";
 import {insertPrestoRowsToMongo} from "./utils.js";
 
@@ -258,56 +252,6 @@ const plugin: FastifyPluginAsyncTypebox = async (fastify) => {
             reply.code(StatusCodes.NO_CONTENT);
 
             return null;
-        }
-    );
-
-    fastify.post(
-        "/query-synchronous",
-        {
-            schema: {
-                body: PrestoQueryJobCreationSchema,
-                response: {
-                    [StatusCodes.OK]: PrestoSynchronousSchema,
-                },
-                tags: ["Presto Search"],
-            },
-        },
-        async (request, reply) => {
-            const {queryString} = request.body;
-            let results: any[] = [];
-            let columns: any[] = [];
-            try {
-                await new Promise<void>((resolve, reject) => {
-                    Presto.client.execute({
-                        data: (_, data, cols) => {
-
-                            request.log.info(
-                                `Received ${data.length} rows from Presto query `
-                            );
-
-                            if (columns.length === 0 && cols) {
-                                columns = cols;
-                            }
-                            if (data && data.length > 0) {
-                                results.push(...data);
-                            }
-                        },
-                        error: (error) => {
-                            reject(error);
-                        },
-                        query: queryString,
-                        success: () => {
-                            resolve();
-                        },
-                        timeout: null,
-                    });
-                });
-            } catch (error) {
-                request.log.error(error, "Error during Presto synchronous query");
-                throw error;
-            }
-            reply.code(StatusCodes.OK);
-            return {results, columns};
         }
     );
 };
