@@ -103,6 +103,29 @@ const buildSearchQuery = ({
     endTimestamp,
     timestampKey,
 }: BuildSearchQueryProps): string => {
+
+    selectItemList: buildParser(selectItemList)
+    .standaloneSelectItemList()
+    .selectItemList(),
+relationList: buildParser(relationList)
+    .standaloneRelationList()
+    .relationList(),
+booleanExpression: null === booleanExpression ?
+    null :
+    buildParser(booleanExpression)
+        .standaloneBooleanExpression()
+        .booleanExpression(),
+sortItemList: null === sortItemList ?
+    null :
+    buildParser(sortItemList)
+        .standaloneSortItemList()
+        .sortItemList(),
+limitValue: null === limitValue ?
+    null :
+    buildParser(limitValue).standaloneIntegerValue()
+    // eslint-disable-next-line new-cap
+        .INTEGER_VALUE(),
+
     let queryString = `SELECT ${selectItemList} FROM ${databaseName}
 WHERE to_unixtime(${timestampKey}) BETWEEN ${startTimestamp.unix()} AND ${endTimestamp.unix()}`;
 
