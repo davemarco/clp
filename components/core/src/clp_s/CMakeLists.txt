@@ -136,6 +136,7 @@ set(
         SchemaTree.hpp
         SchemaWriter.cpp
         SchemaWriter.hpp
+        SearchTiming.hpp
         TimestampDictionaryReader.cpp
         TimestampDictionaryReader.hpp
         TimestampDictionaryWriter.cpp
@@ -156,6 +157,9 @@ set(
         ZstdDecompressor.cpp
         ZstdDecompressor.hpp
 )
+if (CLP_S_SEARCH_TIMING)
+    list(APPEND CLP_S_SOURCES SearchTiming.cpp)
+endif()
 
 set(
         CLP_S_SEARCH_SOURCES
@@ -265,6 +269,9 @@ target_link_libraries(
         ZStd::ZStd
 )
 target_include_directories(clp-s PRIVATE "${PROJECT_SOURCE_DIR}/submodules")
+if (CLP_S_SEARCH_TIMING)
+    target_compile_definitions(clp-s PRIVATE CLP_S_SEARCH_TIMING_ENABLED=1)
+endif()
 set_target_properties(
         clp-s
         PROPERTIES

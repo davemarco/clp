@@ -51,6 +51,11 @@ add_definitions("-DSOURCE_PATH_SIZE=${SOURCE_PATH_SIZE}")
 # Profiling options
 add_definitions(-DPROF_ENABLED=0)
 
+# Search timing options
+# When enabled, CLP-S writes timing JSON to the current directory or to
+# CLP_S_SEARCH_TIMING_OUTPUT_DIR if the env var is set.
+option(CLP_S_SEARCH_TIMING "Enable CLP-S search timing collection and JSON summary" OFF)
+
 # Compile-in debug logging statements
 #add_definitions(-DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
 
@@ -266,4 +271,3 @@ add_subdirectory(src/clp/regex_utils)
 add_subdirectory(src/clp/string_utils)
 
 add_subdirectory(src/clp_s)
-
