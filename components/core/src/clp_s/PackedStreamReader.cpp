@@ -113,8 +113,8 @@ PackedStreamReader::read_stream(size_t stream_id, std::shared_ptr<char[]>& buf, 
     if ((stream_id + 1) < m_stream_metadata.size()) {
         end_pos = m_begin_offset + m_stream_metadata[stream_id + 1].file_offset;
     }
+    // DM - TODO: We need this to run on GPU. Maybe global pointer to GPU memory
     clp::BoundedReader bounded_reader{m_packed_stream_reader.get(), end_pos};
-
     m_packed_stream_decompressor.open(bounded_reader, cDecompressorFileReadBufferCapacity);
     if (buf_size < uncompressed_size) {
         // make_shared is supposed to work here for c++20, but it seems like the compiler version

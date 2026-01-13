@@ -13,18 +13,28 @@
 #include "Literal.hpp"
 #include "OrExpr.hpp"
 #include "SearchUtils.hpp"
+#include "../SearchTiming.hpp"
 
 #define eval(op, a, b) (((op) == FilterOperation::EQ) ? ((a) == (b)) : ((a) != (b)))
 
 namespace clp_s::search {
 bool Output::filter() {
+    auto const total_start = SearchTiming::Clock::now();
     auto top_level_expr = m_expr;
+    auto& timing = SearchTiming::instance();
+    auto const log_timing_summary = [&]() {
+        timing.set_total_search(SearchTiming::Clock::now() - total_start);
+        timing.log_summary(m_archive_reader->get_archive_id());
+    };
+    timing.reset();
 
     std::vector<int32_t> matched_schemas;
     bool has_array = false;
     bool has_array_search = false;
 
+    auto const table_metadata_start = SearchTiming::Clock::now();
     m_archive_reader->read_metadata();
+    timing.add_table_metadata_load(SearchTiming::Clock::now() - table_metadata_start);
     for (auto schema_id : m_archive_reader->get_schema_ids()) {
         if (m_match.schema_matched(schema_id)) {
             matched_schemas.push_back(schema_id);
@@ -40,6 +50,7 @@ bool Output::filter() {
     // Skip decompressing archive if it contains no
     // relevant schemas
     if (matched_schemas.empty()) {
+        log_timing_summary();
         return true;
     }
 
@@ -48,23 +59,56 @@ bool Output::filter() {
     EvaluateTimestampIndex timestamp_index(m_archive_reader->get_timestamp_dictionary());
     if (timestamp_index.run(top_level_expr) == EvaluatedValue::False) {
         m_archive_reader->close();
+        log_timing_summary();
         return true;
     }
 
+    // Ideally we keep this on CPU.
+    auto const var_dict_start = SearchTiming::Clock::now();
     m_var_dict = m_archive_reader->read_variable_dictionary();
+    timing.add_dict_load(
+            DictionaryType::Variable,
+            SearchTiming::Clock::now() - var_dict_start,
+            m_var_dict->get_entries().size()
+    );
+
+    auto const log_dict_start = SearchTiming::Clock::now();
     m_log_dict = m_archive_reader->read_log_type_dictionary();
+    timing.add_dict_load(
+            DictionaryType::LogType,
+            SearchTiming::Clock::now() - log_dict_start,
+            m_log_dict->get_entries().size()
+    );
 
     if (has_array) {
         if (has_array_search) {
+            auto const array_dict_start = SearchTiming::Clock::now();
             m_array_dict = m_archive_reader->read_array_dictionary();
+            timing.add_dict_load(
+                    DictionaryType::Array,
+                    SearchTiming::Clock::now() - array_dict_start,
+                    m_array_dict->get_entries().size()
+            );
         } else {
+            auto const array_dict_start = SearchTiming::Clock::now();
             m_array_dict = m_archive_reader->read_array_dictionary(true);
+            timing.add_dict_load(
+                    DictionaryType::Array,
+                    SearchTiming::Clock::now() - array_dict_start,
+                    m_array_dict->get_entries().size()
+            );
         }
     }
 
     populate_internal_columns();
+    auto const string_query_plan_start = SearchTiming::Clock::now();
     populate_string_queries(top_level_expr);
+    timing.add_string_query_plan(
+            SearchTiming::Clock::now() - string_query_plan_start
+    );
 
+    //I believe this is similiar to open segment
+    // I think this just opens the reader for the tables. It dosent do anything
     m_archive_reader->open_packed_streams();
 
     std::string message;
@@ -87,13 +131,29 @@ bool Output::filter() {
 
         add_wildcard_columns_to_searched_columns();
 
+
+        //DM - Actually maybe here we break
+
+        auto const schema_table_start = SearchTiming::Clock::now();
         auto& reader = m_archive_reader->read_schema_table(
                 schema_id,
                 m_output_handler->should_output_metadata(),
                 m_should_marshal_records
         );
+        timing.add_schema_table_load(SearchTiming::Clock::now() - schema_table_start);
         reader.initialize_filter(this);
 
+        // DM - if gpu ()
+        // DM - this.filter() Go through sequentially
+
+        // DM - Maybe here we could have an if GPU flag.
+        // DM - Which could do something different.
+
+        // DM - High level plan would be to get rid of while loop, and call
+        // DM - filter on the column. Then use cuda to do the filtering on the whole column
+        // DM - one node in the AST at a time.
+
+        auto const scan_start = SearchTiming::Clock::now();
         if (m_output_handler->should_output_metadata()) {
             epochtime_t timestamp{};
             int64_t log_event_idx{};
@@ -102,15 +162,22 @@ bool Output::filter() {
             }
         } else {
             while (reader.get_next_message(message, this)) {
+                //DM - Like we could maybe not go message by message
                 m_output_handler->write(message);
             }
         }
+        timing.add_scan(
+                SearchTiming::Clock::now() - scan_start,
+                reader.get_num_messages()
+        );
+
         auto ecode = m_output_handler->flush();
         if (ErrorCode::ErrorCodeSuccess != ecode) {
             SPDLOG_ERROR(
                     "Failed to flush output handler, error={}.",
                     clp::enum_to_underlying_type(ecode)
             );
+            log_timing_summary();
             return false;
         }
     }
@@ -120,8 +187,10 @@ bool Output::filter() {
                 "Failed to flush output handler, error={}.",
                 clp::enum_to_underlying_type(ecode)
         );
+        log_timing_summary();
         return false;
     }
+    log_timing_summary();
     return true;
 }
 
@@ -207,6 +276,11 @@ bool Output::evaluate(Expression* expr, int32_t schema) {
         m_expression_state.emplace(cur_type, cur->op_begin());
         ret = false;
     }
+
+    // DM - We could just not support AND/OR. i.e only not ambigious query?
+    // DM - The best for of parralelism appears to split by messages.
+    // DM - Like each thread would do this code.
+    // DM - Maybe this code needs to be refactored so, it does one state at a time for all messages
 
     do {
         switch (cur_type) {
@@ -430,6 +504,9 @@ bool Output::evaluate_float_filter(
     }
 
     for (BaseColumnReader* reader : m_basic_readers[column_id]) {
+        // DM - I think it makes sense to modify these readers.
+        // DM - The whole schemaReader will not work
+        // DM - Not sure what it is anyways
         double value = std::get<double>(reader->extract_value(m_cur_message));
         if (evaluate_float_filter_core(op, value, op_value)) {
             return true;
@@ -526,6 +603,7 @@ bool Output::evaluate_var_string_filter(
     }
 
     for (VariableStringColumnReader* reader : readers) {
+        //DM - Actually my idea is to keep the readers, and just put the loop here?
         int64_t id = reader->get_variable_id(m_cur_message);
         bool matched = matching_vars->count(id) > 0;
 
