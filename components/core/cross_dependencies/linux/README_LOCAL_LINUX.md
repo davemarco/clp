@@ -40,13 +40,26 @@ Instructions to compile using local linux without sudo
 
 * Generate project files configured for linux:
 
-      ```shell
-   cmake \
+  ```shell
+  cmake \
     -DDEP_DIRECTORY=$PWD/../cross_dependencies/linux/install \
     -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON \
     -DCROSS_COMPILE:BOOL=ON \
     ../
   ```
+
+    -DCMAKE_BUILD_TYPE=Debug \
+
+  * Optional timing build flag:
+    Enables search timing collection and JSON output in `clp-s`.
+    ```shell
+    -DCLP_S_SEARCH_TIMING=ON
+    ```
+  * Optional timing output directory (runtime):
+    Writes `search_timing_<archive_id>.json`.
+    ```shell
+    export CLP_S_SEARCH_TIMING_OUTPUT_DIR=/path/to/output
+    ```
 
 * Build clp:
   ```shell
@@ -54,4 +67,3 @@ Instructions to compile using local linux without sudo
   ```
 
 [1]: https://toolchains.bootlin.com/
-
