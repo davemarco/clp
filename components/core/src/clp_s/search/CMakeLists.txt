@@ -9,6 +9,7 @@ set(
         ../DictionaryEntry.hpp
         ../DictionaryWriter.cpp
         ../DictionaryWriter.hpp
+        ../SearchTiming.hpp
         AddTimestampConditions.cpp
         AddTimestampConditions.hpp
         EvaluateRangeIndexFilters.cpp
@@ -25,6 +26,10 @@ set(
         SchemaMatch.cpp
         SchemaMatch.hpp
 )
+
+if(CLP_S_SEARCH_TIMING)
+        list(APPEND CLP_S_SEARCH_SOURCES ../SearchTiming.cpp)
+endif()
 
 if(CLP_BUILD_CLP_S_SEARCH)
         add_library(
@@ -48,4 +53,7 @@ if(CLP_BUILD_CLP_S_SEARCH)
                 clp_s::io
                 spdlog::spdlog
         )
+        if(CLP_S_SEARCH_TIMING)
+                target_compile_definitions(clp_s_search PRIVATE CLP_S_SEARCH_TIMING_ENABLED=1)
+        endif()
 endif()
