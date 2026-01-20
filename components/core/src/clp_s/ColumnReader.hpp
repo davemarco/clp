@@ -90,6 +90,8 @@ public:
 
     void extract_string_value_into_buffer(uint64_t cur_message, std::string& buffer) override;
 
+    UnalignedMemSpan<int64_t> const& get_values_span() const { return m_values; }
+
 private:
     UnalignedMemSpan<int64_t> m_values;
 };
@@ -145,6 +147,8 @@ public:
     ) override;
 
     void extract_string_value_into_buffer(uint64_t cur_message, std::string& buffer) override;
+
+    UnalignedMemSpan<double> const& get_values_span() const { return m_values; }
 
 private:
     UnalignedMemSpan<double> m_values;
@@ -229,6 +233,8 @@ public:
 
     void extract_string_value_into_buffer(uint64_t cur_message, std::string& buffer) override;
 
+    UnalignedMemSpan<uint8_t> const& get_values_span() const { return m_values; }
+
 private:
     UnalignedMemSpan<uint8_t> m_values;
 };
@@ -280,6 +286,8 @@ public:
      */
     UnalignedMemSpan<int64_t> get_encoded_vars(uint64_t cur_message);
 
+    UnalignedMemSpan<uint64_t> const& get_logtypes_span() const { return m_logtypes; }
+
 private:
     std::shared_ptr<VariableDictionaryReader> m_var_dict;
     std::shared_ptr<LogTypeDictionaryReader> m_log_dict;
@@ -321,6 +329,8 @@ public:
      */
     int64_t get_variable_id(uint64_t cur_message);
 
+    UnalignedMemSpan<uint64_t> const& get_variables_span() const { return m_variables; }
+
 private:
     std::shared_ptr<VariableDictionaryReader> m_var_dict;
 
@@ -356,6 +366,11 @@ public:
      * @return The encoded time in epoch time
      */
     epochtime_t get_encoded_time(uint64_t cur_message);
+
+    UnalignedMemSpan<int64_t> const& get_timestamps_span() const { return m_timestamps; }
+    UnalignedMemSpan<int64_t> const& get_timestamp_encodings_span() const {
+        return m_timestamp_encodings;
+    }
 
 private:
     std::shared_ptr<TimestampDictionaryReader> m_timestamp_dict;

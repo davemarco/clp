@@ -64,6 +64,8 @@ int64_t SchemaReader::get_next_log_event_idx() const {
 void
 SchemaReader::load(std::shared_ptr<char[]> stream_buffer, size_t offset, size_t uncompressed_size) {
     m_stream_buffer = stream_buffer;
+    m_stream_buffer_offset = offset;
+    m_stream_uncompressed_size = uncompressed_size;
     BufferViewReader buffer_reader{m_stream_buffer.get() + offset, uncompressed_size};
     for (auto& reader : m_columns) {
         reader->load(buffer_reader, m_num_messages);

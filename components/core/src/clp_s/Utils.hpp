@@ -166,6 +166,10 @@ public:
 
     size_t size() const { return m_size; }
 
+    /*** GPU integration start ***/
+    char* data() const { return m_begin; }
+    /*** GPU integration end ***/
+
     T operator[](size_t i) const {
         T tmp;
         memcpy(&tmp, m_begin + i * sizeof(T), sizeof(T));
