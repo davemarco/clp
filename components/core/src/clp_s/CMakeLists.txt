@@ -1,6 +1,7 @@
 add_subdirectory(indexer)
 add_subdirectory(search/kql)
 add_subdirectory(search/sql)
+add_subdirectory(gpu)
 
 set(
         CLP_SOURCES
@@ -137,6 +138,8 @@ set(
         SchemaWriter.cpp
         SchemaWriter.hpp
         SearchTiming.hpp
+        gpu/host/GpuErtView.cpp
+        gpu/host/GpuErtView.hpp
         TimestampDictionaryReader.cpp
         TimestampDictionaryReader.hpp
         TimestampDictionaryWriter.cpp
@@ -265,6 +268,7 @@ target_link_libraries(
         OpenSSL::Crypto
         simdjson
         spdlog::spdlog
+        clp_s_gpu
         yaml-cpp::yaml-cpp
         ZStd::ZStd
 )

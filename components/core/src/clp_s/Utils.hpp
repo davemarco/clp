@@ -396,7 +396,11 @@ public:
 
     UnalignedMemSpan(char* begin, size_t size) : m_begin(begin), m_size(size) {}
 
-    size_t size() { return m_size; }
+    /*** GPU integration start ***/
+    size_t size() const { return m_size; }
+
+    char* data() const { return m_begin; }
+    /*** GPU integration end ***/
 
     T operator[](size_t i) {
         T tmp;

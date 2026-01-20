@@ -113,6 +113,9 @@ public:
         m_timestamp_column = nullptr;
         m_get_timestamp = []() -> epochtime_t { return 0; };
         m_log_event_idx_column = nullptr;
+        m_stream_buffer.reset();
+        m_stream_buffer_offset = 0;
+        m_stream_uncompressed_size = 0;
         m_local_id_to_global_id.clear();
         m_global_id_to_local_id.clear();
         m_global_id_to_unordered_object.clear();
@@ -243,6 +246,28 @@ public:
      */
     bool done() const { return m_cur_message >= m_num_messages; }
 
+    /*** GPU integration start ***/
+    /**
+     * @return Base pointer to the decompressed ERT buffer for this schema.
+     */
+    char* get_ert_buffer_ptr() const {
+        if (nullptr == m_stream_buffer) {
+            return nullptr;
+        }
+        return m_stream_buffer.get() + m_stream_buffer_offset;
+    }
+
+    /**
+     * @return Size of the decompressed ERT buffer for this schema.
+     */
+    size_t get_ert_buffer_size() const { return m_stream_uncompressed_size; }
+
+    /**
+     * @return Column readers for this schema in load order.
+     */
+    std::vector<BaseColumnReader*> const& get_columns() const { return m_columns; }
+    /*** GPU integration end ***/
+
 private:
     /**
      * Merges the current local schema tree with the section of the global schema tree corresponding
@@ -326,6 +351,10 @@ private:
     std::vector<BaseColumnReader*> m_columns;
     std::vector<BaseColumnReader*> m_reordered_columns;
     std::shared_ptr<char[]> m_stream_buffer;
+    /*** GPU integration start ***/
+    size_t m_stream_buffer_offset{0};
+    size_t m_stream_uncompressed_size{0};
+    /*** GPU integration end ***/
 
     BaseColumnReader* m_timestamp_column;
     std::function<epochtime_t()> m_get_timestamp;
