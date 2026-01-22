@@ -140,6 +140,10 @@ set(
         SearchTiming.hpp
         gpu/host/GpuErtView.cpp
         gpu/host/GpuErtView.hpp
+        gpu/host/GpuIntEqScan.cpp
+        gpu/host/GpuIntEqScan.hpp
+        gpu/host/GpuIntEqOutput.cpp
+        gpu/host/GpuIntEqOutput.hpp
         TimestampDictionaryReader.cpp
         TimestampDictionaryReader.hpp
         TimestampDictionaryWriter.cpp

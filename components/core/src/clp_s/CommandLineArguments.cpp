@@ -583,6 +583,10 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 "Type of authentication required for network requests (s3 | none). Authentication"
                 " with s3 requires the AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment"
                 " variables, and optionally the AWS_SESSION_TOKEN environment variable."
+            )(
+                "gpu-scan",
+                po::bool_switch(&m_gpu_scan),
+                "Run a minimal GPU scan on an integer column and output matching values"
             );
             // clang-format on
             search_options.add(match_options);

@@ -5,6 +5,8 @@
 
 #include "../../clp/type_utils.hpp"
 #include "../Utils.hpp"
+#include "../gpu/host/GpuIntEqOutput.hpp"
+#include "../gpu/host/GpuIntEqScan.hpp"
 #include "AndExpr.hpp"
 #include "clp_search/EncodedVariableInterpreter.hpp"
 #include "clp_search/Grep.hpp"
@@ -142,6 +144,71 @@ bool Output::filter() {
         );
         timing.add_schema_table_load(SearchTiming::Clock::now() - schema_table_start);
         reader.initialize_filter(this);
+
+        if (m_gpu_scan) {
+            if (m_output_handler->should_output_metadata()) {
+                SPDLOG_ERROR("GPU scan does not support metadata output yet.");
+                log_timing_summary();
+                return false;
+            }
+
+            clp_s::gpu::GpuIntEqScanRequest request;
+            auto error = clp_s::gpu::build_int_eq_request(m_expr.get(), *m_schema_tree, request);
+            if (clp_s::gpu::GpuScanCompatError::None != error) {
+                SPDLOG_ERROR(
+                        "GPU scan enabled but query is incompatible: {}",
+                        clp_s::gpu::gpu_scan_error_to_string(error)
+                );
+                log_timing_summary();
+                return false;
+            }
+
+            std::vector<uint8_t> bitmap;
+            int32_t scanned_column_id = -1;
+            auto const scan_start = SearchTiming::Clock::now();
+            error = clp_s::gpu::gpu_int_eq_scan_bitmap(
+                    reader,
+                    request,
+                    bitmap,
+                    scanned_column_id
+            );
+            if (clp_s::gpu::GpuScanCompatError::None != error) {
+                SPDLOG_ERROR(
+                        "GPU scan failed: {}",
+                        clp_s::gpu::gpu_scan_error_to_string(error)
+                );
+                log_timing_summary();
+                return false;
+            }
+            auto matches = static_cast<size_t>(
+                    std::count(bitmap.begin(), bitmap.end(), static_cast<uint8_t>(1))
+            );
+            std::string error_message;
+            if (0
+                != clp_s::gpu::emit_int_matches(
+                        reader,
+                        scanned_column_id,
+                        bitmap,
+                        *m_output_handler,
+                        error_message
+                ))
+            {
+                SPDLOG_ERROR("GPU scan output failed: {}", error_message);
+                log_timing_summary();
+                return false;
+            }
+            timing.add_scan(
+                    SearchTiming::Clock::now() - scan_start,
+                    reader.get_num_messages()
+            );
+            SPDLOG_DEBUG(
+                    "GPU scan schema_id={} column_id={} matches={}.",
+                    schema_id,
+                    scanned_column_id,
+                    matches
+            );
+            continue;
+        }
 
         // DM - if gpu ()
         // DM - this.filter() Go through sequentially

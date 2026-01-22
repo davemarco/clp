@@ -31,7 +31,8 @@ public:
            std::shared_ptr<ArchiveReader> archive_reader,
            std::shared_ptr<TimestampDictionaryReader> timestamp_dict,
            std::unique_ptr<OutputHandler> output_handler,
-           bool ignore_case)
+           bool ignore_case,
+           bool gpu_scan)
             : m_archive_reader(std::move(archive_reader)),
               m_schema_tree(m_archive_reader->get_schema_tree()),
               m_schemas(m_archive_reader->get_schema_map()),
@@ -40,7 +41,8 @@ public:
               m_timestamp_dict(std::move(timestamp_dict)),
               m_output_handler(std::move(output_handler)),
               m_ignore_case(ignore_case),
-              m_should_marshal_records(m_output_handler->should_marshal_records()) {}
+              m_should_marshal_records(m_output_handler->should_marshal_records()),
+              m_gpu_scan(gpu_scan) {}
 
     /**
      * Filters messages from all archives
@@ -99,6 +101,8 @@ private:
     simdjson::ondemand::parser m_array_parser;
     std::string m_array_search_string;
     bool m_maybe_string, m_maybe_number;
+
+    bool m_gpu_scan{false};
 
     /**
      * Initializes the variables. Init is called once for each schema after which filter is called

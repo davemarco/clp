@@ -265,7 +265,8 @@ bool search_archive(
             archive_reader,
             timestamp_dict,
             std::move(output_handler),
-            command_line_arguments.get_ignore_case()
+            command_line_arguments.get_ignore_case(),
+            command_line_arguments.get_gpu_scan()
     );
     return output.filter();
 }

@@ -257,6 +257,28 @@ bool SchemaReader::get_next_message_with_metadata(
     return false;
 }
 
+/*** GPU integration start ***/
+bool SchemaReader::get_message_at(std::string& message, uint64_t message_idx) {
+    if (message_idx >= m_num_messages) {
+        return false;
+    }
+
+    if (false == m_serializer_initialized) {
+        initialize_serializer();
+    }
+
+    auto const prev_message = m_cur_message;
+    m_cur_message = message_idx;
+    generate_json_string();
+    message = m_json_serializer.get_serialized_string();
+    if (message.back() != '\n') {
+        message += '\n';
+    }
+    m_cur_message = prev_message;
+    return true;
+}
+/*** GPU integration end ***/
+
 void SchemaReader::initialize_filter(FilterClass* filter) {
     filter->init(this, m_schema_id, m_columns);
 }
