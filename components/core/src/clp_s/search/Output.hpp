@@ -11,6 +11,7 @@
 
 #include "../ArchiveReader.hpp"
 #include "../SchemaReader.hpp"
+#include "../SchemaTree.hpp"
 #include "../Utils.hpp"
 #include "ast/Expression.hpp"
 #include "ast/StringLiteral.hpp"
@@ -30,13 +31,16 @@ public:
            std::shared_ptr<ast::Expression> const& expr,
            std::shared_ptr<ArchiveReader> const& archive_reader,
            std::unique_ptr<OutputHandler> output_handler,
-           bool ignore_case)
+           bool ignore_case,
+           bool gpu_scan)
             : m_query_runner(match, expr, archive_reader, ignore_case),
               m_archive_reader(archive_reader),
+              m_schema_tree(m_archive_reader->get_schema_tree()),
               m_expr(expr),
               m_match(match),
               m_output_handler(std::move(output_handler)),
-              m_should_marshal_records(m_output_handler->should_marshal_records()) {}
+              m_should_marshal_records(m_output_handler->should_marshal_records()),
+              m_gpu_scan(gpu_scan) {}
 
     /**
      * Filters messages within the archive and outputs the filtered messages to the configured
@@ -49,10 +53,12 @@ public:
 private:
     QueryRunner m_query_runner;
     std::shared_ptr<ArchiveReader> m_archive_reader;
+    std::shared_ptr<SchemaTree> m_schema_tree;
     std::shared_ptr<ast::Expression> m_expr;
     std::shared_ptr<SchemaMatch> m_match;
     std::unique_ptr<OutputHandler> m_output_handler;
     bool m_should_marshal_records{true};
+    bool m_gpu_scan{false};
 };
 }  // namespace clp_s::search
 

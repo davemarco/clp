@@ -194,6 +194,16 @@ public:
             FilterClass* filter
     );
 
+    /*** GPU integration start ***/
+    /**
+     * Gets the message at a specific index without applying a filter.
+     * @param message
+     * @param message_idx
+     * @return true if the message index is valid, false otherwise
+     */
+    bool get_message_at(std::string& message, uint64_t message_idx);
+    /*** GPU integration end ***/
+
     /**
      * Initializes the filter
      * @param filter

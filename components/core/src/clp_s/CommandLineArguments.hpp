@@ -90,6 +90,7 @@ public:
     std::optional<epochtime_t> get_search_end_ts() const { return m_search_end_ts; }
 
     bool get_ignore_case() const { return m_ignore_case; }
+    bool get_gpu_scan() const { return m_gpu_scan; }
 
     std::string const& get_reducer_host() const { return m_reducer_host; }
 
@@ -226,6 +227,7 @@ private:
     std::optional<epochtime_t> m_search_begin_ts;
     std::optional<epochtime_t> m_search_end_ts;
     bool m_ignore_case{false};
+    bool m_gpu_scan{false};
     std::vector<std::string> m_projection_columns;
 
     // Search aggregation variables
