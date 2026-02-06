@@ -1,7 +1,7 @@
 add_subdirectory(indexer)
 add_subdirectory(search/kql)
 add_subdirectory(search/sql)
-add_subdirectory(gpu)
+add_subdirectory(gpu/cuda)
 
 set(
         CLP_SOURCES
@@ -138,12 +138,17 @@ set(
         SchemaWriter.cpp
         SchemaWriter.hpp
         SearchTiming.hpp
-        gpu/host/GpuErtView.cpp
-        gpu/host/GpuErtView.hpp
-        gpu/host/GpuIntEqScan.cpp
-        gpu/host/GpuIntEqScan.hpp
-        gpu/host/GpuIntEqOutput.cpp
-        gpu/host/GpuIntEqOutput.hpp
+        gpu/common/host/ErtInfo.cpp
+        gpu/common/host/ErtInfo.hpp
+        gpu/common/host/ErtInfoTypes.hpp
+        gpu/common/host/ScanRequest.cpp
+        gpu/common/host/ScanRequest.hpp
+        gpu/bitmap/host/Scan.cpp
+        gpu/bitmap/host/Scan.hpp
+        gpu/bitmap/host/Output.cpp
+        gpu/bitmap/host/Output.hpp
+        gpu/encoded_buffer/host/Scan.cpp
+        gpu/encoded_buffer/host/Scan.hpp
         TimestampDictionaryReader.cpp
         TimestampDictionaryReader.hpp
         TimestampDictionaryWriter.cpp

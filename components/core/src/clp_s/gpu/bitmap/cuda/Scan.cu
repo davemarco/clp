@@ -1,16 +1,22 @@
-// Minimal CUDA scan kernel for integer equality.
+#include "Scan.hpp"
 
 #include <cstddef>
 #include <cstdint>
-#include <vector>
 
 #include <cuda_runtime.h>
 
-#include "GpuScan.hpp"
-#include "GpuTransfer.hpp"
-
 namespace clp_s::gpu {
 namespace {
+/**
+ * Per-thread kernel: compares one int64 element against a target value and
+ * writes 1 (match) or 0 (non-match) to the corresponding bitmap byte.
+ *
+ * @param base Device pointer to the start of the ERT buffer.
+ * @param offset_bytes Byte offset from base to the int64 column.
+ * @param length Number of elements in the column (one thread per element).
+ * @param target_value Value to compare against.
+ * @param[out] bitmap Device array of length bytes; bitmap[i] = 1 if match.
+ */
 __global__ void scan_int64_eq_kernel(
         char const* base,
         size_t offset_bytes,
@@ -27,36 +33,28 @@ __global__ void scan_int64_eq_kernel(
 }
 }  // namespace
 
-cudaError_t gpu_int_eq_scan_bitmap_cuda(
-        void const* host_ert_buffer,
-        size_t ert_size,
+cudaError_t scan_int_eq_to_device_bitmap(
+        char const* device_ert_base,
         size_t column_offset_bytes,
         size_t column_length,
         int64_t target_value,
-        std::vector<uint8_t>& out_bitmap
+        DeviceBuffer& out_device_bitmap
 ) {
-    out_bitmap.assign(column_length, 0);
-    if (nullptr == host_ert_buffer || 0 == column_length || 0 == ert_size) {
+    out_device_bitmap = {};
+    if (nullptr == device_ert_base || 0 == column_length) {
         return cudaSuccess;
     }
 
-    DeviceBuffer device_ert;
-    cudaError_t status = copy_to_device(host_ert_buffer, ert_size, device_ert);
-    if (cudaSuccess != status) {
-        return status;
-    }
-
     uint8_t* device_bitmap = nullptr;
-    status = cudaMalloc(&device_bitmap, column_length * sizeof(uint8_t));
+    cudaError_t status = cudaMalloc(&device_bitmap, column_length * sizeof(uint8_t));
     if (cudaSuccess != status) {
-        (void)free_device_buffer(device_ert);
         return status;
     }
 
     constexpr int threads_per_block = 256;
     int blocks = static_cast<int>((column_length + threads_per_block - 1) / threads_per_block);
     scan_int64_eq_kernel<<<blocks, threads_per_block>>>(
-            static_cast<char const*>(device_ert.ptr),
+            device_ert_base,
             column_offset_bytes,
             column_length,
             target_value,
@@ -65,22 +63,11 @@ cudaError_t gpu_int_eq_scan_bitmap_cuda(
     status = cudaGetLastError();
     if (cudaSuccess != status) {
         (void)cudaFree(device_bitmap);
-        (void)free_device_buffer(device_ert);
         return status;
     }
 
-    status = cudaMemcpy(
-            out_bitmap.data(),
-            device_bitmap,
-            column_length * sizeof(uint8_t),
-            cudaMemcpyDeviceToHost
-    );
-    (void)cudaFree(device_bitmap);
-    (void)free_device_buffer(device_ert);
-    if (cudaSuccess != status) {
-        return status;
-    }
-
+    out_device_bitmap.ptr = device_bitmap;
+    out_device_bitmap.size = column_length * sizeof(uint8_t);
     return cudaSuccess;
 }
 }  // namespace clp_s::gpu

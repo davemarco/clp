@@ -32,7 +32,8 @@ public:
            std::shared_ptr<TimestampDictionaryReader> timestamp_dict,
            std::unique_ptr<OutputHandler> output_handler,
            bool ignore_case,
-           bool gpu_scan)
+           bool gpu_bitmap_scan,
+           bool gpu_scan_encoded_buffer)
             : m_archive_reader(std::move(archive_reader)),
               m_schema_tree(m_archive_reader->get_schema_tree()),
               m_schemas(m_archive_reader->get_schema_map()),
@@ -42,7 +43,8 @@ public:
               m_output_handler(std::move(output_handler)),
               m_ignore_case(ignore_case),
               m_should_marshal_records(m_output_handler->should_marshal_records()),
-              m_gpu_scan(gpu_scan) {}
+              m_gpu_bitmap_scan(gpu_bitmap_scan),
+              m_gpu_scan_encoded_buffer(gpu_scan_encoded_buffer) {}
 
     /**
      * Filters messages from all archives
@@ -102,7 +104,10 @@ private:
     std::string m_array_search_string;
     bool m_maybe_string, m_maybe_number;
 
-    bool m_gpu_scan{false};
+    /*** GPU integration start ***/
+    bool m_gpu_bitmap_scan{false};
+    bool m_gpu_scan_encoded_buffer{false};
+    /*** GPU integration end ***/
 
     /**
      * Initializes the variables. Init is called once for each schema after which filter is called

@@ -6,14 +6,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <utility>
 
 namespace clp_s {
 enum class DictionaryType : uint8_t { Variable, LogType, Array, Unknown };
 
+// When CLP_S_SEARCH_TIMING_ENABLED is defined we compile the real timing logic;
+// otherwise we provide a no-op stub so callers don't need #ifdefs at each call site.
 #ifdef CLP_S_SEARCH_TIMING_ENABLED
 class SearchTiming {
 public:
     using Clock = std::chrono::steady_clock;
+    class Scope;
 
     /**
      * Returns the process-wide timing instance.
@@ -96,10 +100,34 @@ private:
     std::chrono::nanoseconds m_scan{};
     uint64_t m_scanned_messages{0};
 };
+
+// RAII scope helper that logs on destruction.
+class SearchTiming::Scope {
+public:
+    Scope(SearchTiming& timing, std::string_view archive_id)
+    : m_timing{timing}, m_archive_id{archive_id}, m_start{Clock::now()} {
+        m_timing.reset();
+    }
+    ~Scope() {
+        m_timing.set_total_search(Clock::now() - m_start);
+        m_timing.log_summary(m_archive_id);
+    }
+
+    Scope(Scope const&) = delete;
+    Scope& operator=(Scope const&) = delete;
+    Scope(Scope&&) = default;
+    Scope& operator=(Scope&&) = default;
+
+private:
+    SearchTiming& m_timing;
+    std::string_view m_archive_id;
+    Clock::time_point const m_start;
+};
 #else
 class SearchTiming {
 public:
     using Clock = std::chrono::steady_clock;
+    class Scope;
 
     static SearchTiming& instance() {
         static SearchTiming timing;
@@ -115,6 +143,11 @@ public:
     void set_total_search(std::chrono::nanoseconds) {}
     void add_scan(std::chrono::nanoseconds, uint64_t) {}
     void log_summary(std::string_view) const {}
+};
+
+class SearchTiming::Scope {
+public:
+    Scope(SearchTiming&, std::string_view) {}
 };
 #endif
 }  // namespace clp_s

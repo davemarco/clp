@@ -93,7 +93,8 @@ public:
     std::optional<epochtime_t> get_search_end_ts() const { return m_search_end_ts; }
 
     bool get_ignore_case() const { return m_ignore_case; }
-    bool get_gpu_scan() const { return m_gpu_scan; }
+    bool get_gpu_bitmap_scan() const { return m_gpu_bitmap_scan; }
+    bool get_gpu_scan_encoded_buffer() const { return m_gpu_scan_encoded_buffer; }
 
     std::optional<clp::GlobalMetadataDBConfig> const& get_metadata_db_config() const {
         return m_metadata_db_config;
@@ -219,7 +220,8 @@ private:
     std::optional<epochtime_t> m_search_begin_ts;
     std::optional<epochtime_t> m_search_end_ts;
     bool m_ignore_case{false};
-    bool m_gpu_scan{false};
+    bool m_gpu_bitmap_scan{false};
+    bool m_gpu_scan_encoded_buffer{false};
     std::vector<std::string> m_projection_columns;
 
     // Search aggregation variables

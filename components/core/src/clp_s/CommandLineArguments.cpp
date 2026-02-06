@@ -584,9 +584,13 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 " with s3 requires the AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment"
                 " variables, and optionally the AWS_SESSION_TOKEN environment variable."
             )(
-                "gpu-scan",
-                po::bool_switch(&m_gpu_scan),
+                "gpu-bitmap-scan",
+                po::bool_switch(&m_gpu_bitmap_scan),
                 "Run a minimal GPU scan on an integer column and output matching values"
+            )(
+                "gpu-scan-encoded-buffer",
+                po::bool_switch(&m_gpu_scan_encoded_buffer),
+                "Run a GPU scan and return a compact encoded buffer for output"
             );
             // clang-format on
             search_options.add(match_options);
@@ -745,6 +749,14 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
             if (m_query.empty()) {
                 throw std::invalid_argument("No query specified");
             }
+
+            /*** GPU integration start ***/
+            if (m_gpu_bitmap_scan && m_gpu_scan_encoded_buffer) {
+                throw std::invalid_argument(
+                        "gpu-bitmap-scan and gpu-scan-encoded-buffer are mutually exclusive."
+                );
+            }
+            /*** GPU integration end ***/
 
             if (parsed_command_line_options.count("tge")) {
                 m_search_begin_ts = parsed_command_line_options["tge"].as<epochtime_t>();

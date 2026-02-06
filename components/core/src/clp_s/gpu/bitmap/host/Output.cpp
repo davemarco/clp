@@ -1,16 +1,15 @@
-#include "GpuIntEqOutput.hpp"
+#include "Output.hpp"
 
 #include <string>
 
-#include "../../ColumnReader.hpp"
-#include "../../SchemaReader.hpp"
-#include "../../Utils.hpp"
-#include "../../search/OutputHandler.hpp"
+#include "../../../ColumnReader.hpp"
+#include "../../../SchemaReader.hpp"
+#include "../../../Utils.hpp"
+#include "../../../search/OutputHandler.hpp"
 
 namespace clp_s::gpu {
 int emit_int_matches(
         SchemaReader& reader,
-        int32_t column_id,
         std::vector<uint8_t> const& bitmap,
         search::OutputHandler& output_handler,
         std::string& error
