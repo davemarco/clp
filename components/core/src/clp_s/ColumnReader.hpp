@@ -288,6 +288,8 @@ public:
 
     UnalignedMemSpan<uint64_t> const& get_logtypes_span() const { return m_logtypes; }
 
+    UnalignedMemSpan<int64_t> const& get_encoded_vars_span() const { return m_encoded_vars; }
+
 private:
     std::shared_ptr<VariableDictionaryReader> m_var_dict;
     std::shared_ptr<LogTypeDictionaryReader> m_log_dict;

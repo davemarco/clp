@@ -2,7 +2,7 @@ add_subdirectory(indexer)
 add_subdirectory(log_converter)
 add_subdirectory(search)
 add_subdirectory(timestamp_parser)
-add_subdirectory(gpu)
+add_subdirectory(gpu/cuda)
 
 set(
         CLP_S_CLP_SOURCES

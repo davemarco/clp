@@ -10,6 +10,17 @@ set(
         ../DictionaryWriter.cpp
         ../DictionaryWriter.hpp
         ../SearchTiming.hpp
+        ../gpu/common/host/ErtInfo.cpp
+        ../gpu/common/host/ErtInfo.hpp
+        ../gpu/common/host/ErtInfoTypes.hpp
+        ../gpu/common/host/ScanRequest.cpp
+        ../gpu/common/host/ScanRequest.hpp
+        ../gpu/bitmap/host/Scan.cpp
+        ../gpu/bitmap/host/Scan.hpp
+        ../gpu/bitmap/host/Output.cpp
+        ../gpu/bitmap/host/Output.hpp
+        ../gpu/encoded_buffer/host/Scan.cpp
+        ../gpu/encoded_buffer/host/Scan.hpp
         AddTimestampConditions.cpp
         AddTimestampConditions.hpp
         EvaluateRangeIndexFilters.cpp
@@ -51,6 +62,7 @@ if(CLP_BUILD_CLP_S_SEARCH)
                 clp::string_utils
                 clp_s::clp_dependencies
                 clp_s::io
+                clp_s_gpu
                 spdlog::spdlog
         )
         if(CLP_S_SEARCH_TIMING)

@@ -32,7 +32,8 @@ public:
            std::shared_ptr<ArchiveReader> const& archive_reader,
            std::unique_ptr<OutputHandler> output_handler,
            bool ignore_case,
-           bool gpu_scan)
+           bool gpu_bitmap_scan,
+           bool gpu_scan_encoded_buffer)
             : m_query_runner(match, expr, archive_reader, ignore_case),
               m_archive_reader(archive_reader),
               m_schema_tree(m_archive_reader->get_schema_tree()),
@@ -40,7 +41,8 @@ public:
               m_match(match),
               m_output_handler(std::move(output_handler)),
               m_should_marshal_records(m_output_handler->should_marshal_records()),
-              m_gpu_scan(gpu_scan) {}
+              m_gpu_bitmap_scan(gpu_bitmap_scan),
+              m_gpu_scan_encoded_buffer(gpu_scan_encoded_buffer) {}
 
     /**
      * Filters messages within the archive and outputs the filtered messages to the configured
@@ -58,7 +60,8 @@ private:
     std::shared_ptr<SchemaMatch> m_match;
     std::unique_ptr<OutputHandler> m_output_handler;
     bool m_should_marshal_records{true};
-    bool m_gpu_scan{false};
+    bool m_gpu_bitmap_scan{false};
+    bool m_gpu_scan_encoded_buffer{false};
 };
 }  // namespace clp_s::search
 

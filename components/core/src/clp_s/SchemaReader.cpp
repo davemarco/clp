@@ -310,6 +310,12 @@ bool SchemaReader::get_message_at(std::string& message, uint64_t message_idx) {
     m_cur_message = prev_message;
     return true;
 }
+
+void SchemaReader::reset_read_state(uint64_t num_messages) {
+    m_num_messages = num_messages;
+    m_cur_message = 0;
+    m_serializer_initialized = false;
+}
 /*** GPU integration end ***/
 
 void SchemaReader::initialize_filter(FilterClass* filter) {

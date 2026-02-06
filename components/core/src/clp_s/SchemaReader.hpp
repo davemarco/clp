@@ -202,6 +202,13 @@ public:
      * @return true if the message index is valid, false otherwise
      */
     bool get_message_at(std::string& message, uint64_t message_idx);
+
+    /**
+     * Resets the read state (message count, cursor, serializer) without tearing down the
+     * schema or columns. Call load() after this to provide new data for the same schema.
+     * @param num_messages
+     */
+    void reset_read_state(uint64_t num_messages);
     /*** GPU integration end ***/
 
     /**

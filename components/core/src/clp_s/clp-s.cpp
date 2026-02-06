@@ -289,7 +289,8 @@ bool search_archive(
             archive_reader,
             std::move(output_handler),
             command_line_arguments.get_ignore_case(),
-            command_line_arguments.get_gpu_scan()
+            command_line_arguments.get_gpu_bitmap_scan(),
+            command_line_arguments.get_gpu_scan_encoded_buffer()
     );
     return output.filter();
 }

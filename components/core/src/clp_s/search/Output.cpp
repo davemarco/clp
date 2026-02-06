@@ -8,8 +8,9 @@
 #include "../../clp/type_utils.hpp"
 #include "../SchemaTree.hpp"
 #include "../Utils.hpp"
-#include "../gpu/host/GpuIntEqOutput.hpp"
-#include "../gpu/host/GpuIntEqScan.hpp"
+#include "../gpu/encoded_buffer/host/Scan.hpp"
+#include "../gpu/bitmap/host/Output.hpp"
+#include "../gpu/bitmap/host/Scan.hpp"
 #include "ast/AndExpr.hpp"
 #include "ast/ColumnDescriptor.hpp"
 #include "ast/Expression.hpp"
@@ -36,13 +37,8 @@ using clp_s::search::ast::OrExpr;
 
 namespace clp_s::search {
 bool Output::filter() {
-    auto const total_start = SearchTiming::Clock::now();
     auto& timing = SearchTiming::instance();
-    auto const log_timing_summary = [&]() {
-        timing.set_total_search(SearchTiming::Clock::now() - total_start);
-        timing.log_summary(m_archive_reader->get_archive_id());
-    };
-    timing.reset();
+    SearchTiming::Scope timing_guard{timing, m_archive_reader->get_archive_id()};
 
     std::vector<int32_t> matched_schemas;
     bool has_array = false;
@@ -63,10 +59,8 @@ bool Output::filter() {
         }
     }
 
-    // Skip decompressing archive if it contains no
-    // relevant schemas
+    // Skip decompressing archive if it contains no relevant schemas
     if (matched_schemas.empty()) {
-        log_timing_summary();
         return true;
     }
 
@@ -76,7 +70,6 @@ bool Output::filter() {
     EvaluateTimestampIndex timestamp_index(m_archive_reader->get_timestamp_dictionary());
     if (EvaluatedValue::False == timestamp_index.run(m_expr)) {
         m_archive_reader->close();
-        log_timing_summary();
         return true;
     }
 
@@ -144,68 +137,95 @@ bool Output::filter() {
         reader.initialize_filter(&m_query_runner);
         timing.add_schema_table_load(SearchTiming::Clock::now() - schema_table_start);
 
-        if (m_gpu_scan) {
+        if (m_gpu_bitmap_scan || m_gpu_scan_encoded_buffer) {
             if (m_output_handler->should_output_metadata()) {
-                SPDLOG_ERROR("GPU scan does not support metadata output yet.");
-                log_timing_summary();
+                SPDLOG_ERROR("GPU output does not support metadata output yet.");
                 return false;
             }
 
-            clp_s::gpu::GpuIntEqScanRequest request;
+            clp_s::gpu::IntEqScanRequest request;
             auto error = clp_s::gpu::build_int_eq_request(m_expr.get(), *m_schema_tree, request);
-            if (clp_s::gpu::GpuScanCompatError::None != error) {
+            if (clp_s::gpu::ScanCompatError::None != error) {
                 SPDLOG_ERROR(
                         "GPU scan enabled but query is incompatible: {}",
-                        clp_s::gpu::gpu_scan_error_to_string(error)
+                        clp_s::gpu::scan_error_to_string(error)
                 );
-                log_timing_summary();
                 return false;
             }
 
-            std::vector<uint8_t> bitmap;
-            int32_t scanned_column_id = -1;
             auto const scan_start = SearchTiming::Clock::now();
-            error = clp_s::gpu::gpu_int_eq_scan_bitmap(
-                    reader,
-                    request,
-                    bitmap,
-                    scanned_column_id
-            );
-            if (clp_s::gpu::GpuScanCompatError::None != error) {
-                SPDLOG_ERROR(
-                        "GPU scan failed: {}",
-                        clp_s::gpu::gpu_scan_error_to_string(error)
+            if (m_gpu_scan_encoded_buffer) {
+                clp_s::gpu::EncodedBuffer encoded_buffer;
+                std::string error_message;
+                if (0
+                    != clp_s::gpu::run_int_eq_to_encoded_buffer(
+                            reader,
+                            *m_archive_reader->get_log_type_dictionary(),
+                            request,
+                            encoded_buffer,
+                            error_message
+                    ))
+                {
+                    SPDLOG_ERROR("GPU encoded buffer scan failed: {}", error_message);
+                    return false;
+                }
+                auto matches = static_cast<size_t>(encoded_buffer.num_rows);
+                if (0 == matches) {
+                    continue;
+                }
+                auto const original_num_messages = reader.get_num_messages();
+                reader.reset_read_state(encoded_buffer.num_rows);
+                reader.load(encoded_buffer.data, 0, encoded_buffer.size);
+                std::string message;
+                while (reader.get_next_message(message)) {
+                    m_output_handler->write(message);
+                }
+                auto ecode = m_output_handler->flush();
+                if (ErrorCode::ErrorCodeSuccess != ecode) {
+                    SPDLOG_ERROR(
+                            "Failed to flush output handler, error={}.",
+                            clp::enum_to_underlying_type(ecode)
+                    );
+                    return false;
+                }
+                timing.add_scan(
+                        SearchTiming::Clock::now() - scan_start,
+                        original_num_messages
                 );
-                log_timing_summary();
-                return false;
+            } else {
+                std::vector<uint8_t> bitmap;
+                error = clp_s::gpu::run_int_eq_to_bitmap(reader, request, bitmap);
+                if (clp_s::gpu::ScanCompatError::None != error) {
+                    SPDLOG_ERROR(
+                            "GPU scan failed: {}",
+                            clp_s::gpu::scan_error_to_string(error)
+                    );
+                    return false;
+                }
+                auto matches = static_cast<size_t>(
+                        std::count(bitmap.begin(), bitmap.end(), static_cast<uint8_t>(1))
+                );
+                if (0 == matches) {
+                    continue;
+                }
+                std::string error_message;
+                if (0
+                    != clp_s::gpu::emit_int_matches(
+                            reader,
+                            bitmap,
+                            *m_output_handler,
+                            error_message
+                    ))
+                {
+                    SPDLOG_ERROR("GPU scan output failed: {}", error_message);
+                    return false;
+                }
+                timing.add_scan(
+                        SearchTiming::Clock::now() - scan_start,
+                        reader.get_num_messages()
+                );
             }
-            auto matches = static_cast<size_t>(
-                    std::count(bitmap.begin(), bitmap.end(), static_cast<uint8_t>(1))
-            );
-            std::string error_message;
-            if (0
-                != clp_s::gpu::emit_int_matches(
-                        reader,
-                        scanned_column_id,
-                        bitmap,
-                        *m_output_handler,
-                        error_message
-                ))
-            {
-                SPDLOG_ERROR("GPU scan output failed: {}", error_message);
-                log_timing_summary();
-                return false;
-            }
-            timing.add_scan(
-                    SearchTiming::Clock::now() - scan_start,
-                    reader.get_num_messages()
-            );
-            SPDLOG_DEBUG(
-                    "GPU scan schema_id={} column_id={} matches={}.",
-                    schema_id,
-                    scanned_column_id,
-                    matches
-            );
+
             continue;
         }
 
@@ -249,7 +269,6 @@ bool Output::filter() {
                     "Failed to flush output handler, error={}.",
                     clp::enum_to_underlying_type(ecode)
             );
-            log_timing_summary();
             return false;
         }
     }
@@ -259,10 +278,8 @@ bool Output::filter() {
                 "Failed to flush output handler, error={}.",
                 clp::enum_to_underlying_type(ecode)
         );
-        log_timing_summary();
         return false;
     }
-    log_timing_summary();
     return true;
 }
 }  // namespace clp_s::search
