@@ -64,11 +64,11 @@ public:
      */
     void add_schema_table_load(std::chrono::nanoseconds duration);
     /**
-     * Sets elapsed time spent in the overall search path.
+     * Adds elapsed time spent in the overall search path.
      *
      * @param duration Time spent in the overall search path.
      */
-    void set_total_search(std::chrono::nanoseconds duration);
+    void add_total_search(std::chrono::nanoseconds duration);
     /**
      * Adds elapsed time spent scanning records and emitting output.
      *
@@ -76,13 +76,17 @@ public:
      * @param messages_scanned Number of messages scanned
      */
     void add_scan(std::chrono::nanoseconds duration, uint64_t messages_scanned);
+    /**
+     * Sets the total wall-clock time for the entire program.
+     *
+     * @param duration Wall-clock duration from program start to end of search.
+     */
+    void set_wall_clock(std::chrono::nanoseconds duration);
 
     /**
-     * Logs a timing summary and writes the JSON summary file.
-     *
-     * @param archive_id Archive identifier used in summary output
+     * Logs an aggregated timing summary and writes the JSON totals file.
      */
-    void log_summary(std::string_view archive_id) const;
+    void log_totals() const;
 
 private:
     struct DictStats {
@@ -99,18 +103,16 @@ private:
     std::chrono::nanoseconds m_total_search{};
     std::chrono::nanoseconds m_scan{};
     uint64_t m_scanned_messages{0};
+    std::chrono::nanoseconds m_wall_clock{};
 };
 
-// RAII scope helper that logs on destruction.
+// RAII scope helper that accumulates per-archive search time.
 class SearchTiming::Scope {
 public:
-    Scope(SearchTiming& timing, std::string_view archive_id)
-    : m_timing{timing}, m_archive_id{archive_id}, m_start{Clock::now()} {
-        m_timing.reset();
-    }
+    Scope(SearchTiming& timing, std::string_view /*archive_id*/)
+    : m_timing{timing}, m_start{Clock::now()} {}
     ~Scope() {
-        m_timing.set_total_search(Clock::now() - m_start);
-        m_timing.log_summary(m_archive_id);
+        m_timing.add_total_search(Clock::now() - m_start);
     }
 
     Scope(Scope const&) = delete;
@@ -120,7 +122,6 @@ public:
 
 private:
     SearchTiming& m_timing;
-    std::string_view m_archive_id;
     Clock::time_point const m_start;
 };
 #else
@@ -140,9 +141,10 @@ public:
     void add_table_metadata_load(std::chrono::nanoseconds) {}
     void add_string_query_plan(std::chrono::nanoseconds) {}
     void add_schema_table_load(std::chrono::nanoseconds) {}
-    void set_total_search(std::chrono::nanoseconds) {}
+    void add_total_search(std::chrono::nanoseconds) {}
     void add_scan(std::chrono::nanoseconds, uint64_t) {}
-    void log_summary(std::string_view) const {}
+    void set_wall_clock(std::chrono::nanoseconds) {}
+    void log_totals() const {}
 };
 
 class SearchTiming::Scope {

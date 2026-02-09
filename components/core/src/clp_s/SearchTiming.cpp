@@ -91,11 +91,11 @@ void SearchTiming::add_schema_table_load(std::chrono::nanoseconds duration) {
     m_schema_table_load += duration;
 }
 
-void SearchTiming::set_total_search(std::chrono::nanoseconds duration) {
+void SearchTiming::add_total_search(std::chrono::nanoseconds duration) {
     if (false == enabled()) {
         return;
     }
-    m_total_search = duration;
+    m_total_search += duration;
 }
 
 void SearchTiming::add_scan(std::chrono::nanoseconds duration, uint64_t messages_scanned) {
@@ -106,7 +106,14 @@ void SearchTiming::add_scan(std::chrono::nanoseconds duration, uint64_t messages
     m_scanned_messages += messages_scanned;
 }
 
-void SearchTiming::log_summary(std::string_view archive_id) const {
+void SearchTiming::set_wall_clock(std::chrono::nanoseconds duration) {
+    if (false == enabled()) {
+        return;
+    }
+    m_wall_clock = duration;
+}
+
+void SearchTiming::log_totals() const {
     if (false == enabled()) {
         return;
     }
@@ -119,7 +126,7 @@ void SearchTiming::log_summary(std::string_view archive_id) const {
     auto const& log_stats = m_dict_stats[dict_index(DictionaryType::LogType)];
     auto const& array_stats = m_dict_stats[dict_index(DictionaryType::Array)];
 
-    SPDLOG_INFO("Search timing summary for archive {}", archive_id);
+    SPDLOG_INFO("Search timing totals (all archives)");
     SPDLOG_INFO(
             "Dictionary decompress (variable): {:.3f}ms ({} entries)",
             to_ms(var_stats.decompress),
@@ -135,10 +142,7 @@ void SearchTiming::log_summary(std::string_view archive_id) const {
             to_ms(array_stats.decompress),
             array_stats.entries
     );
-    SPDLOG_INFO(
-            "Table metadata load: {:.3f}ms",
-            to_ms(m_table_metadata_load)
-    );
+    SPDLOG_INFO("Table metadata load: {:.3f}ms", to_ms(m_table_metadata_load));
     SPDLOG_INFO("String query plan: {:.3f}ms", to_ms(m_string_query_plan));
     SPDLOG_INFO("Schema table load: {:.3f}ms", to_ms(m_schema_table_load));
     SPDLOG_INFO(
@@ -147,13 +151,13 @@ void SearchTiming::log_summary(std::string_view archive_id) const {
             m_scanned_messages
     );
     SPDLOG_INFO("Total search: {:.3f}ms", to_ms(m_total_search));
+    SPDLOG_INFO("Wall clock: {:.3f}ms", to_ms(m_wall_clock));
 
     std::ostringstream json;
     json.setf(std::ios::fixed);
     json << std::setprecision(3);
     json << "{";
     json << "\"version\":1,";
-    json << "\"archive_id\":\"" << archive_id << "\",";
     json << "\"dictionary\":{\n";
     json << "  \"variable\":{";
     json << "\"decompress_ms\":" << to_ms(var_stats.decompress) << ",";
@@ -169,12 +173,12 @@ void SearchTiming::log_summary(std::string_view archive_id) const {
     json << "\"string_query_plan_ms\":" << to_ms(m_string_query_plan) << ",";
     json << "\"schema_table_load_ms\":" << to_ms(m_schema_table_load) << ",";
     json << "\"scan_ms\":" << to_ms(m_scan) << ",";
-    json << "\"scanned_messages\":" << m_scanned_messages;
-    json << ",";
-    json << "\"total_search_ms\":" << to_ms(m_total_search);
+    json << "\"scanned_messages\":" << m_scanned_messages << ",";
+    json << "\"total_search_ms\":" << to_ms(m_total_search) << ",";
+    json << "\"wall_clock_ms\":" << to_ms(m_wall_clock);
     json << "}";
 
-    auto const filename = "search_timing_" + std::string{archive_id} + ".json";
+    std::string const filename = "search_timing_total.json";
     std::filesystem::path output_path{filename};
     if (auto const* output_dir = std::getenv("CLP_S_SEARCH_TIMING_OUTPUT_DIR");
         nullptr != output_dir && '\0' != output_dir[0])
