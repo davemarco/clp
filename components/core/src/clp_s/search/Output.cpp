@@ -171,6 +171,10 @@ bool Output::filter() {
                 }
                 auto matches = static_cast<size_t>(encoded_buffer.num_rows);
                 if (0 == matches) {
+                    timing.add_scan(
+                            SearchTiming::Clock::now() - scan_start,
+                            reader.get_num_messages()
+                    );
                     continue;
                 }
                 auto const original_num_messages = reader.get_num_messages();
@@ -206,6 +210,10 @@ bool Output::filter() {
                         std::count(bitmap.begin(), bitmap.end(), static_cast<uint8_t>(1))
                 );
                 if (0 == matches) {
+                    timing.add_scan(
+                            SearchTiming::Clock::now() - scan_start,
+                            reader.get_num_messages()
+                    );
                     continue;
                 }
                 std::string error_message;

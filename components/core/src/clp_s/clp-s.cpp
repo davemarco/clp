@@ -36,6 +36,7 @@
 #include "search/EvaluateTimestampIndex.hpp"
 #include "search/kql/kql.hpp"
 #include "search/Output.hpp"
+#include "SearchTiming.hpp"
 #include "search/OutputHandler.hpp"
 #include "search/Projection.hpp"
 #include "search/SchemaMatch.hpp"
@@ -297,6 +298,7 @@ bool search_archive(
 }  // namespace
 
 int main(int argc, char const* argv[]) {
+    auto const program_start = clp_s::SearchTiming::Clock::now();
     try {
         auto stderr_logger = spdlog::stderr_logger_st("stderr");
         spdlog::set_default_logger(stderr_logger);
@@ -448,6 +450,9 @@ int main(int argc, char const* argv[]) {
             }
             archive_reader->close();
         }
+        auto& timing = clp_s::SearchTiming::instance();
+        timing.set_wall_clock(clp_s::SearchTiming::Clock::now() - program_start);
+        timing.log_totals();
     }
 
     return 0;
