@@ -11,6 +11,8 @@
 #include "../gpu/encoded_buffer/host/Scan.hpp"
 #include "../gpu/bitmap/host/Output.hpp"
 #include "../gpu/bitmap/host/Scan.hpp"
+#include "../gpu/cpu_baseline/host/Scan.hpp"
+#include "../gpu/cpu_baseline/host/ScanSimd.hpp"
 #include "ast/AndExpr.hpp"
 #include "ast/ColumnDescriptor.hpp"
 #include "ast/Expression.hpp"
@@ -137,9 +139,9 @@ bool Output::filter() {
         reader.initialize_filter(&m_query_runner);
         timing.add_schema_table_load(SearchTiming::Clock::now() - schema_table_start);
 
-        if (m_gpu_bitmap_scan || m_gpu_scan_encoded_buffer) {
+        if (m_gpu_bitmap_scan || m_gpu_scan_encoded_buffer || m_cpu_scan || m_cpu_scan_simd) {
             if (m_output_handler->should_output_metadata()) {
-                SPDLOG_ERROR("GPU output does not support metadata output yet.");
+                SPDLOG_ERROR("Column scan does not support metadata output yet.");
                 return false;
             }
 
@@ -147,7 +149,7 @@ bool Output::filter() {
             auto error = clp_s::gpu::build_int_eq_request(m_expr.get(), *m_schema_tree, request);
             if (clp_s::gpu::ScanCompatError::None != error) {
                 SPDLOG_ERROR(
-                        "GPU scan enabled but query is incompatible: {}",
+                        "Column scan enabled but query is incompatible: {}",
                         clp_s::gpu::scan_error_to_string(error)
                 );
                 return false;
@@ -195,6 +197,78 @@ bool Output::filter() {
                 timing.add_scan(
                         SearchTiming::Clock::now() - scan_start,
                         original_num_messages
+                );
+            } else if (m_cpu_scan) {
+                std::vector<uint8_t> bitmap;
+                error = clp_s::gpu::run_cpu_int_eq_to_bitmap(reader, request, bitmap);
+                if (clp_s::gpu::ScanCompatError::None != error) {
+                    SPDLOG_ERROR(
+                            "CPU scan failed: {}",
+                            clp_s::gpu::scan_error_to_string(error)
+                    );
+                    return false;
+                }
+                auto matches = static_cast<size_t>(
+                        std::count(bitmap.begin(), bitmap.end(), static_cast<uint8_t>(1))
+                );
+                if (0 == matches) {
+                    timing.add_scan(
+                            SearchTiming::Clock::now() - scan_start,
+                            reader.get_num_messages()
+                    );
+                    continue;
+                }
+                std::string error_message;
+                if (0
+                    != clp_s::gpu::emit_int_matches(
+                            reader,
+                            bitmap,
+                            *m_output_handler,
+                            error_message
+                    ))
+                {
+                    SPDLOG_ERROR("CPU scan output failed: {}", error_message);
+                    return false;
+                }
+                timing.add_scan(
+                        SearchTiming::Clock::now() - scan_start,
+                        reader.get_num_messages()
+                );
+            } else if (m_cpu_scan_simd) {
+                std::vector<uint8_t> bitmap;
+                error = clp_s::gpu::run_cpu_simd_int_eq_to_bitmap(reader, request, bitmap);
+                if (clp_s::gpu::ScanCompatError::None != error) {
+                    SPDLOG_ERROR(
+                            "CPU SIMD scan failed: {}",
+                            clp_s::gpu::scan_error_to_string(error)
+                    );
+                    return false;
+                }
+                auto matches = static_cast<size_t>(
+                        std::count(bitmap.begin(), bitmap.end(), static_cast<uint8_t>(1))
+                );
+                if (0 == matches) {
+                    timing.add_scan(
+                            SearchTiming::Clock::now() - scan_start,
+                            reader.get_num_messages()
+                    );
+                    continue;
+                }
+                std::string error_message;
+                if (0
+                    != clp_s::gpu::emit_int_matches(
+                            reader,
+                            bitmap,
+                            *m_output_handler,
+                            error_message
+                    ))
+                {
+                    SPDLOG_ERROR("CPU SIMD scan output failed: {}", error_message);
+                    return false;
+                }
+                timing.add_scan(
+                        SearchTiming::Clock::now() - scan_start,
+                        reader.get_num_messages()
                 );
             } else {
                 std::vector<uint8_t> bitmap;

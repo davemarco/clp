@@ -19,6 +19,10 @@ set(
         ../gpu/bitmap/host/Scan.hpp
         ../gpu/bitmap/host/Output.cpp
         ../gpu/bitmap/host/Output.hpp
+        ../gpu/cpu_baseline/host/Scan.cpp
+        ../gpu/cpu_baseline/host/Scan.hpp
+        ../gpu/cpu_baseline/host/ScanSimd.cpp
+        ../gpu/cpu_baseline/host/ScanSimd.hpp
         ../gpu/encoded_buffer/host/Scan.cpp
         ../gpu/encoded_buffer/host/Scan.hpp
         AddTimestampConditions.cpp
