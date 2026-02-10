@@ -268,7 +268,9 @@ bool search_archive(
             std::move(output_handler),
             command_line_arguments.get_ignore_case(),
             command_line_arguments.get_gpu_bitmap_scan(),
-            command_line_arguments.get_gpu_scan_encoded_buffer()
+            command_line_arguments.get_gpu_scan_encoded_buffer(),
+            command_line_arguments.get_cpu_scan(),
+            command_line_arguments.get_cpu_scan_simd()
     );
     return output.filter();
 }

@@ -591,6 +591,14 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 "gpu-scan-encoded-buffer",
                 po::bool_switch(&m_gpu_scan_encoded_buffer),
                 "Run a GPU scan and return a compact encoded buffer for output"
+            )(
+                "cpu-scan",
+                po::bool_switch(&m_cpu_scan),
+                "Run a CPU column scan on an integer column (baseline for GPU comparison)"
+            )(
+                "cpu-scan-simd",
+                po::bool_switch(&m_cpu_scan_simd),
+                "Run an AVX2-vectorized CPU column scan on an integer column"
             );
             // clang-format on
             search_options.add(match_options);
@@ -754,6 +762,18 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
             if (m_gpu_bitmap_scan && m_gpu_scan_encoded_buffer) {
                 throw std::invalid_argument(
                         "gpu-bitmap-scan and gpu-scan-encoded-buffer are mutually exclusive."
+                );
+            }
+            if (m_cpu_scan && (m_gpu_bitmap_scan || m_gpu_scan_encoded_buffer || m_cpu_scan_simd)) {
+                throw std::invalid_argument(
+                        "cpu-scan is mutually exclusive with gpu-bitmap-scan,"
+                        " gpu-scan-encoded-buffer, and cpu-scan-simd."
+                );
+            }
+            if (m_cpu_scan_simd && (m_gpu_bitmap_scan || m_gpu_scan_encoded_buffer)) {
+                throw std::invalid_argument(
+                        "cpu-scan-simd is mutually exclusive with gpu-bitmap-scan"
+                        " and gpu-scan-encoded-buffer."
                 );
             }
             /*** GPU integration end ***/
