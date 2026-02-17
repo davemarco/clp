@@ -23,6 +23,7 @@ LiteralType node_to_literal_type(NodeType type) {
         case NodeType::Float:
             return LiteralType::FloatT;
         case NodeType::ClpString:
+        case NodeType::StructuredClpString:
             return LiteralType::ClpStringT;
         case NodeType::VarString:
             return LiteralType::VarStringT;

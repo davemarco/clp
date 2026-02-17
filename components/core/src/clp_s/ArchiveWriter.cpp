@@ -270,6 +270,7 @@ void ArchiveWriter::initialize_schema_writer(SchemaWriter* writer, Schema const&
             case NodeType::NullValue:
             case NodeType::Object:
             case NodeType::StructuredArray:
+            case NodeType::StructuredClpString:
             case NodeType::Unknown:
                 break;
         }

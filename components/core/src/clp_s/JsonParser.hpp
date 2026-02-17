@@ -49,6 +49,7 @@ struct JsonParserOption {
     int compression_level{};
     bool print_archive_stats{};
     bool structurize_arrays{};
+    bool structurize_clp_strings{};
     bool record_log_order{true};
     bool single_file_archive{false};
     std::shared_ptr<clp::GlobalMySQLMetadataDB> metadata_db;
@@ -157,6 +158,32 @@ private:
     void parse_obj_in_array(ondemand::object line, int32_t parent_node_id);
 
     /**
+     * Encodes a ClpString value into structured sub-columns (logtype + vars).
+     * Creates the StructuredClpString parent node, then delegates to
+     * encode_structurized_clp_string_children. Children are always placed in the
+     * unordered schema region.
+     * @param value the string to encode
+     * @param parent_node_id the parent node id for the ClpString parent node
+     * @param key the key name for the ClpString parent node
+     */
+    void encode_structurized_clp_string(
+            std::string_view value,
+            int32_t parent_node_id,
+            std::string_view key
+    );
+
+    /**
+     * Encodes a ClpString value as Integer sub-columns under an existing StructuredClpString node.
+     * Children are always placed in the unordered schema region.
+     * @param value the string to encode
+     * @param clp_string_node_id the already-created StructuredClpString node id
+     */
+    void encode_structurized_clp_string_children(
+            std::string_view value,
+            int32_t clp_string_node_id
+    );
+
+    /**
      * Splits the archive if the size of the archive exceeds the maximum size
      */
     void split_archive();
@@ -185,6 +212,8 @@ private:
     size_t m_target_encoded_size;
     size_t m_max_document_size;
     bool m_structurize_arrays{false};
+    bool m_structurize_clp_strings{false};
+    std::vector<int64_t> m_encoded_vars_buf;
     bool m_record_log_order{true};
 
     absl::flat_hash_map<std::pair<uint32_t, NodeType>, int32_t>

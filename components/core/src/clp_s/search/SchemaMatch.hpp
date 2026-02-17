@@ -147,6 +147,26 @@ private:
     );
 
     /**
+     * Maps all non-wildcard descriptors that match the given node to the given schema.
+     * @param node_id the schema tree node to map
+     * @param schema_id the schema that contains this node
+     */
+    void map_descriptors_to_schema(int32_t node_id, int32_t schema_id);
+
+    /**
+     * Finds the StructuredClpString parent node for an unordered group in the schema.
+     * @param schema the schema containing the group
+     * @param group_start index of the marker entry in the schema
+     * @param group_length number of entries in the group
+     * @return the StructuredClpString node ID, or -1 if not found
+     */
+    int32_t find_unordered_clpstring_root(
+            Schema const& schema,
+            size_t group_start,
+            size_t group_length
+    );
+
+    /**
      * @param column
      * @param schema
      * @return The column id for a given column descriptor

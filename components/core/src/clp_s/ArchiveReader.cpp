@@ -211,6 +211,7 @@ BaseColumnReader* ArchiveReader::append_reader_column(SchemaReader& reader, int3
         case NodeType::NullValue:
         case NodeType::Object:
         case NodeType::StructuredArray:
+        case NodeType::StructuredClpString:
         case NodeType::Unknown:
             break;
     }
@@ -228,34 +229,60 @@ void ArchiveReader::append_unordered_reader_columns(
         bool should_marshal_records
 ) {
     size_t object_begin_pos = reader.get_column_size();
-    for (int32_t column_id : schema_ids) {
-        if (Schema::schema_entry_is_unordered_object(column_id)) {
+
+    bool const parent_is_sclp
+            = mst_subtree_root_node_id >= 0
+              && NodeType::StructuredClpString
+                         == m_schema_tree->get_node(mst_subtree_root_node_id).get_type();
+    Int64ColumnReader* sclp_logtype_reader{nullptr};
+    std::vector<Int64ColumnReader*> sclp_var_readers;
+
+    for (size_t i = 0; i < schema_ids.size(); ++i) {
+        int32_t const entry = schema_ids[i];
+
+        if (Schema::schema_entry_is_unordered_object(entry)) {
+            // Recurse into nested unordered objects (e.g., a StructuredClpString inside a
+            // StructuredArray). The recursive call will see the nested root's type and, if
+            // it is StructuredClpString, will group the Int64 children into an SCLP reader.
+            auto const nested_type = Schema::get_unordered_object_type(entry);
+            size_t const nested_length = Schema::get_unordered_object_length(entry);
+            auto const nested_span = schema_ids.subspan(i + 1, nested_length);
+            int32_t const nested_root = m_schema_tree->find_matching_subtree_root_in_subtree(
+                    mst_subtree_root_node_id,
+                    SchemaReader::get_first_column_in_span(nested_span),
+                    nested_type
+            );
+            append_unordered_reader_columns(reader, nested_root, nested_span, false);
+            i += nested_length;
             continue;
         }
+
         BaseColumnReader* column_reader = nullptr;
-        auto const& node = m_schema_tree->get_node(column_id);
+        auto const& node = m_schema_tree->get_node(entry);
         switch (node.get_type()) {
             case NodeType::Integer:
-                column_reader = new Int64ColumnReader(column_id);
+                column_reader = new Int64ColumnReader(entry);
                 break;
             case NodeType::Float:
-                column_reader = new FloatColumnReader(column_id);
+                column_reader = new FloatColumnReader(entry);
                 break;
             case NodeType::ClpString:
-                column_reader = new ClpStringColumnReader(column_id, m_var_dict, m_log_dict);
+                column_reader = new ClpStringColumnReader(entry, m_var_dict, m_log_dict);
                 break;
             case NodeType::VarString:
-                column_reader = new VariableStringColumnReader(column_id, m_var_dict);
+                column_reader = new VariableStringColumnReader(entry, m_var_dict);
                 break;
             case NodeType::Boolean:
-                column_reader = new BooleanColumnReader(column_id);
+                column_reader = new BooleanColumnReader(entry);
                 break;
             // UnstructuredArray and DateString currently aren't supported as part of any unordered
             // object, so we disregard them here
             case NodeType::UnstructuredArray:
             case NodeType::DateString:
             // No need to push columns without associated object readers into the SchemaReader.
+            case NodeType::Metadata:
             case NodeType::StructuredArray:
+            case NodeType::StructuredClpString:
             case NodeType::Object:
             case NodeType::NullValue:
             case NodeType::Unknown:
@@ -264,7 +291,27 @@ void ArchiveReader::append_unordered_reader_columns(
 
         if (column_reader) {
             reader.append_unordered_column(column_reader);
+            if (parent_is_sclp) {
+                auto* int_reader = dynamic_cast<Int64ColumnReader*>(column_reader);
+                if (nullptr != int_reader) {
+                    if (nullptr == sclp_logtype_reader) {
+                        sclp_logtype_reader = int_reader;
+                    } else {
+                        sclp_var_readers.push_back(int_reader);
+                    }
+                }
+            }
         }
+    }
+
+    if (parent_is_sclp && nullptr != sclp_logtype_reader) {
+        reader.add_structured_clp_string_reader(
+                mst_subtree_root_node_id,
+                sclp_logtype_reader,
+                std::move(sclp_var_readers),
+                m_log_dict,
+                m_var_dict
+        );
     }
 
     if (should_marshal_records) {
@@ -289,23 +336,27 @@ void ArchiveReader::initialize_schema_reader(
     );
     auto timestamp_column_ids
             = get_timestamp_dictionary()->get_authoritative_timestamp_column_ids();
+
     for (size_t i = 0; i < schema.size(); ++i) {
         int32_t column_id = schema[i];
         if (Schema::schema_entry_is_unordered_object(column_id)) {
             size_t length = Schema::get_unordered_object_length(column_id);
+            auto unordered_type = Schema::get_unordered_object_type(column_id);
 
             auto sub_schema = schema.get_view(i + 1, length);
             auto mst_subtree_root_node_id = m_schema_tree->find_matching_subtree_root_in_subtree(
                     -1,
                     SchemaReader::get_first_column_in_span(sub_schema),
-                    Schema::get_unordered_object_type(column_id)
+                    unordered_type
             );
+
             append_unordered_reader_columns(
                     reader,
                     mst_subtree_root_node_id,
                     sub_schema,
                     should_marshal_records
             );
+
             i += length;
             continue;
         }

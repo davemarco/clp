@@ -13,6 +13,7 @@
 
 #include "../ArchiveReader.hpp"
 #include "../SchemaReader.hpp"
+#include "../StructuredClpStringReader.hpp"
 #include "../Utils.hpp"
 #include "clp_search/Query.hpp"
 #include "Expression.hpp"
@@ -87,6 +88,7 @@ private:
     std::unordered_map<Expression*, Query*> m_expr_clp_query;
     std::unordered_map<Expression*, std::unordered_set<int64_t>*> m_expr_var_match_map;
     std::unordered_map<int32_t, std::vector<ClpStringColumnReader*>> m_clp_string_readers;
+    std::unordered_map<int32_t, StructuredClpStringReader>* m_structured_clp_string_readers{nullptr};
     std::unordered_map<int32_t, std::vector<VariableStringColumnReader*>> m_var_string_readers;
     std::unordered_map<int32_t, DateStringColumnReader*> m_datestring_readers;
     std::unordered_map<int32_t, std::vector<BaseColumnReader*>> m_basic_readers;
@@ -208,6 +210,19 @@ private:
             Query* q,
             std::vector<ClpStringColumnReader*> const& readers
     ) const;
+
+    /**
+     * Evaluates a structured clp string filter expression
+     * @param op
+     * @param q
+     * @param decoder
+     * @return true if the expression evaluates to true, false otherwise
+     */
+    bool evaluate_structured_clp_string_filter(
+            FilterOperation op,
+            Query* q,
+            StructuredClpStringReader& reader
+    );
 
     /**
      * Evaluates a var string filter expression
@@ -372,6 +387,22 @@ private:
      * if the expression evaluates to false, EvaluatedValue::Unknown otherwise
      */
     EvaluatedValue constant_propagate(std::shared_ptr<Expression> const& expr, int32_t schema_id);
+
+    /**
+     * Counts the number of variable columns a schema has for a StructuredClpString node.
+     * @param schema_id the schema to inspect
+     * @param clpstring_node_id the StructuredClpString node whose children to count
+     * @return the number of variable columns (children - 1 for logtype), or -1 if no children
+     */
+    int get_schema_var_count(int32_t schema_id, int32_t clpstring_node_id);
+
+    /**
+     * Checks whether any SubQuery in the query has a logtype with exactly num_vars placeholders.
+     * @param query the query to check
+     * @param num_vars the required number of variable placeholders
+     * @return true if at least one SubQuery has a compatible logtype
+     */
+    static bool query_has_compatible_var_count(Query const& query, size_t num_vars);
 
     /**
      * Populates searched wildcard columns

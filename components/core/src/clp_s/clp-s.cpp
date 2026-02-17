@@ -101,6 +101,7 @@ bool compress(CommandLineArguments const& command_line_arguments) {
     option.print_archive_stats = command_line_arguments.print_archive_stats();
     option.single_file_archive = command_line_arguments.get_single_file_archive();
     option.structurize_arrays = command_line_arguments.get_structurize_arrays();
+    option.structurize_clp_strings = command_line_arguments.get_structurize_clp_strings();
     option.record_log_order = command_line_arguments.get_record_log_order();
 
     auto const& db_config_container = command_line_arguments.get_metadata_db_config();

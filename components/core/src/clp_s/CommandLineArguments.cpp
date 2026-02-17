@@ -260,6 +260,10 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                     po::bool_switch(&m_structurize_arrays),
                     "Structurize arrays instead of compressing them as clp strings."
             )(
+                    "structurize-clp-strings",
+                    po::bool_switch(&m_structurize_clp_strings),
+                    "Decompose ClpString columns into fixed-width Integer sub-columns."
+            )(
                     "disable-log-order",
                     po::bool_switch(&m_disable_log_order),
                     "Do not record log order at ingestion time."

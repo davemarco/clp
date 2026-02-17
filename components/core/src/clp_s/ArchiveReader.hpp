@@ -5,6 +5,7 @@
 #include <set>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 
 #include "ArchiveReaderAdaptor.hpp"

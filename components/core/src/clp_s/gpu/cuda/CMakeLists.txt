@@ -10,7 +10,6 @@ add_library(clp_s_gpu
         ${GPU_BASE}/bitmap/cuda/Scan.hpp
         ${GPU_BASE}/encoded_buffer/cuda/Scan.cpp
         ${GPU_BASE}/encoded_buffer/cuda/Packing.cu
-        ${GPU_BASE}/encoded_buffer/cuda/PackingKernels.cu
         ${GPU_BASE}/encoded_buffer/cuda/Scan.hpp
         ${GPU_BASE}/encoded_buffer/cuda/Packing.hpp
         ${GPU_BASE}/encoded_buffer/cuda/Types.hpp

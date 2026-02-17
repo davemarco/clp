@@ -12,6 +12,7 @@
 #include "../../Defs.hpp"
 #include "../../DictionaryEntry.hpp"
 #include "../../Utils.hpp"
+#include "../../VariableDecoder.hpp"
 
 namespace clp_s::search::clp_search {
 /**
@@ -138,7 +139,31 @@ public:
      * @param vars
      * @return true if matched, false otherwise
      */
-    bool matches_vars(UnalignedMemSpan<int64_t> vars) const;
+    template <clp_s::IntVarRange VarSpan>
+    bool matches_vars(VarSpan const& vars) const {
+        if (vars.size() < m_vars.size()) {
+            // Not enough variables to satisfy query
+            return false;
+        }
+
+        // Try to find m_vars in vars, in order, but not necessarily contiguously
+        size_t possible_vars_ix = 0;
+        size_t const num_possible_vars = m_vars.size();
+        size_t vars_ix = 0;
+        size_t const num_vars = vars.size();
+        while (possible_vars_ix < num_possible_vars && vars_ix < num_vars) {
+            QueryVar const& possible_var = m_vars[possible_vars_ix];
+
+            if (possible_var.matches(vars[vars_ix])) {
+                // Matched
+                ++possible_vars_ix;
+                ++vars_ix;
+            } else {
+                ++vars_ix;
+            }
+        }
+        return (num_possible_vars == possible_vars_ix);
+    }
 
 private:
     // Variables

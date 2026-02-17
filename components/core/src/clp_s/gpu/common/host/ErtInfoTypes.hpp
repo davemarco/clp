@@ -18,8 +18,7 @@ enum class ColumnType : uint8_t {
     Double,      // 64-bit floating point
     Boolean,     // 8-bit boolean (0 or 1)
     VarString,   // Variable ID referencing the variable dictionary
-    DateString,  // Timestamp with encoding (two 64-bit values)
-    ClpString    // CLP-encoded string (logtype ID + encoded variables)
+    DateString   // Timestamp with encoding (two 64-bit values)
 };
 
 /**

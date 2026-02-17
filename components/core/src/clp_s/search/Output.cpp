@@ -1,6 +1,7 @@
 #include "Output.hpp"
 
 #include <memory>
+#include <span>
 #include <vector>
 
 #include "../../clp/type_utils.hpp"
@@ -163,7 +164,6 @@ bool Output::filter() {
                 if (0
                     != clp_s::gpu::run_int_eq_to_encoded_buffer(
                             reader,
-                            *m_log_dict,
                             request,
                             encoded_buffer,
                             error_message
@@ -373,6 +373,8 @@ void Output::init(
     m_datestring_readers.clear();
     m_basic_readers.clear();
 
+    m_structured_clp_string_readers = &m_reader->get_structured_clp_string_readers();
+
     for (auto column_reader : column_readers) {
         auto column_id = column_reader->get_id();
         if (0 != m_metadata_columns.count(column_id)) {
@@ -514,6 +516,11 @@ bool Output::evaluate_wildcard_filter(FilterExpr* expr, int32_t schema) {
                 return true;
             }
         }
+        for (auto& [id, reader] : *m_structured_clp_string_readers) {
+            if (evaluate_structured_clp_string_filter(op, q, reader)) {
+                return true;
+            }
+        }
     }
 
     if (column->matches_type(LiteralType::VarStringT)) {
@@ -578,11 +585,25 @@ bool Output::evaluate_filter(FilterExpr* expr, int32_t schema) {
             return evaluate_float_filter(expr->get_operation(), column_id, literal);
         case LiteralType::ClpStringT:
             q = m_expr_clp_query[expr];
-            return evaluate_clp_string_filter(
-                    expr->get_operation(),
-                    q,
-                    m_clp_string_readers[column_id]
-            );
+            if (m_clp_string_readers.count(column_id) > 0
+                && evaluate_clp_string_filter(
+                        expr->get_operation(),
+                        q,
+                        m_clp_string_readers[column_id]
+                ))
+            {
+                return true;
+            }
+            if (m_structured_clp_string_readers->count(column_id) > 0
+                && evaluate_structured_clp_string_filter(
+                        expr->get_operation(),
+                        q,
+                        m_structured_clp_string_readers->at(column_id)
+                ))
+            {
+                return true;
+            }
+            return false;
         case LiteralType::VarStringT:
             matching_vars = m_expr_var_match_map.at(expr);
             return evaluate_var_string_filter(
@@ -753,6 +774,61 @@ bool Output::evaluate_clp_string_filter(
         }
     }
     return false;
+}
+
+bool Output::evaluate_structured_clp_string_filter(
+        FilterOperation op,
+        Query* q,
+        StructuredClpStringReader& reader
+) {
+    if (FilterOperation::EXISTS == op || FilterOperation::NEXISTS == op) {
+        return true;
+    }
+
+    if (op != FilterOperation::EQ && op != FilterOperation::NEQ) {
+        return false;
+    }
+
+    if (nullptr == q) {
+        return op == FilterOperation::NEQ;
+    }
+
+    if (q->search_string_matches_all()) {
+        return op == FilterOperation::EQ;
+    }
+
+    int64_t id = reader.get_logtype_id(m_cur_message);
+    auto vars = reader.gather_vars(m_cur_message);
+
+    bool matched = false;
+    if (q->contains_sub_queries()) {
+        for (auto const& subquery : q->get_sub_queries()) {
+            if (subquery.matches_logtype(id) && subquery.matches_vars(vars)) {
+                if (subquery.wildcard_match_required()) {
+                    std::string decoded;
+                    reader.decode_into(m_cur_message, decoded);
+                    matched = StringUtils::wildcard_match_unsafe(
+                            decoded,
+                            q->get_search_string(),
+                            !q->get_ignore_case()
+                    );
+                } else {
+                    matched = true;
+                }
+                break;
+            }
+        }
+    } else {
+        std::string decoded;
+        reader.decode_into(m_cur_message, decoded);
+        matched = StringUtils::wildcard_match_unsafe(
+                decoded,
+                q->get_search_string(),
+                !q->get_ignore_case()
+        );
+    }
+
+    return (op == FilterOperation::EQ) == matched;
 }
 
 bool Output::evaluate_var_string_filter(
@@ -1263,6 +1339,33 @@ void Output::add_wildcard_columns_to_searched_columns() {
     }
 }
 
+int Output::get_schema_var_count(int32_t schema_id, int32_t clpstring_node_id) {
+    size_t num_children = 0;
+    for (int32_t col : (*m_schemas)[schema_id]) {
+        if (Schema::schema_entry_is_unordered_object(col)) {
+            continue;
+        }
+        if (m_schema_tree->get_node(col).get_parent_id() == clpstring_node_id) {
+            ++num_children;
+        }
+    }
+    if (0 == num_children) {
+        return -1;
+    }
+    return static_cast<int>(num_children - 1);
+}
+
+bool Output::query_has_compatible_var_count(Query const& query, size_t num_vars) {
+    for (auto const& sq : query.get_sub_queries()) {
+        for (auto const* entry : sq.get_possible_logtype_entries()) {
+            if (entry->get_num_vars() == num_vars) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 EvaluatedValue
 Output::constant_propagate(std::shared_ptr<Expression> const& expr, int32_t schema_id) {
     if (std::dynamic_pointer_cast<OrExpr>(expr)) {
@@ -1417,6 +1520,32 @@ Output::constant_propagate(std::shared_ptr<Expression> const& expr, int32_t sche
             auto& query_processing_result = m_string_query_map.at(filter_string);
             if (query_processing_result.has_value()) {
                 m_expr_clp_query[expr.get()] = &(query_processing_result.value());
+
+                // Var-count pruning: within a schema every row of a StructuredClpString
+                // has the same number of var columns, so skip if no SubQuery matches.
+                int32_t column_id = filter->get_column()->get_column_id();
+                auto col_node_type = m_schema_tree->get_node(column_id).get_type();
+                if (NodeType::StructuredClpString == col_node_type) {
+                    auto const& query = query_processing_result.value();
+                    int var_count = get_schema_var_count(schema_id, column_id);
+                    if (var_count >= 0 && query.contains_sub_queries()
+                        && false
+                                   == query_has_compatible_var_count(
+                                           query,
+                                           static_cast<size_t>(var_count)
+                                   ))
+                    {
+                        if (filter->get_operation() == FilterOperation::EQ) {
+                            return filter->is_inverted() ? EvaluatedValue::True
+                                                         : EvaluatedValue::False;
+                        }
+                        if (filter->get_operation() == FilterOperation::NEQ) {
+                            return filter->is_inverted() ? EvaluatedValue::False
+                                                         : EvaluatedValue::True;
+                        }
+                    }
+                }
+
                 return EvaluatedValue::Unknown;
             } else {
                 m_expr_clp_query[expr.get()] = nullptr;

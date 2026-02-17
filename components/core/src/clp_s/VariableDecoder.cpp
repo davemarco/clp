@@ -3,60 +3,6 @@
 #include "VariableDecoder.hpp"
 
 namespace clp_s {
-bool VariableDecoder::decode_variables_into_message(
-        LogTypeDictionaryEntry const& logtype_dict_entry,
-        VariableDictionaryReader const& var_dict,
-        UnalignedMemSpan<int64_t> encoded_vars,
-        std::string& decompressed_msg
-) {
-    size_t num_vars_in_logtype = logtype_dict_entry.get_num_vars();
-
-    // Ensure the number of variables in the logtype matches the number of encoded variables given
-    auto const& logtype_value = logtype_dict_entry.get_value();
-    if (num_vars_in_logtype != encoded_vars.size()) {
-        SPDLOG_ERROR(
-                "VariableDecoder: Logtype '{}' contains {} variables, but {} were given for "
-                "decoding.",
-                logtype_value.c_str(),
-                num_vars_in_logtype,
-                encoded_vars.size()
-        );
-        return false;
-    }
-
-    LogTypeDictionaryEntry::VarDelim var_delim;
-    size_t constant_begin_pos = 0;
-    std::string double_str;
-    for (size_t i = 0; i < num_vars_in_logtype; ++i) {
-        size_t var_position = logtype_dict_entry.get_var_info(i, var_delim);
-
-        // Add the constant that's between the last variable and this one
-        decompressed_msg
-                .append(logtype_value, constant_begin_pos, var_position - constant_begin_pos);
-
-        if (LogTypeDictionaryEntry::VarDelim::NonDouble == var_delim) {
-            if (false == is_var_dict_id(encoded_vars[i])) {
-                decompressed_msg += std::to_string(encoded_vars[i]);
-            } else {
-                auto var_dict_id = decode_var_dict_id(encoded_vars[i]);
-                decompressed_msg += var_dict.get_value(var_dict_id);
-            }
-        } else {  // LogTypeDictionaryEntry::VarDelim::Double == var_delim
-            convert_encoded_double_to_string(encoded_vars[i], double_str);
-
-            decompressed_msg += double_str;
-        }
-        // Move past the variable delimiter
-        constant_begin_pos = var_position + 1;
-    }
-    // Append remainder of logtype, if any
-    if (constant_begin_pos < logtype_value.length()) {
-        decompressed_msg.append(logtype_value, constant_begin_pos, std::string::npos);
-    }
-
-    return true;
-}
-
 void VariableDecoder::convert_encoded_double_to_string(int64_t encoded_var, std::string& value) {
     uint64_t encoded_double;
     static_assert(

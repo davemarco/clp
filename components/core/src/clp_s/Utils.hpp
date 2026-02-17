@@ -402,7 +402,7 @@ public:
     char* data() const { return m_begin; }
     /*** GPU integration end ***/
 
-    T operator[](size_t i) {
+    T operator[](size_t i) const {
         T tmp;
         memcpy(&tmp, m_begin + i * sizeof(T), sizeof(T));
         return tmp;

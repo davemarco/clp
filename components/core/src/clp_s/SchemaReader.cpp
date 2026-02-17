@@ -15,6 +15,25 @@ void SchemaReader::append_unordered_column(BaseColumnReader* column_reader) {
     m_columns.push_back(column_reader);
 }
 
+void SchemaReader::add_structured_clp_string_reader(
+        int32_t parent_id,
+        Int64ColumnReader* logtype_reader,
+        std::vector<Int64ColumnReader*> var_readers,
+        std::shared_ptr<LogTypeDictionaryReader> log_dict,
+        std::shared_ptr<VariableDictionaryReader> var_dict
+) {
+    if (nullptr == logtype_reader) {
+        throw OperationFailed(ErrorCodeCorrupt, __FILENAME__, __LINE__);
+    }
+    m_structured_clp_string_reader_map.try_emplace(
+            parent_id,
+            logtype_reader,
+            std::move(var_readers),
+            std::move(log_dict),
+            std::move(var_dict)
+    );
+}
+
 void SchemaReader::mark_column_as_timestamp(BaseColumnReader* column_reader) {
     m_timestamp_column = column_reader;
     if (m_timestamp_column->get_type() == NodeType::DateString) {
@@ -60,6 +79,7 @@ SchemaReader::load(std::shared_ptr<char[]> stream_buffer, size_t offset, size_t 
 
 void SchemaReader::generate_json_string() {
     m_json_serializer.reset();
+    m_structured_clp_string_reader_index = 0;
     m_json_serializer.begin_document();
     size_t column_id_index = 0;
     BaseColumnReader* column;
@@ -167,6 +187,23 @@ void SchemaReader::generate_json_string() {
             }
             case JsonSerializer::Op::AddNullValue: {
                 m_json_serializer.append_value("null");
+                break;
+            }
+            case JsonSerializer::Op::AddStructuredClpStringField: {
+                m_json_serializer.append_key();
+                m_json_serializer.append_escaped_string_value(
+                        m_structured_clp_string_reader_map
+                                .at(m_structured_clp_string_reader_ids[m_structured_clp_string_reader_index++])
+                                .decode(m_cur_message)
+                );
+                break;
+            }
+            case JsonSerializer::Op::AddStructuredClpStringValue: {
+                m_json_serializer.append_escaped_string_value(
+                        m_structured_clp_string_reader_map
+                                .at(m_structured_clp_string_reader_ids[m_structured_clp_string_reader_index++])
+                                .decode(m_cur_message)
+                );
                 break;
             }
         }
@@ -435,6 +472,19 @@ size_t SchemaReader::generate_structured_array_template(
                         sub_object_schema
                 );
                 m_json_serializer.add_op(JsonSerializer::Op::EndObject);
+            } else if (NodeType::StructuredClpString == type) {
+                int32_t clpstring_root
+                        = m_global_schema_tree->find_matching_subtree_root_in_subtree(
+                                array_root,
+                                get_first_column_in_span(sub_object_schema),
+                                NodeType::StructuredClpString
+                        );
+                m_json_serializer.add_op(JsonSerializer::Op::AddStructuredClpStringValue);
+                column_idx = generate_structured_clpstring_template(
+                        clpstring_root,
+                        column_idx,
+                        sub_object_schema
+                );
             }
             i += length;
         } else {
@@ -503,24 +553,52 @@ size_t SchemaReader::generate_structured_object_template(
     for (size_t i = 0; i < schema.size(); ++i) {
         int32_t global_column_id = schema[i];
         if (Schema::schema_entry_is_unordered_object(global_column_id)) {
-            // It should only be possible to encounter arrays inside of structured objects
-            size_t array_length = Schema::get_unordered_object_length(global_column_id);
-            auto array_schema = schema.subspan(i + 1, array_length);
-            // we can guarantee that the last array we hit on the path to object root must be the
-            // right one because otherwise we'd be inside the structured array generator
-            int32_t array_root = m_global_schema_tree->find_matching_subtree_root_in_subtree(
-                    object_root,
-                    get_first_column_in_span(array_schema),
-                    NodeType::StructuredArray
-            );
+            auto unordered_type = Schema::get_unordered_object_type(global_column_id);
+            size_t sub_length = Schema::get_unordered_object_length(global_column_id);
+            auto sub_schema = schema.subspan(i + 1, sub_length);
+            if (NodeType::StructuredClpString == unordered_type) {
+                int32_t clpstring_root
+                        = m_global_schema_tree->find_matching_subtree_root_in_subtree(
+                                object_root,
+                                get_first_column_in_span(sub_schema),
+                                NodeType::StructuredClpString
+                        );
+                find_intersection_and_fix_brackets(
+                        root,
+                        m_global_schema_tree->get_node(clpstring_root).get_parent_id(),
+                        path_to_intersection
+                );
+                m_json_serializer.add_op(JsonSerializer::Op::AddStructuredClpStringField);
+                m_json_serializer.add_special_key(
+                        m_global_schema_tree->get_node(clpstring_root).get_key_name()
+                );
+                column_idx = generate_structured_clpstring_template(
+                        clpstring_root,
+                        column_idx,
+                        sub_schema
+                );
+                root = m_global_schema_tree->get_node(clpstring_root).get_parent_id();
+            } else {
+                // Arrays (and potentially other nested unordered types) inside structured objects
+                int32_t array_root
+                        = m_global_schema_tree->find_matching_subtree_root_in_subtree(
+                                object_root,
+                                get_first_column_in_span(sub_schema),
+                                NodeType::StructuredArray
+                        );
 
-            find_intersection_and_fix_brackets(root, array_root, path_to_intersection);
-            column_idx = generate_structured_array_template(array_root, column_idx, array_schema);
-            m_json_serializer.add_op(JsonSerializer::Op::EndArray);
-            i += array_length;
-            // root is parent of the array object since we close the array bracket above
-            auto const& node = m_global_schema_tree->get_node(array_root);
-            root = node.get_parent_id();
+                find_intersection_and_fix_brackets(root, array_root, path_to_intersection);
+                column_idx = generate_structured_array_template(
+                        array_root,
+                        column_idx,
+                        sub_schema
+                );
+                m_json_serializer.add_op(JsonSerializer::Op::EndArray);
+                // root is parent of the array object since we close the array bracket above
+                auto const& node = m_global_schema_tree->get_node(array_root);
+                root = node.get_parent_id();
+            }
+            i += sub_length;
         } else {
             auto const& node = m_global_schema_tree->get_node(global_column_id);
             int32_t next_root = node.get_parent_id();
@@ -605,6 +683,21 @@ void SchemaReader::initialize_serializer() {
     }
 }
 
+size_t SchemaReader::generate_structured_clpstring_template(
+        int32_t clpstring_root,
+        size_t column_start,
+        std::span<int32_t> schema
+) {
+    m_structured_clp_string_reader_ids.push_back(clpstring_root);
+    size_t column_idx = column_start;
+    for (int32_t entry : schema) {
+        if (false == Schema::schema_entry_is_unordered_object(entry)) {
+            column_idx++;
+        }
+    }
+    return column_idx;
+}
+
 void SchemaReader::generate_json_template(int32_t id) {
     auto const& node = m_local_schema_tree.get_node(id);
     auto const& children_ids = node.get_children_ids();
@@ -642,6 +735,24 @@ void SchemaReader::generate_json_template(int32_t id) {
                 m_json_serializer.add_op(JsonSerializer::Op::EndArray);
                 break;
             }
+            case NodeType::StructuredClpString: {
+                m_json_serializer.add_op(JsonSerializer::Op::AddStructuredClpStringField);
+                m_json_serializer.add_special_key(key);
+                auto structured_it = m_global_id_to_unordered_object.find(child_global_id);
+                if (m_global_id_to_unordered_object.end() != structured_it) {
+                    generate_structured_clpstring_template(
+                            child_global_id,
+                            structured_it->second.first,
+                            structured_it->second.second
+                    );
+                }
+                break;
+            }
+            case NodeType::ClpString: {
+                m_json_serializer.add_op(JsonSerializer::Op::AddStringField);
+                m_reordered_columns.push_back(m_column_map[child_global_id]);
+                break;
+            }
             case NodeType::Integer: {
                 m_json_serializer.add_op(JsonSerializer::Op::AddIntField);
                 m_reordered_columns.push_back(m_column_map[child_global_id]);
@@ -657,7 +768,6 @@ void SchemaReader::generate_json_template(int32_t id) {
                 m_reordered_columns.push_back(m_column_map[child_global_id]);
                 break;
             }
-            case NodeType::ClpString:
             case NodeType::VarString:
             case NodeType::DateString: {
                 m_json_serializer.add_op(JsonSerializer::Op::AddStringField);
@@ -669,6 +779,7 @@ void SchemaReader::generate_json_template(int32_t id) {
                 m_json_serializer.add_special_key(key);
                 break;
             }
+            case NodeType::Metadata:
             case NodeType::Unknown:
                 break;
         }

@@ -51,13 +51,6 @@ std::vector<ColumnDesc> get_column_descs(SchemaReader const& reader) {
                 descs.push_back({r->get_id(), ColumnType::DateString, byte_offset(ts.data()), byte_offset(enc.data()), ts.size(), sizeof(int64_t)});
                 break;
             }
-            case NodeType::ClpString: {
-                auto* r = static_cast<ClpStringColumnReader*>(column);
-                auto const& lt = r->get_logtypes_span();
-                auto const& ev = r->get_encoded_vars_span();
-                descs.push_back({r->get_id(), ColumnType::ClpString, byte_offset(lt.data()), byte_offset(ev.data()), lt.size(), sizeof(uint64_t)});
-                break;
-            }
             default:
                 break;
         }
