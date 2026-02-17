@@ -9,28 +9,8 @@
 #include "../cuda/Scan.hpp"
 
 namespace clp_s::gpu {
-namespace {
-/**
- * Reads the variable count for each log type from the dictionary.
- */
-std::vector<uint32_t> read_num_vars_per_logtype(LogTypeDictionaryReader& log_dict) {
-    std::vector<uint32_t> num_vars_per_logtype;
-    auto const num_logtypes = log_dict.get_entries().size();
-    num_vars_per_logtype.reserve(num_logtypes);
-    for (size_t i = 0; i < num_logtypes; ++i) {
-        auto& entry = log_dict.get_entry(i);
-        if (false == entry.initialized()) {
-            entry.decode_log_type();
-        }
-        num_vars_per_logtype.push_back(static_cast<uint32_t>(entry.get_num_vars()));
-    }
-    return num_vars_per_logtype;
-}
-}  // namespace
-
 int run_int_eq_to_encoded_buffer(
         SchemaReader& reader,
-        LogTypeDictionaryReader& log_dict,
         IntEqScanRequest const& request,
         EncodedBuffer& out_buffer,
         std::string& error
@@ -66,14 +46,11 @@ int run_int_eq_to_encoded_buffer(
         return 1;
     }
 
-    auto num_vars_per_logtype = read_num_vars_per_logtype(log_dict);
-
     EncodedBufferRequest gpu_request{
             buffer_view.data,
             buffer_view.size,
             reader.get_num_messages(),
             std::span<ColumnDesc const>{columns.data(), columns.size()},
-            std::span<uint32_t const>{num_vars_per_logtype.data(), num_vars_per_logtype.size()},
             col_it->primary_offset_bytes,
             request.value
     };

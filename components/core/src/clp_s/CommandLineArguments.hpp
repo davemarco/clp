@@ -117,6 +117,8 @@ public:
 
     bool get_structurize_arrays() const { return m_structurize_arrays; }
 
+    bool get_structurize_clp_strings() const { return m_structurize_clp_strings; }
+
     bool get_ordered_decompression() const { return m_ordered_decompression; }
 
     size_t get_target_ordered_chunk_size() const { return m_target_ordered_chunk_size; }
@@ -206,6 +208,7 @@ private:
     bool m_no_retain_float_format{false};
     bool m_single_file_archive{false};
     bool m_structurize_arrays{false};
+    bool m_structurize_clp_strings{false};
     bool m_ordered_decompression{false};
     size_t m_target_ordered_chunk_size{};
     bool m_print_ordered_chunk_stats{false};

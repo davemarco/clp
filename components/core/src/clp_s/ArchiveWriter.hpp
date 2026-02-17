@@ -239,6 +239,16 @@ public:
     }
 
     /**
+     * @return the variable dictionary writer
+     */
+    std::shared_ptr<VariableDictionaryWriter> const& get_var_dict() { return m_var_dict; }
+
+    /**
+     * @return the log type dictionary writer
+     */
+    std::shared_ptr<LogTypeDictionaryWriter> const& get_log_dict() { return m_log_dict; }
+
+    /**
      * Increments the size of the original (uncompressed) logs ingested into the archive. This size
      * tracks the raw input size before any encoding or compression.
      * @param size

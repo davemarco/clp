@@ -56,40 +56,6 @@ cudaError_t launch_gather_fixed(
     return cudaGetLastError();
 }
 
-/**
- * Writes the encoded variable count for each filtered row's logtype into var_counts.
- * Output is prefix-summed by the caller to produce per-row write offsets.
- */
-__global__ void count_encoded_vars_per_filtered_row(
-        char const* base,
-        size_t logtypes_offset,
-        uint32_t const* row_ids,
-        uint64_t num_matches,
-        uint32_t const* num_vars_per_logtype,
-        size_t num_logtypes,
-        uint64_t* var_counts
-);
-
-/**
- * Packs a CLP-encoded string column for matching rows into the output buffer.
- * Each thread re-encodes one row's logtype ID with a new encoded_vars offset and
- * copies the row's encoded variables. Thread 0 writes the total encoded_vars count
- * metadata required by ColumnReader::load.
- */
-__global__ void pack_clp_string_column_kernel(
-        char const* base,
-        size_t logtypes_offset,
-        size_t encoded_vars_offset,
-        uint32_t const* row_ids,
-        uint64_t num_matches,
-        uint32_t const* num_vars_per_logtype,
-        size_t num_logtypes,
-        uint64_t const* new_offsets,
-        uint64_t* out_logtypes,
-        int64_t* out_encoded_vars,
-        size_t* out_num_encoded_vars,
-        size_t num_encoded_vars
-);
 }  // namespace clp_s::gpu
 
 #endif  // CLP_S_GPU_ENCODED_BUFFER_CUDA_PACKINGKERNELS_CUH

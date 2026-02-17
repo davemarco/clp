@@ -107,6 +107,7 @@ bool compress(CommandLineArguments const& command_line_arguments) {
     option.retain_float_format = command_line_arguments.get_retain_float_format();
     option.single_file_archive = command_line_arguments.get_single_file_archive();
     option.structurize_arrays = command_line_arguments.get_structurize_arrays();
+    option.structurize_clp_strings = command_line_arguments.get_structurize_clp_strings();
     option.record_log_order = command_line_arguments.get_record_log_order();
 
     clp_s::JsonParser parser(option);

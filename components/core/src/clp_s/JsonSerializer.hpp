@@ -32,6 +32,8 @@ public:
         BeginUnnamedObject,
         BeginUnnamedArray,
         AddLiteralField,
+        AddStructuredClpStringField,
+        AddStructuredClpStringValue,
     };
 
     static int64_t const cReservedLength = 4096;
@@ -140,6 +142,12 @@ public:
     append_value_from_column_with_quotes(clp_s::BaseColumnReader* column, uint64_t cur_message) {
         m_json_string += "\"";
         column->extract_escaped_string_value_into_buffer(cur_message, m_json_string);
+        m_json_string += "\",";
+    }
+
+    void append_escaped_string_value(std::string_view const value) {
+        m_json_string += "\"";
+        StringUtils::escape_json_string(m_json_string, value);
         m_json_string += "\",";
     }
 

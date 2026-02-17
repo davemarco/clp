@@ -142,6 +142,7 @@ JsonParser::JsonParser(JsonParserOption const& option)
           m_max_document_size(option.max_document_size),
           m_timestamp_key(option.timestamp_key),
           m_structurize_arrays(option.structurize_arrays),
+          m_structurize_clp_strings(option.structurize_clp_strings),
           m_record_log_order(option.record_log_order),
           m_retain_float_format(option.retain_float_format),
           m_input_paths(option.input_paths),
@@ -303,13 +304,20 @@ void JsonParser::parse_obj_in_array(simdjson::ondemand::object line, int32_t par
             }
             case simdjson::ondemand::json_type::string: {
                 std::string_view value = cur_value.get_string(true);
-                if (value.find(' ') != std::string::npos) {
-                    node_id = m_archive_writer
-                                      ->add_node(node_id_stack.top(), NodeType::ClpString, cur_key);
-                } else {
-                    node_id = m_archive_writer
-                                      ->add_node(node_id_stack.top(), NodeType::VarString, cur_key);
+                bool has_space = value.find(' ') != std::string::npos;
+                if (m_structurize_clp_strings && has_space) {
+                    encode_structurized_clp_string(
+                            value,
+                            node_id_stack.top(),
+                            cur_key
+                    );
+                    break;
                 }
+                node_id = m_archive_writer->add_node(
+                        node_id_stack.top(),
+                        has_space ? NodeType::ClpString : NodeType::VarString,
+                        cur_key
+                );
                 m_current_parsed_message.add_unordered_value(value);
                 m_current_schema.insert_unordered(node_id);
                 break;
@@ -408,11 +416,16 @@ void JsonParser::parse_array(simdjson::ondemand::array array, int32_t parent_nod
             }
             case simdjson::ondemand::json_type::string: {
                 std::string_view value = cur_value.get_string(true);
-                if (value.find(' ') != std::string::npos) {
-                    node_id = m_archive_writer->add_node(parent_node_id, NodeType::ClpString, "");
-                } else {
-                    node_id = m_archive_writer->add_node(parent_node_id, NodeType::VarString, "");
+                bool has_space = value.find(' ') != std::string::npos;
+                if (m_structurize_clp_strings && has_space) {
+                    encode_structurized_clp_string(value, parent_node_id, "");
+                    break;
                 }
+                node_id = m_archive_writer->add_node(
+                        parent_node_id,
+                        has_space ? NodeType::ClpString : NodeType::VarString,
+                        ""
+                );
                 m_current_parsed_message.add_unordered_value(value);
                 m_current_schema.insert_unordered(node_id);
                 break;
@@ -597,14 +610,22 @@ void JsonParser::parse_line(
                     break;
                 }
 
-                std::string_view value = line.get_string(true);
-                if (value.find(' ') != std::string::npos) {
-                    node_id = m_archive_writer
-                                      ->add_node(node_id_stack.top(), NodeType::ClpString, cur_key);
-                    m_current_parsed_message.add_value(node_id, value);
-                } else {
-                    node_id = m_archive_writer
-                                      ->add_node(node_id_stack.top(), NodeType::VarString, cur_key);
+                {
+                    std::string_view value = line.get_string(true);
+                    bool has_space = value.find(' ') != std::string::npos;
+                    if (m_structurize_clp_strings && has_space) {
+                        encode_structurized_clp_string(
+                                value,
+                                node_id_stack.top(),
+                                cur_key
+                        );
+                        break;
+                    }
+                    node_id = m_archive_writer->add_node(
+                            node_id_stack.top(),
+                            has_space ? NodeType::ClpString : NodeType::VarString,
+                            cur_key
+                    );
                     m_current_parsed_message.add_value(node_id, value);
                 }
                 m_current_schema.insert_ordered(node_id);
@@ -1190,7 +1211,10 @@ void JsonParser::parse_kv_log_event_subtree(
         clp::ffi::SchemaTree const& tree
 ) {
     for (auto const& pair : kv_pairs) {
-        auto const archive_node_type = get_archive_node_type(tree, pair);
+        auto archive_node_type = get_archive_node_type(tree, pair);
+        if (m_structurize_clp_strings && NodeType::ClpString == archive_node_type) {
+            archive_node_type = NodeType::StructuredClpString;
+        }
         auto const [node_id, matches_timestamp] = get_archive_node_id_and_check_timestamp<autogen>(
                 pair.first,
                 archive_node_type,
@@ -1251,6 +1275,23 @@ void JsonParser::parse_kv_log_event_subtree(
                     m_current_parsed_message.add_value(node_id, var_value);
                 }
             } break;
+            case NodeType::StructuredClpString: {
+                std::string decoded_value;
+                if (pair.second.value().is<clp::ir::EightByteEncodedTextAst>()) {
+                    decoded_value = pair.second.value()
+                                            .get_immutable_view<clp::ir::EightByteEncodedTextAst>()
+                                            .decode_and_unparse()
+                                            .value();
+                } else {
+                    decoded_value = pair.second.value()
+                                            .get_immutable_view<clp::ir::FourByteEncodedTextAst>()
+                                            .decode_and_unparse()
+                                            .value();
+                }
+                // node_id is the StructuredClpString node created by get_archive_node_id.
+                encode_structurized_clp_string_children(decoded_value, node_id);
+                continue;
+            }
             case NodeType::ClpString: {
                 bool const is_eight_byte_encoding{
                         pair.second.value().is<clp::ffi::EightByteEncodedTextAst>()
@@ -1344,6 +1385,57 @@ void JsonParser::parse_kv_log_event(KeyValuePairLogEvent const& kv) {
 auto JsonParser::store() -> std::vector<ArchiveStats> {
     m_archive_stats.emplace_back(m_archive_writer->close());
     return std::move(m_archive_stats);
+}
+
+void JsonParser::encode_structurized_clp_string(
+        std::string_view value,
+        int32_t parent_node_id,
+        std::string_view key
+) {
+    int32_t clp_string_node_id
+            = m_archive_writer->add_node(parent_node_id, NodeType::StructuredClpString, key);
+    encode_structurized_clp_string_children(value, clp_string_node_id);
+}
+
+void JsonParser::encode_structurized_clp_string_children(
+        std::string_view value,
+        int32_t clp_string_node_id
+) {
+    auto var_dict = m_archive_writer->get_var_dict();
+    auto log_dict = m_archive_writer->get_log_dict();
+
+    LogTypeDictionaryEntry logtype_entry;
+    m_encoded_vars_buf.clear();
+    VariableEncoder::encode_and_add_to_dictionary(
+            std::string(value),
+            logtype_entry,
+            *var_dict,
+            m_encoded_vars_buf
+    );
+    uint64_t logtype_id;
+    log_dict->add_entry(logtype_entry, logtype_id);
+
+    size_t group_start = m_current_schema.start_unordered_object(NodeType::StructuredClpString);
+
+    auto insert_column = [&](int32_t node_id, int64_t val) {
+        m_current_schema.insert_unordered(node_id);
+        m_current_parsed_message.add_unordered_value(val);
+    };
+
+    int32_t lt_node
+            = m_archive_writer->add_node(clp_string_node_id, NodeType::Integer, "logtype");
+    insert_column(lt_node, static_cast<int64_t>(logtype_id));
+
+    for (size_t v = 0; v < m_encoded_vars_buf.size(); ++v) {
+        int32_t var_node = m_archive_writer->add_node(
+                clp_string_node_id,
+                NodeType::Integer,
+                "var_" + std::to_string(v)
+        );
+        insert_column(var_node, m_encoded_vars_buf[v]);
+    }
+
+    m_current_schema.end_unordered_object(group_start);
 }
 
 void JsonParser::split_archive() {

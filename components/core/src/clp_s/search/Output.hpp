@@ -12,6 +12,7 @@
 #include "../ArchiveReader.hpp"
 #include "../SchemaReader.hpp"
 #include "../SchemaTree.hpp"
+#include "../StructuredClpStringReader.hpp"
 #include "../Utils.hpp"
 #include "ast/Expression.hpp"
 #include "ast/StringLiteral.hpp"

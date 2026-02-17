@@ -20,7 +20,6 @@ struct EncodedBufferRequest {
     size_t ert_size{0};                             // Size of the ERT buffer in bytes
     uint64_t num_rows{0};                           // Number of rows in the ERT
     std::span<ColumnDesc const> columns{};          // Column descriptors for extraction
-    std::span<uint32_t const> num_vars_per_logtype{};  // Variable counts per logtype (for CLP strings)
     size_t scan_column_offset_bytes{0};             // Byte offset to the filter column
     int64_t target_value{0};                        // Value to match in the filter column
 };

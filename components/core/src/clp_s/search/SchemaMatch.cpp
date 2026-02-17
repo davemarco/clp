@@ -333,27 +333,69 @@ bool SchemaMatch::populate_column_mapping(
     return matched;
 }
 
+void SchemaMatch::map_descriptors_to_schema(int32_t node_id, int32_t schema_id) {
+    if (false == m_column_to_descriptor.count(node_id)) {
+        return;
+    }
+    for (auto descriptor : m_column_to_descriptor[node_id]) {
+        if (false == descriptor->is_pure_wildcard()) {
+            m_descriptor_to_schema[descriptor][schema_id] = node_id;
+        }
+    }
+}
+
+int32_t SchemaMatch::find_unordered_clpstring_root(
+        Schema const& schema,
+        size_t group_start,
+        size_t group_length
+) {
+    int32_t first_child = -1;
+    for (size_t j = group_start + 1; j < group_start + 1 + group_length; ++j) {
+        if (false == Schema::schema_entry_is_unordered_object(schema[j])) {
+            first_child = schema[j];
+            break;
+        }
+    }
+    if (-1 == first_child) {
+        return -1;
+    }
+    return m_tree->find_matching_subtree_root_in_subtree(
+            -1,
+            first_child,
+            NodeType::StructuredClpString
+    );
+}
+
 void SchemaMatch::populate_schema_mapping() {
     // TODO: consider refactoring this to take advantage of the ordered region of the schema
     for (auto& it : *m_schemas) {
         int32_t schema_id = it.first;
-        for (int32_t column_id : it.second) {
+        auto const& schema = it.second;
+        for (size_t i = 0; i < schema.size(); ++i) {
+            int32_t column_id = schema[i];
+
+            // Unordered groups: only StructuredClpString needs mapping (its parent
+            // node doesn't appear in the schema, so we find and map it explicitly).
             if (Schema::schema_entry_is_unordered_object(column_id)) {
+                size_t length = Schema::get_unordered_object_length(column_id);
+                if (NodeType::StructuredClpString
+                    == Schema::get_unordered_object_type(column_id))
+                {
+                    int32_t parent_id = find_unordered_clpstring_root(schema, i, length);
+                    if (-1 != parent_id) {
+                        map_descriptors_to_schema(parent_id, schema_id);
+                    }
+                }
+                i += length;
                 continue;
             }
-            if (NodeType::UnstructuredArray == m_tree->get_node(column_id).get_type()) {
+
+            auto const& node = m_tree->get_node(column_id);
+            if (NodeType::UnstructuredArray == node.get_type()) {
                 m_array_schema_ids.insert(schema_id);
             }
-            if (false == m_column_to_descriptor.count(column_id)) {
-                continue;
-            }
-            for (auto const& descriptor : m_column_to_descriptor.at(column_id)) {
-                if (false == descriptor->is_pure_wildcard()) {
-                    auto [schema_to_column_id_it, _]
-                            = m_descriptor_to_schema.try_emplace(descriptor.get());
-                    schema_to_column_id_it->second.emplace(schema_id, column_id);
-                }
-            }
+
+            map_descriptors_to_schema(column_id, schema_id);
         }
     }
 }

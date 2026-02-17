@@ -7,11 +7,14 @@
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "ColumnReader.hpp"
+#include "DictionaryReader.hpp"
 #include "FileReader.hpp"
 #include "JsonSerializer.hpp"
 #include "SchemaTree.hpp"
+#include "StructuredClpStringReader.hpp"
 #include "search/Projection.hpp"
 #include "ZstdDecompressor.hpp"
 
@@ -113,6 +116,9 @@ public:
         m_global_id_to_unordered_object.clear();
         m_local_schema_tree.clear();
         m_json_serializer.clear();
+        m_structured_clp_string_reader_map.clear();
+        m_structured_clp_string_reader_ids.clear();
+        m_structured_clp_string_reader_index = 0;
         m_global_schema_tree = std::move(schema_tree);
         m_projection = std::move(projection);
         m_should_marshal_records = should_marshal_records;
@@ -289,6 +295,28 @@ public:
     std::vector<BaseColumnReader*> const& get_columns() const { return m_columns; }
     /*** GPU integration end ***/
 
+    /**
+     * @return the map of StructuredClpString readers keyed by global node ID.
+     */
+    std::unordered_map<int32_t, StructuredClpStringReader>& get_structured_clp_string_readers() {
+        return m_structured_clp_string_reader_map;
+    }
+
+    /**
+     * Adds a StructuredClpStringReader for the given parent node ID.
+     * @param parent_id the global node ID of the StructuredClpString parent
+     * @param group the column reader group (logtype + vars)
+     * @param log_dict
+     * @param var_dict
+     */
+    void add_structured_clp_string_reader(
+            int32_t parent_id,
+            Int64ColumnReader* logtype_reader,
+            std::vector<Int64ColumnReader*> var_readers,
+            std::shared_ptr<LogTypeDictionaryReader> log_dict,
+            std::shared_ptr<VariableDictionaryReader> var_dict
+    );
+
 private:
     /**
      * Merges the current local schema tree with the section of the global schema tree corresponding
@@ -323,6 +351,16 @@ private:
      */
     size_t
     generate_structured_object_template(int32_t id, size_t column_start, std::span<int32_t> schema);
+
+    /**
+     * Generates a json template for a structured ClpString inside an unordered context
+     * (structured array/object). Uses column index tracking for unordered readers.
+     */
+    size_t generate_structured_clpstring_template(
+            int32_t clpstring_root,
+            size_t column_start,
+            std::span<int32_t> schema
+    );
 
     /**
      * Finds the common root of the subtree containing cur_root and next_root, and adds brackets
@@ -382,6 +420,10 @@ private:
     std::shared_ptr<search::Projection> m_projection;
 
     std::map<int32_t, std::pair<size_t, std::span<int32_t>>> m_global_id_to_unordered_object;
+
+    std::unordered_map<int32_t, StructuredClpStringReader> m_structured_clp_string_reader_map;
+    std::vector<int32_t> m_structured_clp_string_reader_ids;
+    size_t m_structured_clp_string_reader_index{0};
 };
 }  // namespace clp_s
 

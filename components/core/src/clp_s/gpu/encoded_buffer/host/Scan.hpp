@@ -8,7 +8,6 @@
 #include <memory>
 #include <string>
 
-#include "../../../DictionaryReader.hpp"
 #include "../../../SchemaReader.hpp"
 #include "../../common/host/ScanRequest.hpp"
 
@@ -25,7 +24,6 @@ struct EncodedBuffer {
 /**
  * Runs a GPU int-equality scan and builds an encoded ERT buffer for matching rows.
  * @param reader Schema reader for the current ERT
- * @param log_dict Log type dictionary reader
  * @param request GPU scan request
  * @param out_buffer Output encoded buffer
  * @param error Error message on failure
@@ -33,7 +31,6 @@ struct EncodedBuffer {
  */
 int run_int_eq_to_encoded_buffer(
         SchemaReader& reader,
-        LogTypeDictionaryReader& log_dict,
         IntEqScanRequest const& request,
         EncodedBuffer& out_buffer,
         std::string& error

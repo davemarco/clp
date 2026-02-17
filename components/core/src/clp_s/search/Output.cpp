@@ -1,6 +1,7 @@
 #include "Output.hpp"
 
 #include <memory>
+#include <span>
 #include <vector>
 
 #include <spdlog/spdlog.h>
@@ -162,7 +163,6 @@ bool Output::filter() {
                 if (0
                     != clp_s::gpu::run_int_eq_to_encoded_buffer(
                             reader,
-                            *m_archive_reader->get_log_type_dictionary(),
                             request,
                             encoded_buffer,
                             error_message

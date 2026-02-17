@@ -45,6 +45,7 @@ enum class NodeType : uint8_t {
     FormattedFloat,
     DictionaryFloat,
     Timestamp,
+    StructuredClpString,
     Unknown = std::underlying_type<NodeType>::type(~0ULL)
 };
 
