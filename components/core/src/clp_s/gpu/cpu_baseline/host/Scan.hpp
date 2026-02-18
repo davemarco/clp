@@ -4,9 +4,11 @@
 // CPU baseline for int-equality bitmap scan (mirrors GPU bitmap path).
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "../../../SchemaReader.hpp"
+#include "../../common/host/ErtInfoTypes.hpp"
 #include "../../common/host/ScanRequest.hpp"
 
 namespace clp_s::gpu {
@@ -16,12 +18,14 @@ namespace clp_s::gpu {
  *
  * @param reader Schema reader for the current ERT.
  * @param request Scan request (column id + value).
+ * @param columns Precomputed column descriptors.
  * @param out_bitmap Output bitmap with one byte per row (1=match, 0=non-match).
  * @return Error code (ScanCompatError::None on success).
  */
 ScanCompatError run_cpu_int_eq_to_bitmap(
         SchemaReader& reader,
         IntEqScanRequest const& request,
+        std::span<ColumnDesc const> columns,
         std::vector<uint8_t>& out_bitmap
 );
 }  // namespace clp_s::gpu

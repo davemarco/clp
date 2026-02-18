@@ -96,6 +96,7 @@ bool compress(CommandLineArguments const& command_line_arguments) {
     option.target_encoded_size = command_line_arguments.get_target_encoded_size();
     option.max_document_size = command_line_arguments.get_max_document_size();
     option.min_table_size = command_line_arguments.get_minimum_table_size();
+    option.chunk_size = command_line_arguments.get_chunk_size();
     option.compression_level = command_line_arguments.get_compression_level();
     option.timestamp_key = command_line_arguments.get_timestamp_key();
     option.print_archive_stats = command_line_arguments.print_archive_stats();
@@ -268,10 +269,7 @@ bool search_archive(
             timestamp_dict,
             std::move(output_handler),
             command_line_arguments.get_ignore_case(),
-            command_line_arguments.get_gpu_bitmap_scan(),
-            command_line_arguments.get_gpu_scan_encoded_buffer(),
-            command_line_arguments.get_cpu_scan(),
-            command_line_arguments.get_cpu_scan_simd()
+            command_line_arguments.get_scan_mode()
     );
     return output.filter();
 }

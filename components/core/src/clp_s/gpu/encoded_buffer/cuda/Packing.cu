@@ -46,7 +46,7 @@ cudaError_t pack_fixed_column(
         size_t output_offset,
         PackContext const& ctx
 ) {
-    auto const* device_ert_base = static_cast<char const*>(ctx.device_ctx.ert.buf.ptr);
+    auto const* device_ert_base = static_cast<char const*>(ctx.device_ctx.ert.ptr);
     auto const* device_row_ids = static_cast<uint32_t const*>(ctx.device_ctx.row_ids.buf.ptr);
     auto* d_out = static_cast<char*>(ctx.device_ctx.encoded_buffer.buf.ptr) + output_offset;
 

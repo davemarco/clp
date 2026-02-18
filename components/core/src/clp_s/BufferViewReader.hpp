@@ -48,6 +48,14 @@ public:
         return tmp;
     }
 
+    void skip(size_t num_bytes) {
+        if (m_remaining_size < num_bytes) {
+            throw OperationFailed(ErrorCodeOutOfBounds, __FILENAME__, __LINE__);
+        }
+        m_buffer += num_bytes;
+        m_remaining_size -= num_bytes;
+    }
+
     size_t get_remaining_size() { return m_remaining_size; }
 
 private:

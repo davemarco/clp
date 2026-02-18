@@ -11,6 +11,7 @@
 
 #include <simdjson.h>
 
+#include "../CommandLineArguments.hpp"
 #include "../ArchiveReader.hpp"
 #include "../SchemaReader.hpp"
 #include "../StructuredClpStringReader.hpp"
@@ -33,10 +34,7 @@ public:
            std::shared_ptr<TimestampDictionaryReader> timestamp_dict,
            std::unique_ptr<OutputHandler> output_handler,
            bool ignore_case,
-           bool gpu_bitmap_scan,
-           bool gpu_scan_encoded_buffer,
-           bool cpu_scan,
-           bool cpu_scan_simd)
+           CommandLineArguments::ScanMode scan_mode)
             : m_archive_reader(std::move(archive_reader)),
               m_schema_tree(m_archive_reader->get_schema_tree()),
               m_schemas(m_archive_reader->get_schema_map()),
@@ -46,10 +44,7 @@ public:
               m_output_handler(std::move(output_handler)),
               m_ignore_case(ignore_case),
               m_should_marshal_records(m_output_handler->should_marshal_records()),
-              m_gpu_bitmap_scan(gpu_bitmap_scan),
-              m_gpu_scan_encoded_buffer(gpu_scan_encoded_buffer),
-              m_cpu_scan(cpu_scan),
-              m_cpu_scan_simd(cpu_scan_simd) {}
+              m_scan_mode(scan_mode) {}
 
     /**
      * Filters messages from all archives
@@ -110,12 +105,8 @@ private:
     std::string m_array_search_string;
     bool m_maybe_string, m_maybe_number;
 
-    /*** GPU integration start ***/
-    bool m_gpu_bitmap_scan{false};
-    bool m_gpu_scan_encoded_buffer{false};
-    bool m_cpu_scan{false};
-    bool m_cpu_scan_simd{false};
-    /*** GPU integration end ***/
+    using ScanMode = CommandLineArguments::ScanMode;
+    ScanMode m_scan_mode;
 
     /**
      * Initializes the variables. Init is called once for each schema after which filter is called

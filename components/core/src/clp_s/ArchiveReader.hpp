@@ -130,6 +130,47 @@ public:
     void close();
 
     /**
+     * Reads raw compressed bytes for a given stream, without decompressing.
+     * @param stream_id
+     * @param buf output buffer (resized if needed)
+     * @param buf_size size of the underlying buffer
+     */
+    void read_stream_compressed(
+            size_t stream_id,
+            std::shared_ptr<char[]>& buf,
+            size_t& buf_size
+    );
+
+    /**
+     * @return the schema metadata for the given schema_id
+     */
+    SchemaReader::SchemaMetadata const& get_schema_metadata(int32_t schema_id) const {
+        return m_id_to_schema_metadata.at(schema_id);
+    }
+
+    /**
+     * Sets up a schema reader for the given schema without decompressing or loading data.
+     * This allows the reader's metadata to be used for GPU-decompressed scan paths.
+     * @param schema_id
+     * @param should_extract_timestamp
+     * @param should_marshal_records
+     * @return the schema reader
+     */
+    SchemaReader& init_schema_table(
+            int32_t schema_id,
+            bool should_extract_timestamp,
+            bool should_marshal_records
+    );
+
+    /**
+     * @return the packed stream metadata for the given stream
+     */
+    [[nodiscard]] PackedStreamReader::PackedStreamMetadata const&
+    get_packed_stream_metadata(size_t stream_id) const {
+        return m_stream_reader.get_stream_metadata(stream_id);
+    }
+
+    /**
      * @return The schema ids in the archive. It also defines the order that tables should be read
      * in to avoid seeking backwards.
      */

@@ -33,6 +33,8 @@ public:
 
         size_t file_offset;
         size_t uncompressed_size;
+        uint32_t chunk_size{0};
+        std::vector<uint32_t> chunk_compressed_sizes;
     };
 
     /**
@@ -76,6 +78,34 @@ public:
     [[nodiscard]] size_t get_uncompressed_stream_size(size_t stream_id) const {
         return m_stream_metadata.at(stream_id).uncompressed_size;
     }
+
+    /**
+     * Reads chunk metadata (section 3) for all streams from the provided decompressor.
+     * @param decompressor an open ZstdDecompressor positioned at the chunk metadata
+     */
+    void read_chunk_metadata(ZstdDecompressor& decompressor);
+
+    /**
+     * Reads raw compressed bytes for a stream without decompressing. Must be called in ascending
+     * stream_id order, same as read_stream().
+     * @param stream_id
+     * @param buf output buffer (resized if needed)
+     * @param buf_size size of the underlying buffer
+     */
+    void read_stream_compressed(
+            size_t stream_id,
+            std::shared_ptr<char[]>& buf,
+            size_t& buf_size
+    );
+
+    /**
+     * @return the metadata for a given stream
+     */
+    [[nodiscard]] PackedStreamMetadata const& get_stream_metadata(size_t stream_id) const {
+        return m_stream_metadata.at(stream_id);
+    }
+
+    [[nodiscard]] size_t get_num_streams() const { return m_stream_metadata.size(); }
 
 private:
     enum PackedStreamReaderState {

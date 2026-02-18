@@ -94,6 +94,8 @@ set(
         ArchiveWriter.cpp
         ArchiveWriter.hpp
         BufferViewReader.hpp
+        ChunkedZstdCompressor.cpp
+        ChunkedZstdCompressor.hpp
         ColumnReader.cpp
         ColumnReader.hpp
         ColumnWriter.cpp

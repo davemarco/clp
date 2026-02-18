@@ -3,11 +3,15 @@
 
 // Helpers for extracting ERT buffer and column info from SchemaReader.
 
+#include <span>
+#include <string>
 #include <vector>
 
-#include "../../../ColumnReader.hpp"
+#include "../../../Schema.hpp"
 #include "../../../SchemaReader.hpp"
+#include "../../../SchemaTree.hpp"
 #include "ErtInfoTypes.hpp"
+#include "ScanRequest.hpp"
 
 namespace clp_s::gpu {
 
@@ -17,9 +21,27 @@ namespace clp_s::gpu {
 ErtBufferView get_ert_buffer_view(SchemaReader const& reader);
 
 /**
- * @return Column descriptors for all columns in the ERT buffer.
+ * Computes column descriptors from metadata alone (no loaded data needed).
+ * @return 0 on success, non-zero on failure (e.g. ClpString or UnstructuredArray encountered)
  */
-std::vector<ColumnDesc> get_column_descs(SchemaReader const& reader);
+int compute_column_descs_from_metadata(
+        SchemaTree const& schema_tree,
+        Schema const& schema,
+        SchemaReader::SchemaMetadata const& metadata,
+        std::vector<ColumnDesc>& out,
+        std::string& error
+);
+
+/**
+ * Finds and validates an Int64 column for a scan request.
+ * @return Pointer to the matching ColumnDesc, or nullptr on error (out_error set).
+ */
+ColumnDesc const* find_int64_column(
+        ErtBufferView const& buffer_view,
+        std::span<ColumnDesc const> columns,
+        IntEqScanRequest const& request,
+        ScanCompatError& out_error
+);
 
 }  // namespace clp_s::gpu
 

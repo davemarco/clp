@@ -6,7 +6,7 @@ size_t Int64ColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(int64_t);
 }
 
-void Int64ColumnWriter::store(ZstdCompressor& compressor) {
+void Int64ColumnWriter::store(ChunkedZstdCompressor& compressor) {
     size_t size = m_values.size() * sizeof(int64_t);
     compressor.write(reinterpret_cast<char const*>(m_values.data()), size);
 }
@@ -16,7 +16,7 @@ size_t FloatColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(double);
 }
 
-void FloatColumnWriter::store(ZstdCompressor& compressor) {
+void FloatColumnWriter::store(ChunkedZstdCompressor& compressor) {
     size_t size = m_values.size() * sizeof(double);
     compressor.write(reinterpret_cast<char const*>(m_values.data()), size);
 }
@@ -26,9 +26,18 @@ size_t BooleanColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(uint8_t);
 }
 
-void BooleanColumnWriter::store(ZstdCompressor& compressor) {
+void BooleanColumnWriter::store(ChunkedZstdCompressor& compressor) {
     size_t size = m_values.size() * sizeof(uint8_t);
     compressor.write(reinterpret_cast<char const*>(m_values.data()), size);
+
+    // Pad to 8-byte alignment so subsequent columns (e.g. int64) start at aligned offsets.
+    // This avoids unaligned 8-byte loads on GPU, which would otherwise cause extra memory
+    // transactions (~12.5% overhead per warp).
+    m_store_padding = (8 - (size % 8)) % 8;
+    if (m_store_padding > 0) {
+        static constexpr char zeros[7] = {};
+        compressor.write(zeros, m_store_padding);
+    }
 }
 
 size_t ClpStringColumnWriter::add_value(ParsedMessage::variable_t& value) {
@@ -47,7 +56,7 @@ size_t ClpStringColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(int64_t) + sizeof(int64_t) * (m_encoded_vars.size() - offset);
 }
 
-void ClpStringColumnWriter::store(ZstdCompressor& compressor) {
+void ClpStringColumnWriter::store(ChunkedZstdCompressor& compressor) {
     size_t logtypes_size = m_logtypes.size() * sizeof(int64_t);
     compressor.write(reinterpret_cast<char const*>(m_logtypes.data()), logtypes_size);
     size_t encoded_vars_size = m_encoded_vars.size() * sizeof(int64_t);
@@ -64,7 +73,7 @@ size_t VariableStringColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(int64_t);
 }
 
-void VariableStringColumnWriter::store(ZstdCompressor& compressor) {
+void VariableStringColumnWriter::store(ChunkedZstdCompressor& compressor) {
     size_t size = m_variables.size() * sizeof(int64_t);
     compressor.write(reinterpret_cast<char const*>(m_variables.data()), size);
 }
@@ -77,7 +86,7 @@ size_t DateStringColumnWriter::add_value(ParsedMessage::variable_t& value) {
     ;
 }
 
-void DateStringColumnWriter::store(ZstdCompressor& compressor) {
+void DateStringColumnWriter::store(ChunkedZstdCompressor& compressor) {
     size_t timestamps_size = m_timestamps.size() * sizeof(int64_t);
     compressor.write(reinterpret_cast<char const*>(m_timestamps.data()), timestamps_size);
     size_t encodings_size = m_timestamp_encodings.size() * sizeof(int64_t);

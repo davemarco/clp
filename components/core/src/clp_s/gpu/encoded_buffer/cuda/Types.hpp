@@ -6,11 +6,12 @@
 
 namespace clp_s::gpu {
 /**
- * Owns all GPU-allocated buffers for a single scan-and-pack operation.
- * Each member is a DeviceBufferGuard that automatically frees its device memory on destruction.
+ * GPU buffers for a single scan-and-pack operation.
+ * `ert` is a borrowed pointer (not freed); the remaining members are DeviceBufferGuards
+ * that automatically free their device memory on destruction.
  */
 struct DeviceContext {
-    DeviceBufferGuard ert;             ///< Full ERT copied to device.
+    DeviceBuffer ert;                  ///< Borrowed pointer to device-resident ERT (not owned).
     DeviceBufferGuard bitmap;          ///< 1-byte-per-row scan result bitmap.
     DeviceBufferGuard row_ids;         ///< Compacted row indices of matching rows.
     DeviceBufferGuard encoded_buffer;  ///< Final packed column output buffer.
