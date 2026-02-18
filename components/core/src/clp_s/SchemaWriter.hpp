@@ -7,7 +7,7 @@
 #include "ColumnWriter.hpp"
 #include "FileWriter.hpp"
 #include "ParsedMessage.hpp"
-#include "ZstdCompressor.hpp"
+#include "ChunkedZstdCompressor.hpp"
 
 namespace clp_s {
 class SchemaWriter {
@@ -42,7 +42,7 @@ public:
      * Stores the columns to disk.
      * @param compressor
      */
-    void store(ZstdCompressor& compressor);
+    void store(ChunkedZstdCompressor& compressor);
 
     uint64_t get_num_messages() const { return m_num_messages; }
 

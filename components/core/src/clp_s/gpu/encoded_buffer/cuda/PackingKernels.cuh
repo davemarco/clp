@@ -26,8 +26,9 @@ __global__ void gather_fixed(
     if (idx >= num_matches) {
         return;
     }
-    auto const* src = reinterpret_cast<T const*>(base + offset_bytes);
-    out[idx] = src[row_ids[idx]];
+    // Column data is 8-byte aligned (boolean columns are padded in the archive format).
+    auto const* col = reinterpret_cast<T const*>(base + offset_bytes);
+    out[idx] = col[row_ids[idx]];
 }
 
 /**

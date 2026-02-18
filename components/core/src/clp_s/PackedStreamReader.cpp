@@ -100,8 +100,8 @@ PackedStreamReader::read_stream(size_t stream_id, std::shared_ptr<char[]>& buf, 
     }
     m_prev_stream_id = stream_id;
 
-    auto& [file_offset, uncompressed_size] = m_stream_metadata[stream_id];
-    size_t adjusted_file_offset = m_begin_offset + file_offset;
+    auto& meta = m_stream_metadata[stream_id];
+    size_t adjusted_file_offset = m_begin_offset + meta.file_offset;
     if (auto error = m_packed_stream_reader->try_seek_from_begin(adjusted_file_offset);
         clp::ErrorCode::ErrorCode_Success != error)
     {
@@ -115,18 +115,94 @@ PackedStreamReader::read_stream(size_t stream_id, std::shared_ptr<char[]>& buf, 
     // DM - TODO: We need this to run on GPU. Maybe global pointer to GPU memory
     clp::BoundedReader bounded_reader{m_packed_stream_reader.get(), end_pos};
     m_packed_stream_decompressor.open(bounded_reader, cDecompressorFileReadBufferCapacity);
-    if (buf_size < uncompressed_size) {
+    if (buf_size < meta.uncompressed_size) {
         // make_shared is supposed to work here for c++20, but it seems like the compiler version
         // we use doesn't support it, so we convert a unique_ptr to a shared_ptr instead.
-        buf = std::make_unique<char[]>(uncompressed_size);
-        buf_size = uncompressed_size;
+        buf = std::make_unique<char[]>(meta.uncompressed_size);
+        buf_size = meta.uncompressed_size;
     }
     if (auto error
-        = m_packed_stream_decompressor.try_read_exact_length(buf.get(), uncompressed_size);
+        = m_packed_stream_decompressor.try_read_exact_length(buf.get(), meta.uncompressed_size);
         ErrorCodeSuccess != error)
     {
         throw OperationFailed(error, __FILE__, __LINE__);
     }
     m_packed_stream_decompressor.close_for_reuse();
+}
+
+void PackedStreamReader::read_chunk_metadata(ZstdDecompressor& decompressor) {
+    for (auto& stream : m_stream_metadata) {
+        uint32_t chunk_size;
+        if (auto error = decompressor.try_read_numeric_value(chunk_size);
+            ErrorCodeSuccess != error)
+        {
+            throw OperationFailed(error, __FILE__, __LINE__);
+        }
+        stream.chunk_size = chunk_size;
+
+        uint32_t num_chunks;
+        if (auto error = decompressor.try_read_numeric_value(num_chunks);
+            ErrorCodeSuccess != error)
+        {
+            throw OperationFailed(error, __FILE__, __LINE__);
+        }
+
+        stream.chunk_compressed_sizes.resize(num_chunks);
+        for (uint32_t i = 0; i < num_chunks; ++i) {
+            if (auto error = decompressor.try_read_numeric_value(stream.chunk_compressed_sizes[i]);
+                ErrorCodeSuccess != error)
+            {
+                throw OperationFailed(error, __FILE__, __LINE__);
+            }
+        }
+    }
+}
+
+void PackedStreamReader::read_stream_compressed(
+        size_t stream_id,
+        std::shared_ptr<char[]>& buf,
+        size_t& buf_size
+) {
+    if (stream_id >= m_stream_metadata.size()) {
+        throw OperationFailed(ErrorCodeCorrupt, __FILE__, __LINE__);
+    }
+
+    switch (m_state) {
+        case PackedStreamReaderState::PackedStreamsOpened:
+            m_state = PackedStreamReaderState::ReadingPackedStreams;
+            break;
+        case PackedStreamReaderState::ReadingPackedStreams:
+            if (m_prev_stream_id >= stream_id) {
+                throw OperationFailed(ErrorCodeBadParam, __FILE__, __LINE__);
+            }
+            break;
+        default:
+            throw OperationFailed(ErrorCodeNotReady, __FILE__, __LINE__);
+    }
+    m_prev_stream_id = stream_id;
+
+    auto& meta = m_stream_metadata[stream_id];
+    size_t adjusted_file_offset = m_begin_offset + meta.file_offset;
+    if (auto error = m_packed_stream_reader->try_seek_from_begin(adjusted_file_offset);
+        clp::ErrorCode::ErrorCode_Success != error)
+    {
+        throw OperationFailed(static_cast<ErrorCode>(error), __FILE__, __LINE__);
+    }
+
+    size_t total_compressed = 0;
+    for (auto cs : meta.chunk_compressed_sizes) {
+        total_compressed += cs;
+    }
+
+    if (buf_size < total_compressed) {
+        buf = std::make_unique<char[]>(total_compressed);
+        buf_size = total_compressed;
+    }
+
+    if (auto error = m_packed_stream_reader->try_read_exact_length(buf.get(), total_compressed);
+        clp::ErrorCode::ErrorCode_Success != error)
+    {
+        throw OperationFailed(static_cast<ErrorCode>(error), __FILE__, __LINE__);
+    }
 }
 }  // namespace clp_s

@@ -10,6 +10,7 @@
 #include <boost/program_options/variables_map.hpp>
 
 #include "../reducer/types.hpp"
+#include "ChunkedZstdCompressor.hpp"
 #include "Defs.hpp"
 #include "InputConfig.hpp"
 
@@ -35,6 +36,19 @@ public:
         Reducer,
         ResultsCache,
         Stdout,
+    };
+
+    enum class FileType : uint8_t {
+        Json = 0,
+        KeyValueIr
+    };
+
+    enum class ScanMode : uint8_t {
+        None = 0,
+        Gpu,
+        GpuBitmap,
+        CpuBitmap,
+        CpuSimdBitmap
     };
 
     // Constructors
@@ -90,10 +104,7 @@ public:
     std::optional<epochtime_t> get_search_end_ts() const { return m_search_end_ts; }
 
     bool get_ignore_case() const { return m_ignore_case; }
-    bool get_gpu_bitmap_scan() const { return m_gpu_bitmap_scan; }
-    bool get_gpu_scan_encoded_buffer() const { return m_gpu_scan_encoded_buffer; }
-    bool get_cpu_scan() const { return m_cpu_scan; }
-    bool get_cpu_scan_simd() const { return m_cpu_scan_simd; }
+    ScanMode get_scan_mode() const { return m_scan_mode; }
 
     std::string const& get_reducer_host() const { return m_reducer_host; }
 
@@ -124,6 +135,8 @@ public:
     size_t get_target_ordered_chunk_size() const { return m_target_ordered_chunk_size; }
 
     size_t get_minimum_table_size() const { return m_minimum_table_size; }
+
+    size_t get_chunk_size() const { return m_chunk_size; }
 
     std::vector<std::string> const& get_projection_columns() const { return m_projection_columns; }
 
@@ -213,6 +226,7 @@ private:
     size_t m_target_ordered_chunk_size{};
     bool m_print_ordered_chunk_stats{false};
     size_t m_minimum_table_size{1ULL * 1024 * 1024};  // 1 MiB
+    size_t m_chunk_size{ChunkedZstdCompressor::cDefaultChunkSize};
     bool m_disable_log_order{false};
 
     // MongoDB configuration variables
@@ -233,10 +247,8 @@ private:
     std::optional<epochtime_t> m_search_begin_ts;
     std::optional<epochtime_t> m_search_end_ts;
     bool m_ignore_case{false};
-    bool m_gpu_bitmap_scan{false};
-    bool m_gpu_scan_encoded_buffer{false};
-    bool m_cpu_scan{false};
-    bool m_cpu_scan_simd{false};
+    std::string m_scan_mode_str;
+    ScanMode m_scan_mode{ScanMode::None};
     std::vector<std::string> m_projection_columns;
 
     // Search aggregation variables

@@ -26,9 +26,10 @@ size_t SchemaWriter::append_message(ParsedMessage& message) {
     return total_size;
 }
 
-void SchemaWriter::store(ZstdCompressor& compressor) {
+void SchemaWriter::store(ChunkedZstdCompressor& compressor) {
     for (auto& writer : m_columns) {
         writer->store(compressor);
+        m_total_uncompressed_size += writer->get_store_padding();
     }
 }
 }  // namespace clp_s

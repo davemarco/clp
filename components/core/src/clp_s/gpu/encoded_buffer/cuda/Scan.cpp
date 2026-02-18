@@ -78,7 +78,7 @@ cudaError_t pack_all_columns(
 
 cudaError_t cuda_scan_int_eq_to_encoded_buffer(EncodedBufferRequest const& request, EncodedBufferResult& result) {
     auto const columns = request.columns;
-    if (nullptr == request.host_ert_buffer || columns.empty()) {
+    if (nullptr == request.d_ert_ptr || columns.empty()) {
         return cudaErrorInvalidValue;
     }
 
@@ -87,15 +87,11 @@ cudaError_t cuda_scan_int_eq_to_encoded_buffer(EncodedBufferRequest const& reque
     result.num_matches = 0;
 
     DeviceContext device_ctx;
+    device_ctx.ert.ptr = request.d_ert_ptr;
+    device_ctx.ert.size = request.ert_size;
 
-    auto status = copy_to_device(request.host_ert_buffer, request.ert_size, device_ctx.ert.buf);
-    if (cudaSuccess != status) {
-        fprintf(stderr, "[gpu] step=copy_ert err=%s\n", cudaGetErrorString(status));
-        return status;
-    }
-
-    status = scan_int_eq_to_device_bitmap(
-            static_cast<char const*>(device_ctx.ert.buf.ptr),
+    auto status = scan_int_eq_to_device_bitmap(
+            static_cast<char const*>(device_ctx.ert.ptr),
             request.scan_column_offset_bytes,
             request.num_rows,
             request.target_value,
@@ -113,6 +109,7 @@ cudaError_t cuda_scan_int_eq_to_encoded_buffer(EncodedBufferRequest const& reque
             device_ctx.row_ids.buf,
             num_matches
     );
+
     if (cudaSuccess != status) {
         fprintf(stderr, "[gpu] step=bitmap_to_row_ids err=%s\n", cudaGetErrorString(status));
         return status;
@@ -145,6 +142,7 @@ cudaError_t cuda_scan_int_eq_to_encoded_buffer(EncodedBufferRequest const& reque
             pack_ctx,
             std::span<size_t const>{column_offsets.data(), column_offsets.size()}
     );
+
     if (cudaSuccess != status) {
         fprintf(stderr, "[gpu] step=pack_columns err=%s\n", cudaGetErrorString(status));
         return status;
@@ -156,8 +154,10 @@ cudaError_t cuda_scan_int_eq_to_encoded_buffer(EncodedBufferRequest const& reque
         fprintf(stderr, "[gpu] step=copy_to_host err=%s\n", cudaGetErrorString(status));
         return status;
     }
+
     result.buffer = static_cast<char*>(host_ptr);
     result.size = total_size;
+
     return cudaSuccess;
 }
 }  // namespace clp_s::gpu

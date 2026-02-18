@@ -225,6 +225,11 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                         default_value(m_minimum_table_size),
                     "Minimum size (B) for a packed table before it gets compressed."
             )(
+                    "chunk-size",
+                    po::value<size_t>(&m_chunk_size)->value_name("CHUNK_SIZE")->
+                        default_value(m_chunk_size),
+                    "Uncompressed chunk size (B) for zstd chunked compression (default 64 KB)."
+            )(
                     "max-document-size",
                     po::value<size_t>(&m_max_document_size)->value_name("DOC_SIZE")->
                         default_value(m_max_document_size),
@@ -537,21 +542,11 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 " with s3 requires the AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment"
                 " variables, and optionally the AWS_SESSION_TOKEN environment variable."
             )(
-                "gpu-bitmap-scan",
-                po::bool_switch(&m_gpu_bitmap_scan),
-                "Run a minimal GPU scan on an integer column and output matching values"
-            )(
-                "gpu-scan-encoded-buffer",
-                po::bool_switch(&m_gpu_scan_encoded_buffer),
-                "Run a GPU scan and return a compact encoded buffer for output"
-            )(
-                "cpu-scan",
-                po::bool_switch(&m_cpu_scan),
-                "Run a CPU column scan on an integer column (baseline for GPU comparison)"
-            )(
-                "cpu-scan-simd",
-                po::bool_switch(&m_cpu_scan_simd),
-                "Run an AVX2-vectorized CPU column scan on an integer column"
+                "scan",
+                po::value<std::string>(&m_scan_mode_str)
+                    ->default_value("")
+                    ->value_name("MODE"),
+                "Column scan mode: gpu, gpu-bitmap, cpu-bitmap, or cpu-simd-bitmap"
             );
             // clang-format on
             search_options.add(match_options);
@@ -731,25 +726,22 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 throw std::invalid_argument("No query specified");
             }
 
-            /*** GPU integration start ***/
-            if (m_gpu_bitmap_scan && m_gpu_scan_encoded_buffer) {
+            if (m_scan_mode_str.empty()) {
+                m_scan_mode = ScanMode::None;
+            } else if (m_scan_mode_str == "gpu") {
+                m_scan_mode = ScanMode::Gpu;
+            } else if (m_scan_mode_str == "gpu-bitmap") {
+                m_scan_mode = ScanMode::GpuBitmap;
+            } else if (m_scan_mode_str == "cpu-bitmap") {
+                m_scan_mode = ScanMode::CpuBitmap;
+            } else if (m_scan_mode_str == "cpu-simd-bitmap") {
+                m_scan_mode = ScanMode::CpuSimdBitmap;
+            } else {
                 throw std::invalid_argument(
-                        "gpu-bitmap-scan and gpu-scan-encoded-buffer are mutually exclusive."
+                        "Invalid --scan mode '" + m_scan_mode_str
+                        + "'. Valid options: gpu, gpu-bitmap, cpu-bitmap, cpu-simd-bitmap"
                 );
             }
-            if (m_cpu_scan && (m_gpu_bitmap_scan || m_gpu_scan_encoded_buffer || m_cpu_scan_simd)) {
-                throw std::invalid_argument(
-                        "cpu-scan is mutually exclusive with gpu-bitmap-scan,"
-                        " gpu-scan-encoded-buffer, and cpu-scan-simd."
-                );
-            }
-            if (m_cpu_scan_simd && (m_gpu_bitmap_scan || m_gpu_scan_encoded_buffer)) {
-                throw std::invalid_argument(
-                        "cpu-scan-simd is mutually exclusive with gpu-bitmap-scan"
-                        " and gpu-scan-encoded-buffer."
-                );
-            }
-            /*** GPU integration end ***/
 
             if (parsed_command_line_options.count("tge")) {
                 m_search_begin_ts = parsed_command_line_options["tge"].as<epochtime_t>();

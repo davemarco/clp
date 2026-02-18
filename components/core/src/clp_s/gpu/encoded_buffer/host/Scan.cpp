@@ -1,59 +1,97 @@
 #include "Scan.hpp"
 
-#include <algorithm>
 #include <vector>
 
-#include "../../../SchemaReader.hpp"
+#include "../../common/cuda/NvcompDecompress.hpp"
 #include "../../common/cuda/Transfer.hpp"
 #include "../../common/host/ErtInfo.hpp"
 #include "../cuda/Scan.hpp"
 
 namespace clp_s::gpu {
+namespace {
+/**
+ * Shifts column offsets from table-relative to stream-relative.
+ * The decompressed stream contains multiple schema tables concatenated;
+ * stream_offset is where this schema table starts within the stream.
+ */
+std::vector<ColumnDesc> offset_columns(
+        std::span<ColumnDesc const> columns,
+        size_t stream_offset
+) {
+    std::vector<ColumnDesc> result(columns.begin(), columns.end());
+    for (auto& col : result) {
+        col.primary_offset_bytes += stream_offset;
+        if (col.secondary_offset_bytes > 0) {
+            col.secondary_offset_bytes += stream_offset;
+        }
+    }
+    return result;
+}
+}  // namespace
+
+int decompress_stream_to_device(
+        NvcompDecompressContext& ctx,
+        void const* compressed_data,
+        size_t compressed_size,
+        std::vector<uint32_t> const& chunk_compressed_sizes,
+        uint32_t chunk_size,
+        size_t total_uncompressed_size,
+        DeviceBuffer& out,
+        std::string& error
+) {
+    ChunkedCompressedData data{};
+    data.host_compressed_buf = compressed_data;
+    data.total_compressed_size = compressed_size;
+    data.chunk_compressed_sizes = &chunk_compressed_sizes;
+    data.chunk_size = chunk_size;
+    data.total_uncompressed_size = total_uncompressed_size;
+
+    auto status = ctx.decompress(data, out);
+    if (cudaSuccess != status) {
+        error = std::string("nvcomp context decompression failed: ") + cudaGetErrorString(status);
+        return 1;
+    }
+    return 0;
+}
+
 int run_int_eq_to_encoded_buffer(
         SchemaReader& reader,
         IntEqScanRequest const& request,
         EncodedBuffer& out_buffer,
-        std::string& error
+        std::string& error,
+        void* d_ert,
+        size_t d_ert_size,
+        std::span<ColumnDesc const> columns,
+        size_t stream_offset
 ) {
     out_buffer = {};
 
-    if (nullptr == reader.get_ert_buffer_ptr()) {
-        error = "ERT buffer is not loaded";
-        return 1;
-    }
-
-    auto const buffer_view = get_ert_buffer_view(reader);
-    auto const columns = get_column_descs(reader);
+    // Shift column offsets from table-relative to stream-relative
+    auto stream_columns = offset_columns(columns, stream_offset);
 
     // Find the filter column
-    auto col_it = std::find_if(
-            columns.begin(),
-            columns.end(),
-            [&](ColumnDesc const& col) {
-                return col.type == ColumnType::Int64 && col.column_id == request.column_id;
-            }
+    ScanCompatError col_err;
+    ErtBufferView view{static_cast<char*>(d_ert), d_ert_size};
+    auto const* col = find_int64_column(
+            view,
+            std::span<ColumnDesc const>{stream_columns},
+            request,
+            col_err
     );
-    if (col_it == columns.end()) {
-        error = "integer column not found in schema";
-        return 1;
-    }
-
-    // Validate bounds
-    size_t const required_bytes = col_it->primary_offset_bytes
-                                  + col_it->length * col_it->element_size;
-    if (required_bytes > buffer_view.size) {
-        error = "column slice exceeds ERT buffer";
+    if (nullptr == col) {
+        error = "integer column not found or out of bounds in schema";
         return 1;
     }
 
     EncodedBufferRequest gpu_request{
-            buffer_view.data,
-            buffer_view.size,
+            d_ert,
+            d_ert_size,
             reader.get_num_messages(),
-            std::span<ColumnDesc const>{columns.data(), columns.size()},
-            col_it->primary_offset_bytes,
+            std::span<ColumnDesc const>{stream_columns},
+            col->primary_offset_bytes,
             request.value
     };
+
     EncodedBufferResult gpu_result;
     auto status = cuda_scan_int_eq_to_encoded_buffer(gpu_request, gpu_result);
     if (cudaSuccess != status) {
@@ -63,8 +101,8 @@ int run_int_eq_to_encoded_buffer(
         error = std::string("failed to build compact ERT buffer on GPU: ")
                + cudaGetErrorString(status) + " (num_rows="
                + std::to_string(reader.get_num_messages()) + ", num_cols="
-               + std::to_string(columns.size()) + ", ert_size="
-               + std::to_string(buffer_view.size) + ")";
+               + std::to_string(stream_columns.size()) + ", ert_size="
+               + std::to_string(d_ert_size) + ")";
         return 1;
     }
 

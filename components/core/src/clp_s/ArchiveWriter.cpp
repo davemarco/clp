@@ -19,6 +19,7 @@ void ArchiveWriter::open(ArchiveWriterOption const& option) {
     m_print_archive_stats = option.print_archive_stats;
     m_single_file_archive = option.single_file_archive;
     m_min_table_size = option.min_table_size;
+    m_chunk_size = option.chunk_size;
     m_archives_dir = option.archives_dir;
     m_authoritative_timestamp = option.authoritative_timestamp;
     m_authoritative_timestamp_namespace = option.authoritative_timestamp_namespace;
@@ -393,6 +394,15 @@ std::pair<size_t, size_t> ArchiveWriter::store_tables() {
      *     - Schema ID: <32-bit integer>
      *     - Number of messages: <64-bit integer>
      *
+     * Section 3: Chunk Metadata
+     * - Contains per-stream chunk compressed sizes for GPU decompression.
+     * - Structure:
+     *   - For each stream (same order as Section 1):
+     *     - Chunk size: <32-bit integer> (uncompressed chunk size in bytes)
+     *     - Number of chunks: <32-bit integer>
+     *     - For each chunk:
+     *       - Compressed size: <32-bit integer>
+     *
      * We buffer the first half of the metadata in the "stream_metadata" vector, and the second half
      * of the metadata in the "schema_metadata" vector as we compress the tables. The metadata is
      * flushed once all of the schema tables have been compressed.
@@ -416,7 +426,7 @@ std::pair<size_t, size_t> ArchiveWriter::store_tables() {
     uint64_t current_stream_offset = 0;
     uint64_t current_stream_id = 0;
     uint64_t current_table_file_offset = 0;
-    m_tables_compressor.open(m_tables_file_writer, m_compression_level);
+    m_tables_compressor.open(m_tables_file_writer, m_compression_level, m_chunk_size);
     for (auto it : schemas) {
         it->second->store(m_tables_compressor);
         schema_metadata.emplace_back(
@@ -428,14 +438,18 @@ std::pair<size_t, size_t> ArchiveWriter::store_tables() {
         current_stream_offset += it->second->get_total_uncompressed_size();
 
         if (current_stream_offset > m_min_table_size || schemas.size() == schema_metadata.size()) {
-            stream_metadata.emplace_back(current_table_file_offset, current_stream_offset);
             m_tables_compressor.close();
+            stream_metadata.emplace_back(current_table_file_offset, current_stream_offset);
+            auto& sm = stream_metadata.back();
+            sm.chunk_size = static_cast<uint32_t>(m_tables_compressor.get_chunk_size());
+            sm.chunk_compressed_sizes = m_tables_compressor.get_chunk_compressed_sizes();
+
             current_stream_offset = 0;
             ++current_stream_id;
             current_table_file_offset = m_tables_file_writer.get_pos();
 
             if (schemas.size() != schema_metadata.size()) {
-                m_tables_compressor.open(m_tables_file_writer, m_compression_level);
+                m_tables_compressor.open(m_tables_file_writer, m_compression_level, m_chunk_size);
             }
         }
     }
@@ -458,6 +472,16 @@ std::pair<size_t, size_t> ArchiveWriter::store_tables() {
         m_table_metadata_compressor.write_numeric_value(schema.schema_id);
         m_table_metadata_compressor.write_numeric_value(schema.num_messages);
     }
+
+    for (auto& stream : stream_metadata) {
+        m_table_metadata_compressor.write_numeric_value(stream.chunk_size);
+        uint32_t const num_chunks = static_cast<uint32_t>(stream.chunk_compressed_sizes.size());
+        m_table_metadata_compressor.write_numeric_value(num_chunks);
+        for (uint32_t cs : stream.chunk_compressed_sizes) {
+            m_table_metadata_compressor.write_numeric_value(cs);
+        }
+    }
+
     m_table_metadata_compressor.close();
 
     auto table_metadata_compressed_size = m_table_metadata_file_writer.get_pos();

@@ -28,6 +28,7 @@ __global__ void scan_int64_eq_kernel(
     if (idx >= length) {
         return;
     }
+    // Column data is 8-byte aligned (boolean columns are padded in the archive format).
     auto const* values = reinterpret_cast<int64_t const*>(base + offset_bytes);
     bitmap[idx] = (values[idx] == target_value) ? 1 : 0;
 }

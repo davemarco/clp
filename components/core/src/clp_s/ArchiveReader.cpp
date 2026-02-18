@@ -124,6 +124,10 @@ void ArchiveReader::read_metadata() {
             = m_stream_reader.get_uncompressed_stream_size(prev_metadata.stream_id)
               - prev_metadata.stream_offset;
     m_id_to_schema_metadata[prev_schema_id] = prev_metadata;
+
+    // Section 3: Chunk metadata for GPU decompression
+    m_stream_reader.read_chunk_metadata(m_table_metadata_decompressor);
+
     m_table_metadata_decompressor.close();
 
     m_archive_reader_adaptor->checkin_reader_for_section(constants::cArchiveTableMetadataFile);
@@ -407,6 +411,33 @@ void ArchiveReader::initialize_schema_reader(
             reader.mark_column_as_timestamp(column_reader);
         }
     }
+}
+
+void ArchiveReader::read_stream_compressed(
+        size_t stream_id,
+        std::shared_ptr<char[]>& buf,
+        size_t& buf_size
+) {
+    m_stream_reader.read_stream_compressed(stream_id, buf, buf_size);
+}
+
+SchemaReader& ArchiveReader::init_schema_table(
+        int32_t schema_id,
+        bool should_extract_timestamp,
+        bool should_marshal_records
+) {
+    if (m_id_to_schema_metadata.count(schema_id) == 0) {
+        throw OperationFailed(ErrorCodeFileNotFound, __FILENAME__, __LINE__);
+    }
+
+    initialize_schema_reader(
+            m_schema_reader,
+            schema_id,
+            should_extract_timestamp,
+            should_marshal_records
+    );
+
+    return m_schema_reader;
 }
 
 void ArchiveReader::store(FileWriter& writer) {
