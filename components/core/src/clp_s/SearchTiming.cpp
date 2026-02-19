@@ -34,9 +34,11 @@ void SearchTiming::reset() {
     m_dict_stats = {};
     m_table_metadata_load = {};
     m_string_query_plan = {};
+    m_compressed_io = {};
     m_schema_table_load = {};
     m_total_search = {};
     m_scan = {};
+    m_serialization = {};
     m_scanned_messages = 0;
 }
 
@@ -84,6 +86,13 @@ void SearchTiming::add_string_query_plan(std::chrono::nanoseconds duration) {
     m_string_query_plan += duration;
 }
 
+void SearchTiming::add_compressed_io(std::chrono::nanoseconds duration) {
+    if (false == enabled()) {
+        return;
+    }
+    m_compressed_io += duration;
+}
+
 void SearchTiming::add_schema_table_load(std::chrono::nanoseconds duration) {
     if (false == enabled()) {
         return;
@@ -104,6 +113,13 @@ void SearchTiming::add_scan(std::chrono::nanoseconds duration, uint64_t messages
     }
     m_scan += duration;
     m_scanned_messages += messages_scanned;
+}
+
+void SearchTiming::add_serialization(std::chrono::nanoseconds duration) {
+    if (false == enabled()) {
+        return;
+    }
+    m_serialization += duration;
 }
 
 void SearchTiming::set_wall_clock(std::chrono::nanoseconds duration) {
@@ -144,12 +160,14 @@ void SearchTiming::log_totals() const {
     );
     SPDLOG_INFO("Table metadata load: {:.3f}ms", to_ms(m_table_metadata_load));
     SPDLOG_INFO("String query plan: {:.3f}ms", to_ms(m_string_query_plan));
+    SPDLOG_INFO("Compressed IO: {:.3f}ms", to_ms(m_compressed_io));
     SPDLOG_INFO("Schema table load: {:.3f}ms", to_ms(m_schema_table_load));
     SPDLOG_INFO(
-            "Scan+output: {:.3f}ms ({} messages)",
+            "Scan: {:.3f}ms ({} messages)",
             to_ms(m_scan),
             m_scanned_messages
     );
+    SPDLOG_INFO("Serialization: {:.3f}ms", to_ms(m_serialization));
     SPDLOG_INFO("Total search: {:.3f}ms", to_ms(m_total_search));
     SPDLOG_INFO("Wall clock: {:.3f}ms", to_ms(m_wall_clock));
 
@@ -171,8 +189,10 @@ void SearchTiming::log_totals() const {
     json << "},";
     json << "\"table_metadata_load_ms\":" << to_ms(m_table_metadata_load) << ",";
     json << "\"string_query_plan_ms\":" << to_ms(m_string_query_plan) << ",";
+    json << "\"compressed_io_ms\":" << to_ms(m_compressed_io) << ",";
     json << "\"schema_table_load_ms\":" << to_ms(m_schema_table_load) << ",";
     json << "\"scan_ms\":" << to_ms(m_scan) << ",";
+    json << "\"serialization_ms\":" << to_ms(m_serialization) << ",";
     json << "\"scanned_messages\":" << m_scanned_messages << ",";
     json << "\"total_search_ms\":" << to_ms(m_total_search) << ",";
     json << "\"wall_clock_ms\":" << to_ms(m_wall_clock);
