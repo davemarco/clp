@@ -5,48 +5,81 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 #include <cuda_runtime.h>
 
 #include "../../common/cuda/Transfer.hpp"
+#include "../../common/host/ScanRequestTypes.hpp"
 
 namespace clp_s::gpu {
 /**
- * Runs an equality scan on an int64 column slice already resident on the GPU.
- * Allocates a one-byte-per-row device bitmap and writes 1 for matches, 0 otherwise.
+ * Copies predicate VarString dictionary IDs to device memory. For non-VarString
+ * predicates, sets out to nullptr and returns cudaSuccess.
  *
- * @param device_ert_base Device pointer to the ERT buffer.
- * @param column_offset_bytes Byte offset to the column start within the ERT buffer.
- * @param column_length Number of elements in the column.
- * @param target_value Value to compare against.
- * @param out_device_bitmap Output device bitmap (one byte per row).
- * @return cudaSuccess on success, otherwise the CUDA error code.
+ * @param pred Column predicate.
+ * @param guard DeviceBufferGuard that owns the allocated device memory.
+ * @param out_d_predicate_var_dict_ids Device pointer to the IDs (nullptr for non-VarString).
+ * @return cudaSuccess on success.
  */
-cudaError_t scan_int_eq_to_device_bitmap(
-        char const* device_ert_base,
-        size_t column_offset_bytes,
-        size_t column_length,
-        int64_t target_value,
-        DeviceBuffer& out_device_bitmap
+cudaError_t copy_predicate_var_dict_ids_to_device(
+        ColumnPredicate const& pred,
+        DeviceBufferGuard& guard,
+        uint64_t const*& out_d_predicate_var_dict_ids
 );
 
 /**
- * Runs an equality scan on a host ERT buffer and returns a bitmap on the host.
- * @param host_ert_buffer Base pointer to the decompressed ERT buffer (host memory)
- * @param ert_size Size of the ERT buffer in bytes
- * @param column_offset_bytes Byte offset to the column start within the ERT buffer
- * @param column_length Number of elements in the column
- * @param target_value Value to compare against
- * @param out_bitmap Output bitmap buffer (must be at least column_length bytes)
- * @param bitmap_size Size of the output buffer in bytes
- * @return 0 on success, non-zero on failure
+ * Allocates a device bitmap and initializes it to the identity value for the
+ * given merge operation (all 1s for AND, all 0s for OR).
+ *
+ * @param num_rows Number of rows (bitmap size in bytes).
+ * @param merge_op Merge operation that will be used with this bitmap.
+ * @param out_bitmap Output device bitmap.
+ * @return cudaSuccess on success.
  */
-int cuda_scan_int_eq_to_bitmap(
+cudaError_t alloc_initialized_bitmap(size_t num_rows, MergeOp merge_op, DeviceBuffer& out_bitmap);
+
+/**
+ * Scans a single column and merges the result into an existing device bitmap.
+ *
+ * @param device_ert_base Device pointer to the ERT buffer.
+ * @param col Column descriptor (offset, length, type).
+ * @param pred Column predicate (op, target value).
+ * @param d_predicate_var_dict_ids Device pointer to VarString dictionary IDs (ignored for other types).
+ * @param num_predicate_var_dict_ids Number of VarString dictionary IDs.
+ * @param merge_op How to merge scan result with existing bitmap (And or Or).
+ * @param device_bitmap Device bitmap to scan into (must be pre-allocated and initialized).
+ * @return cudaSuccess on success.
+ */
+cudaError_t scan_predicate_into_bitmap(
+        char const* device_ert_base,
+        ColumnDesc const& col,
+        ColumnPredicate const& pred,
+        uint64_t const* d_predicate_var_dict_ids,
+        size_t num_predicate_var_dict_ids,
+        MergeOp merge_op,
+        uint8_t* device_bitmap
+);
+
+/**
+ * Runs a scan on a host ERT buffer and returns a merged bitmap on the host.
+ * Caller must pre-resolve ColumnDescs (one per predicate, in matching order).
+ *
+ * @param host_ert_buffer Base pointer to the decompressed ERT buffer (host memory).
+ * @param ert_size Size of the ERT buffer in bytes.
+ * @param request Scan request with predicates and merge op.
+ * @param resolved_columns Pre-resolved ColumnDescs (one per predicate, same order).
+ * @param num_rows Number of rows (all columns must have this length).
+ * @param out_bitmap Output bitmap buffer (must be at least num_rows bytes).
+ * @param bitmap_size Size of the output buffer in bytes.
+ * @return 0 on success, non-zero on failure.
+ */
+int cuda_scan_to_bitmap(
         void const* host_ert_buffer,
         size_t ert_size,
-        size_t column_offset_bytes,
-        size_t column_length,
-        int64_t target_value,
+        ScanRequest const& request,
+        std::span<ColumnDesc const> resolved_columns,
+        size_t num_rows,
         uint8_t* out_bitmap,
         size_t bitmap_size
 );

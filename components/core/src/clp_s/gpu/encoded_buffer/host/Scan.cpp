@@ -10,9 +10,9 @@
 namespace clp_s::gpu {
 namespace {
 /**
- * Shifts column offsets from table-relative to stream-relative.
- * The decompressed stream contains multiple schema tables concatenated;
- * stream_offset is where this schema table starts within the stream.
+ * Adjusts column offsets to account for the table's position within the
+ * decompressed buffer. Multiple schema tables are concatenated in the buffer;
+ * stream_offset is where this schema table starts.
  */
 std::vector<ColumnDesc> offset_columns(
         std::span<ColumnDesc const> columns,
@@ -54,9 +54,9 @@ int decompress_stream_to_device(
     return 0;
 }
 
-int run_int_eq_to_encoded_buffer(
+int run_scan_to_encoded_buffer(
         SchemaReader& reader,
-        IntEqScanRequest const& request,
+        ScanRequest const& request,
         EncodedBuffer& out_buffer,
         std::string& error,
         void* d_ert,
@@ -66,43 +66,52 @@ int run_int_eq_to_encoded_buffer(
 ) {
     out_buffer = {};
 
-    // Shift column offsets from table-relative to stream-relative
-    auto stream_columns = offset_columns(columns, stream_offset);
-
-    // Find the filter column
-    ScanCompatError col_err;
-    ErtBufferView view{static_cast<char*>(d_ert), d_ert_size};
-    auto const* col = find_int64_column(
-            view,
-            std::span<ColumnDesc const>{stream_columns},
-            request,
-            col_err
-    );
-    if (nullptr == col) {
-        error = "integer column not found or out of bounds in schema";
+    if (request.predicates.empty()) {
+        error = "no predicates in scan request";
         return 1;
+    }
+
+    // Adjust column offsets to account for table position within the buffer
+    auto adjusted_columns = offset_columns(columns, stream_offset);
+
+    // Resolve each predicate's column
+    ErtBufferView view{static_cast<char*>(d_ert), d_ert_size};
+    std::vector<ColumnDesc> resolved_pred_cols;
+    resolved_pred_cols.reserve(request.predicates.size());
+    for (auto const& pred : request.predicates) {
+        ScanCompatError col_err;
+        auto const* col = find_column(
+                view, std::span<ColumnDesc const>{adjusted_columns}, pred.column_id, col_err
+        );
+        if (nullptr == col) {
+            error = "column not found or out of bounds for predicate (column_id="
+                    + std::to_string(pred.column_id) + ")";
+            return 1;
+        }
+        resolved_pred_cols.push_back(*col);
     }
 
     EncodedBufferRequest gpu_request{
             d_ert,
             d_ert_size,
             reader.get_num_messages(),
-            std::span<ColumnDesc const>{stream_columns},
-            col->primary_offset_bytes,
-            request.value
+            std::span<ColumnDesc const>{adjusted_columns},
+            std::span<ColumnDesc const>{resolved_pred_cols},
+            std::span<ColumnPredicate const>{request.predicates},
+            request.merge_op
     };
 
     EncodedBufferResult gpu_result;
-    auto status = cuda_scan_int_eq_to_encoded_buffer(gpu_request, gpu_result);
+    auto status = cuda_scan_to_encoded_buffer(gpu_request, gpu_result);
     if (cudaSuccess != status) {
         if (nullptr != gpu_result.buffer) {
             free_host_buffer(gpu_result.buffer);
         }
         error = std::string("failed to build compact ERT buffer on GPU: ")
-               + cudaGetErrorString(status) + " (num_rows="
-               + std::to_string(reader.get_num_messages()) + ", num_cols="
-               + std::to_string(stream_columns.size()) + ", ert_size="
-               + std::to_string(d_ert_size) + ")";
+                + cudaGetErrorString(status) + " (num_rows="
+                + std::to_string(reader.get_num_messages()) + ", num_cols="
+                + std::to_string(adjusted_columns.size()) + ", ert_size="
+                + std::to_string(d_ert_size) + ")";
         return 1;
     }
 

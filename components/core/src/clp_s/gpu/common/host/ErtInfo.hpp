@@ -11,7 +11,7 @@
 #include "../../../SchemaReader.hpp"
 #include "../../../SchemaTree.hpp"
 #include "ErtInfoTypes.hpp"
-#include "ScanRequest.hpp"
+#include "ScanRequestTypes.hpp"
 
 namespace clp_s::gpu {
 
@@ -33,13 +33,13 @@ int compute_column_descs_from_metadata(
 );
 
 /**
- * Finds and validates an Int64 column for a scan request.
+ * Finds and validates a column by ID and type within the ERT buffer.
  * @return Pointer to the matching ColumnDesc, or nullptr on error (out_error set).
  */
-ColumnDesc const* find_int64_column(
+ColumnDesc const* find_column(
         ErtBufferView const& buffer_view,
         std::span<ColumnDesc const> columns,
-        IntEqScanRequest const& request,
+        int32_t column_id,
         ScanCompatError& out_error
 );
 

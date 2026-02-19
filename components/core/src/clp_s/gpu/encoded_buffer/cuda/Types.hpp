@@ -1,6 +1,8 @@
 #ifndef CLP_S_GPU_ENCODED_BUFFER_CUDA_TYPES_HPP
 #define CLP_S_GPU_ENCODED_BUFFER_CUDA_TYPES_HPP
 
+#include <span>
+
 #include "Scan.hpp"
 #include "../../common/cuda/Transfer.hpp"
 
@@ -25,12 +27,12 @@ struct DeviceContext {
 
 /**
  * Groups the inputs needed by compute_column_offsets and pack_all_columns:
- * the original request (column descriptors), the device-side buffers
- * (mutable, since the encoded output buffer is allocated and written during packing),
- * and the number of rows that passed the scan filter.
+ * the column descriptors, the device-side buffers (mutable, since the encoded
+ * output buffer is allocated and written during packing), and the number of
+ * rows that passed the scan filter.
  */
 struct PackContext {
-    EncodedBufferRequest const& request;
+    std::span<ColumnDesc const> columns;
     DeviceContext& device_ctx;
     uint64_t num_matches;
 };

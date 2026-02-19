@@ -9,26 +9,39 @@
 #include "../../common/host/ErtInfo.hpp"
 
 namespace clp_s::gpu {
-ScanCompatError run_int_eq_to_bitmap(
+ScanCompatError run_scan_to_bitmap(
         SchemaReader& reader,
-        IntEqScanRequest const& request,
+        ScanRequest const& request,
         std::span<ColumnDesc const> columns,
         std::vector<uint8_t>& out_bitmap
 ) {
-    auto const buffer_view = get_ert_buffer_view(reader);
-    ScanCompatError err;
-    auto const* col = find_int64_column(buffer_view, columns, request, err);
-    if (nullptr == col) {
-        return err;
+    if (request.predicates.empty()) {
+        return ScanCompatError::UnsupportedExpressionType;
     }
 
-    out_bitmap.assign(col->length, 0);
-    auto status = cuda_scan_int_eq_to_bitmap(
+    auto const buffer_view = get_ert_buffer_view(reader);
+
+    // Resolve all columns before launching GPU work
+    std::vector<ColumnDesc> resolved_columns;
+    resolved_columns.reserve(request.predicates.size());
+    for (auto const& pred : request.predicates) {
+        ScanCompatError err;
+        auto const* col = find_column(buffer_view, columns, pred.column_id, err);
+        if (nullptr == col) {
+            return err;
+        }
+        resolved_columns.push_back(*col);
+    }
+
+    size_t const num_rows = resolved_columns[0].length;
+    out_bitmap.assign(num_rows, 0);
+
+    auto status = cuda_scan_to_bitmap(
             buffer_view.data,
             buffer_view.size,
-            col->primary_offset_bytes,
-            col->length,
-            request.value,
+            request,
+            resolved_columns,
+            num_rows,
             out_bitmap.data(),
             out_bitmap.size()
     );
@@ -38,10 +51,10 @@ ScanCompatError run_int_eq_to_bitmap(
 
     auto matches = std::count(out_bitmap.begin(), out_bitmap.end(), static_cast<uint8_t>(1));
     SPDLOG_DEBUG(
-            "GPU bitmap scan column_id={} matches={}/{}.",
-            col->column_id,
+            "GPU bitmap scan predicates={} matches={}/{}.",
+            request.predicates.size(),
             matches,
-            col->length
+            num_rows
     );
     return ScanCompatError::None;
 }

@@ -145,6 +145,7 @@ set(
         gpu/common/host/ErtInfoTypes.hpp
         gpu/common/host/ScanRequest.cpp
         gpu/common/host/ScanRequest.hpp
+        gpu/common/host/ScanRequestTypes.hpp
         gpu/bitmap/host/Scan.cpp
         gpu/bitmap/host/Scan.hpp
         gpu/bitmap/host/Output.cpp
