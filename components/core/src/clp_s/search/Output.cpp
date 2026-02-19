@@ -239,13 +239,15 @@ bool Output::filter() {
                     auto const& packed_meta
                             = m_archive_reader->get_packed_stream_metadata(stream_id);
 
-                    auto const load_start = SearchTiming::Clock::now();
+                    auto const io_start = SearchTiming::Clock::now();
                     m_archive_reader->read_stream_compressed(
                             stream_id,
                             compressed_buf,
                             compressed_buf_size
                     );
+                    timing.add_compressed_io(SearchTiming::Clock::now() - io_start);
 
+                    auto const decompress_start = SearchTiming::Clock::now();
                     std::string decompress_error;
                     if (0
                         != clp_s::gpu::decompress_stream_to_device(
@@ -262,7 +264,7 @@ bool Output::filter() {
                         SPDLOG_ERROR("GPU stream decompression failed: {}", decompress_error);
                         return false;
                     }
-                    timing.add_schema_table_load(SearchTiming::Clock::now() - load_start);
+                    timing.add_schema_table_load(SearchTiming::Clock::now() - decompress_start);
                 }
 
                 auto& reader = m_archive_reader->init_schema_table(
@@ -290,22 +292,22 @@ bool Output::filter() {
                     SPDLOG_ERROR("GPU encoded buffer scan failed: {}", error_message);
                     return false;
                 }
-                auto const gpu_done = SearchTiming::Clock::now();
+                timing.add_scan(
+                        SearchTiming::Clock::now() - scan_start,
+                        reader.get_num_messages()
+                );
                 auto matches = static_cast<size_t>(encoded_buffer.num_rows);
                 if (0 != matches) {
-                    auto const original_num_messages = reader.get_num_messages();
+                    auto const serialize_start = SearchTiming::Clock::now();
                     reader.reset_read_state(encoded_buffer.num_rows);
                     reader.load(encoded_buffer.data, 0, encoded_buffer.size);
                     std::string msg;
                     while (reader.get_next_message(msg)) {
                         m_output_handler->write(msg);
                     }
-                    timing.add_scan(
-                            SearchTiming::Clock::now() - scan_start,
-                            original_num_messages
+                    timing.add_serialization(
+                            SearchTiming::Clock::now() - serialize_start
                     );
-                } else {
-                    timing.add_scan(gpu_done - scan_start, reader.get_num_messages());
                 }
                 break;
             }
@@ -398,10 +400,15 @@ bool Output::filter() {
                     );
                     return false;
                 }
+                timing.add_scan(
+                        SearchTiming::Clock::now() - scan_start,
+                        reader.get_num_messages()
+                );
                 auto matches = static_cast<size_t>(
                         std::count(bitmap.begin(), bitmap.end(), static_cast<uint8_t>(1))
                 );
                 if (0 != matches) {
+                    auto const serialize_start = SearchTiming::Clock::now();
                     std::string error_message;
                     if (0
                         != clp_s::gpu::emit_int_matches(
@@ -414,11 +421,10 @@ bool Output::filter() {
                         SPDLOG_ERROR("Bitmap scan output failed: {}", error_message);
                         return false;
                     }
+                    timing.add_serialization(
+                            SearchTiming::Clock::now() - serialize_start
+                    );
                 }
-                timing.add_scan(
-                        SearchTiming::Clock::now() - scan_start,
-                        reader.get_num_messages()
-                );
                 break;
             }
         }

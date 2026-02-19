@@ -58,6 +58,12 @@ public:
      */
     void add_string_query_plan(std::chrono::nanoseconds duration);
     /**
+     * Adds elapsed time spent reading compressed stream data from disk.
+     *
+     * @param duration Time spent reading compressed data.
+     */
+    void add_compressed_io(std::chrono::nanoseconds duration);
+    /**
      * Adds elapsed time spent reading and loading a schema table.
      *
      * @param duration Time spent reading and loading a schema table.
@@ -70,12 +76,18 @@ public:
      */
     void add_total_search(std::chrono::nanoseconds duration);
     /**
-     * Adds elapsed time spent scanning records and emitting output.
+     * Adds elapsed time spent scanning records.
      *
-     * @param duration Time spent scanning and outputting
+     * @param duration Time spent scanning
      * @param messages_scanned Number of messages scanned
      */
     void add_scan(std::chrono::nanoseconds duration, uint64_t messages_scanned);
+    /**
+     * Adds elapsed time spent serializing matched records to output.
+     *
+     * @param duration Time spent serializing and writing output.
+     */
+    void add_serialization(std::chrono::nanoseconds duration);
     /**
      * Sets the total wall-clock time for the entire program.
      *
@@ -99,9 +111,11 @@ private:
     std::array<DictStats, 3> m_dict_stats{};
     std::chrono::nanoseconds m_table_metadata_load{};
     std::chrono::nanoseconds m_string_query_plan{};
+    std::chrono::nanoseconds m_compressed_io{};
     std::chrono::nanoseconds m_schema_table_load{};
     std::chrono::nanoseconds m_total_search{};
     std::chrono::nanoseconds m_scan{};
+    std::chrono::nanoseconds m_serialization{};
     uint64_t m_scanned_messages{0};
     std::chrono::nanoseconds m_wall_clock{};
 };
@@ -140,9 +154,11 @@ public:
     void add_dict_load(DictionaryType, std::chrono::nanoseconds, size_t) {}
     void add_table_metadata_load(std::chrono::nanoseconds) {}
     void add_string_query_plan(std::chrono::nanoseconds) {}
+    void add_compressed_io(std::chrono::nanoseconds) {}
     void add_schema_table_load(std::chrono::nanoseconds) {}
     void add_total_search(std::chrono::nanoseconds) {}
     void add_scan(std::chrono::nanoseconds, uint64_t) {}
+    void add_serialization(std::chrono::nanoseconds) {}
     void set_wall_clock(std::chrono::nanoseconds) {}
     void log_totals() const {}
 };
