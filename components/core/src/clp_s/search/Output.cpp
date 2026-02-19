@@ -211,13 +211,19 @@ bool Output::filter() {
                     return false;
                 }
 
-                clp_s::gpu::IntEqScanRequest request;
-                auto error = clp_s::gpu::build_int_eq_request(
+                clp_s::gpu::ScanRequest request;
+                auto error = clp_s::gpu::build_scan_request(
                         m_expr.get(),
                         *m_schema_tree,
+                        m_query_runner.get_string_var_match_map(),
                         request
                 );
                 if (clp_s::gpu::ScanCompatError::None != error) {
+                    if (clp_s::gpu::ScanCompatError::VarStringNotInDictionary == error) {
+                        // Defensive: upstream evaluation should have already pruned
+                        // schemas with no matching VarString dict entry
+                        break;
+                    }
                     SPDLOG_ERROR(
                             "Column scan enabled but query is incompatible: {}",
                             clp_s::gpu::scan_error_to_string(error)
@@ -270,7 +276,7 @@ bool Output::filter() {
                 clp_s::gpu::EncodedBuffer encoded_buffer;
                 std::string error_message;
                 if (0
-                    != clp_s::gpu::run_int_eq_to_encoded_buffer(
+                    != clp_s::gpu::run_scan_to_encoded_buffer(
                             reader,
                             request,
                             encoded_buffer,
@@ -333,13 +339,19 @@ bool Output::filter() {
                     return false;
                 }
 
-                clp_s::gpu::IntEqScanRequest request;
-                auto error = clp_s::gpu::build_int_eq_request(
+                clp_s::gpu::ScanRequest request;
+                auto error = clp_s::gpu::build_scan_request(
                         m_expr.get(),
                         *m_schema_tree,
+                        m_query_runner.get_string_var_match_map(),
                         request
                 );
                 if (clp_s::gpu::ScanCompatError::None != error) {
+                    if (clp_s::gpu::ScanCompatError::VarStringNotInDictionary == error) {
+                        // Defensive: upstream evaluation should have already pruned
+                        // schemas with no matching VarString dict entry
+                        break;
+                    }
                     SPDLOG_ERROR(
                             "Column scan enabled but query is incompatible: {}",
                             clp_s::gpu::scan_error_to_string(error)
@@ -361,17 +373,17 @@ bool Output::filter() {
                 clp_s::gpu::ScanCompatError scan_err;
                 switch (m_scan_mode) {
                     case ScanMode::CpuBitmap:
-                        scan_err = clp_s::gpu::run_cpu_int_eq_to_bitmap(
+                        scan_err = clp_s::gpu::run_cpu_scan_to_bitmap(
                                 reader, request, column_descs, bitmap
                         );
                         break;
                     case ScanMode::CpuSimdBitmap:
-                        scan_err = clp_s::gpu::run_cpu_simd_int_eq_to_bitmap(
+                        scan_err = clp_s::gpu::run_cpu_simd_scan_to_bitmap(
                                 reader, request, column_descs, bitmap
                         );
                         break;
                     case ScanMode::GpuBitmap:
-                        scan_err = clp_s::gpu::run_int_eq_to_bitmap(
+                        scan_err = clp_s::gpu::run_scan_to_bitmap(
                                 reader, request, column_descs, bitmap
                         );
                         break;

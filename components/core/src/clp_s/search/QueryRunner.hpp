@@ -75,6 +75,14 @@ public:
     void global_init();
 
     /**
+     * @return A const reference to the pre-computed var match map for GPU scan requests.
+     */
+    auto get_string_var_match_map() const
+            -> std::map<std::string, std::unordered_set<int64_t>> const& {
+        return m_string_var_match_map;
+    }
+
+    /**
      * Initializes the query processing context for a given schema.
      *
      * It clears any previous schema-specific data and initializes internal data structures required

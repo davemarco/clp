@@ -10,18 +10,16 @@ ErtBufferView get_ert_buffer_view(SchemaReader const& reader) {
     return {reader.get_ert_buffer_ptr(), reader.get_ert_buffer_size()};
 }
 
-ColumnDesc const* find_int64_column(
+ColumnDesc const* find_column(
         ErtBufferView const& buffer_view,
         std::span<ColumnDesc const> columns,
-        IntEqScanRequest const& request,
+        int32_t column_id,
         ScanCompatError& out_error
 ) {
     auto it = std::find_if(
             columns.begin(),
             columns.end(),
-            [&](ColumnDesc const& col) {
-                return col.type == ColumnType::Int64 && col.column_id == request.column_id;
-            }
+            [&](ColumnDesc const& col) { return col.column_id == column_id; }
     );
     if (it == columns.end()) {
         out_error = ScanCompatError::ColumnMissingInSchema;

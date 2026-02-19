@@ -3,44 +3,76 @@
 #include "../../common/cuda/Transfer.hpp"
 
 namespace clp_s::gpu {
-int cuda_scan_int_eq_to_bitmap(
+int cuda_scan_to_bitmap(
         void const* host_ert_buffer,
         size_t ert_size,
-        size_t column_offset_bytes,
-        size_t column_length,
-        int64_t target_value,
+        ScanRequest const& request,
+        std::span<ColumnDesc const> resolved_columns,
+        size_t num_rows,
         uint8_t* out_bitmap,
         size_t bitmap_size
 ) {
-    if (nullptr == out_bitmap || bitmap_size < column_length) {
+    if (request.predicates.empty() || resolved_columns.size() != request.predicates.size()) {
         return 1;
     }
-    if (nullptr == host_ert_buffer || 0 == column_length || 0 == ert_size) {
-        return 0;
+    if (nullptr == host_ert_buffer || 0 == ert_size) {
+        return 1;
+    }
+    if (nullptr == out_bitmap || bitmap_size < num_rows) {
+        return 1;
     }
 
+    // Copy ERT buffer to device (once, reused for all columns)
     DeviceBufferGuard device_ert;
     auto status = copy_to_device(host_ert_buffer, ert_size, device_ert.buf);
     if (cudaSuccess != status) {
         return 1;
     }
 
-    DeviceBufferGuard device_bitmap;
-    status = scan_int_eq_to_device_bitmap(
-            static_cast<char const*>(device_ert.buf.ptr),
-            column_offset_bytes,
-            column_length,
-            target_value,
-            device_bitmap.buf
-    );
+    char const* d_ert_base = static_cast<char const*>(device_ert.buf.ptr);
+
+    // Copy all predicate var-dict IDs to device upfront
+    std::vector<DeviceBufferGuard> d_predicate_var_dict_bufs(request.predicates.size());
+    std::vector<uint64_t const*> d_predicate_var_dict_ids(request.predicates.size(), nullptr);
+    for (size_t i = 0; i < request.predicates.size(); ++i) {
+        status = copy_predicate_var_dict_ids_to_device(
+                request.predicates[i],
+                d_predicate_var_dict_bufs[i],
+                d_predicate_var_dict_ids[i]
+        );
+        if (cudaSuccess != status) {
+            return 1;
+        }
+    }
+
+    // Allocate bitmap initialized to merge-op identity (all 1s for AND, all 0s for OR)
+    DeviceBufferGuard result_bitmap;
+    status = alloc_initialized_bitmap(num_rows, request.merge_op, result_bitmap.buf);
     if (cudaSuccess != status) {
         return 1;
     }
 
+    // Scan each predicate and merge into the result bitmap in-place
+    for (size_t i = 0; i < request.predicates.size(); ++i) {
+        status = scan_predicate_into_bitmap(
+                d_ert_base,
+                resolved_columns[i],
+                request.predicates[i],
+                d_predicate_var_dict_ids[i],
+                request.predicates[i].var_dict_ids.size(),
+                request.merge_op,
+                static_cast<uint8_t*>(result_bitmap.buf.ptr)
+        );
+        if (cudaSuccess != status) {
+            return 1;
+        }
+    }
+
+    // Copy result bitmap back to host
     status = cudaMemcpy(
             out_bitmap,
-            device_bitmap.buf.ptr,
-            column_length * sizeof(uint8_t),
+            result_bitmap.buf.ptr,
+            num_rows * sizeof(uint8_t),
             cudaMemcpyDeviceToHost
     );
     return (cudaSuccess == status) ? 0 : 1;

@@ -17,9 +17,8 @@ namespace {
  * @param pack_ctx Scan context with columns, device buffers, and match count.
  * @param column_offsets[out] Byte offset into the output buffer for each column.
  * @param total_size[out] Total output buffer size in bytes.
- * @return cudaSuccess on success, otherwise the CUDA error code.
  */
-cudaError_t compute_column_offsets(
+void compute_column_offsets(
         PackContext const& pack_ctx,
         std::vector<size_t>& column_offsets,
         size_t& total_size
@@ -27,9 +26,14 @@ cudaError_t compute_column_offsets(
     column_offsets.clear();
     total_size = 0;
 
-    column_offsets.reserve(pack_ctx.request.columns.size());
+    column_offsets.reserve(pack_ctx.columns.size());
 
-    for (auto const& column : pack_ctx.request.columns) {
+    // Helper: round up to 8-byte alignment so that every column starts at
+    // an address suitable for int64_t / double / uint64_t loads/stores.
+    auto const align8 = [](size_t v) -> size_t { return (v + 7) & ~size_t{7}; };
+
+    for (auto const& column : pack_ctx.columns) {
+        total_size = align8(total_size);
         column_offsets.push_back(total_size);
         switch (column.type) {
             case ColumnType::Int64:
@@ -51,8 +55,6 @@ cudaError_t compute_column_offsets(
                 break;
         }
     }
-
-    return cudaSuccess;
 }
 
 /**
@@ -66,8 +68,8 @@ cudaError_t pack_all_columns(
         PackContext const& ctx,
         std::span<size_t const> column_offsets
 ) {
-    for (size_t i = 0; i < ctx.request.columns.size(); ++i) {
-        auto status = pack_fixed_column(ctx.request.columns[i], column_offsets[i], ctx);
+    for (size_t i = 0; i < ctx.columns.size(); ++i) {
+        auto status = pack_fixed_column(ctx.columns[i], column_offsets[i], ctx);
         if (cudaSuccess != status) {
             return status;
         }
@@ -76,9 +78,14 @@ cudaError_t pack_all_columns(
 }
 }  // namespace
 
-cudaError_t cuda_scan_int_eq_to_encoded_buffer(EncodedBufferRequest const& request, EncodedBufferResult& result) {
-    auto const columns = request.columns;
-    if (nullptr == request.d_ert_ptr || columns.empty()) {
+cudaError_t cuda_scan_to_encoded_buffer(
+        EncodedBufferRequest const& request,
+        EncodedBufferResult& result
+) {
+    if (nullptr == request.d_ert_ptr || request.columns.empty()
+        || request.predicates.empty()
+        || request.resolved_pred_cols.size() != request.predicates.size())
+    {
         return cudaErrorInvalidValue;
     }
 
@@ -90,18 +97,58 @@ cudaError_t cuda_scan_int_eq_to_encoded_buffer(EncodedBufferRequest const& reque
     device_ctx.ert.ptr = request.d_ert_ptr;
     device_ctx.ert.size = request.ert_size;
 
-    auto status = scan_int_eq_to_device_bitmap(
-            static_cast<char const*>(device_ctx.ert.ptr),
-            request.scan_column_offset_bytes,
+    char const* d_ert_base = static_cast<char const*>(device_ctx.ert.ptr);
+
+    // Step 1a: Copy all predicate var-dict IDs to device upfront
+    std::vector<DeviceBufferGuard> d_predicate_var_dict_bufs(request.predicates.size());
+    std::vector<uint64_t const*> d_predicate_var_dict_ids(request.predicates.size(), nullptr);
+    for (size_t i = 0; i < request.predicates.size(); ++i) {
+        auto status = copy_predicate_var_dict_ids_to_device(
+                request.predicates[i],
+                d_predicate_var_dict_bufs[i],
+                d_predicate_var_dict_ids[i]
+        );
+        if (cudaSuccess != status) {
+            fprintf(stderr,
+                    "[gpu] step=copy_predicate_var_dict_ids[%zu] err=%s\n",
+                    i,
+                    cudaGetErrorString(status));
+            return status;
+        }
+    }
+
+    // Step 1b: Allocate bitmap initialized to merge-op identity
+    cudaError_t status = alloc_initialized_bitmap(
             request.num_rows,
-            request.target_value,
+            request.merge_op,
             device_ctx.bitmap.buf
     );
     if (cudaSuccess != status) {
-        fprintf(stderr, "[gpu] step=bitmap_scan err=%s\n", cudaGetErrorString(status));
+        fprintf(stderr, "[gpu] step=alloc_bitmap err=%s\n", cudaGetErrorString(status));
         return status;
     }
 
+    // Step 1c: Scan each predicate and merge into bitmap in-place
+    for (size_t i = 0; i < request.predicates.size(); ++i) {
+        status = scan_predicate_into_bitmap(
+                d_ert_base,
+                request.resolved_pred_cols[i],
+                request.predicates[i],
+                d_predicate_var_dict_ids[i],
+                request.predicates[i].var_dict_ids.size(),
+                request.merge_op,
+                static_cast<uint8_t*>(device_ctx.bitmap.buf.ptr)
+        );
+        if (cudaSuccess != status) {
+            fprintf(stderr,
+                    "[gpu] step=bitmap_scan[%zu] err=%s\n",
+                    i,
+                    cudaGetErrorString(status));
+            return status;
+        }
+    }
+
+    // Step 2: Bitmap -> row IDs
     uint64_t num_matches = 0;
     status = bitmap_to_row_ids(
             static_cast<uint8_t const*>(device_ctx.bitmap.buf.ptr),
@@ -109,7 +156,6 @@ cudaError_t cuda_scan_int_eq_to_encoded_buffer(EncodedBufferRequest const& reque
             device_ctx.row_ids.buf,
             num_matches
     );
-
     if (cudaSuccess != status) {
         fprintf(stderr, "[gpu] step=bitmap_to_row_ids err=%s\n", cudaGetErrorString(status));
         return status;
@@ -120,20 +166,19 @@ cudaError_t cuda_scan_int_eq_to_encoded_buffer(EncodedBufferRequest const& reque
         return cudaSuccess;
     }
 
+    // Step 3: Pack all columns for matching rows
     std::vector<size_t> column_offsets;
     size_t total_size = 0;
+    PackContext pack_ctx{request.columns, device_ctx, num_matches};
 
-    PackContext pack_ctx{request, device_ctx, num_matches};
-
-    status = compute_column_offsets(pack_ctx, column_offsets, total_size);
-    if (cudaSuccess != status) {
-        fprintf(stderr, "[gpu] step=compute_offsets err=%s\n", cudaGetErrorString(status));
-        return status;
-    }
+    compute_column_offsets(pack_ctx, column_offsets, total_size);
 
     status = cudaMalloc(&device_ctx.encoded_buffer.buf.ptr, total_size);
     if (cudaSuccess != status) {
-        fprintf(stderr, "[gpu] step=alloc_output err=%s total_size=%zu\n", cudaGetErrorString(status), total_size);
+        fprintf(stderr,
+                "[gpu] step=alloc_output err=%s total_size=%zu\n",
+                cudaGetErrorString(status),
+                total_size);
         return status;
     }
     device_ctx.encoded_buffer.buf.size = total_size;
@@ -142,12 +187,12 @@ cudaError_t cuda_scan_int_eq_to_encoded_buffer(EncodedBufferRequest const& reque
             pack_ctx,
             std::span<size_t const>{column_offsets.data(), column_offsets.size()}
     );
-
     if (cudaSuccess != status) {
         fprintf(stderr, "[gpu] step=pack_columns err=%s\n", cudaGetErrorString(status));
         return status;
     }
 
+    // Step 4: Copy to host
     void* host_ptr = nullptr;
     status = copy_to_host(device_ctx.encoded_buffer.buf, &host_ptr);
     if (cudaSuccess != status) {
