@@ -39,6 +39,12 @@ using clp_s::search::ast::OrExpr;
 namespace clp_s::search {
 void QueryRunner::global_init() {
     populate_internal_columns();
+
+    if (false == m_schema_path.empty()) {
+        clp::load_lexer_from_file(m_schema_path, m_lexer);
+        m_use_heuristic = false;
+    }
+
     populate_string_queries(m_expr);
 }
 
@@ -887,7 +893,6 @@ void QueryRunner::populate_string_queries(std::shared_ptr<Expression> const& exp
 
             // search on log type dictionary
             clp::epochtime_t placeholder_timestamp{};
-            log_surgeon::lexers::ByteLexer placeholder_lexer;
             m_string_query_map.emplace(
                     query_string,
                     clp::GrepCore::process_raw_query(
@@ -897,8 +902,8 @@ void QueryRunner::populate_string_queries(std::shared_ptr<Expression> const& exp
                             placeholder_timestamp,
                             placeholder_timestamp,
                             m_ignore_case,
-                            placeholder_lexer,
-                            true
+                            m_lexer,
+                            m_use_heuristic
                     )
             );
         }

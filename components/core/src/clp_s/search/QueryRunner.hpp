@@ -16,7 +16,10 @@
 
 #include <simdjson.h>
 
+#include <log_surgeon/Lexer.hpp>
+
 #include "../../clp/Query.hpp"
+#include "../../clp/Utils.hpp"
 #include "../ArchiveReader.hpp"
 #include "../ColumnReader.hpp"
 #include "../DictionaryReader.hpp"
@@ -47,12 +50,14 @@ public:
             std::shared_ptr<SchemaMatch> const& match,
             std::shared_ptr<ast::Expression> const& expr,
             std::shared_ptr<ArchiveReader> const& archive_reader,
-            bool ignore_case
+            bool ignore_case,
+            std::string schema_path
     )
             : m_archive_reader(archive_reader),
               m_expr(expr),
               m_match(match),
               m_ignore_case(ignore_case),
+              m_schema_path(std::move(schema_path)),
               m_schema_tree(m_archive_reader->get_schema_tree()),
               m_var_dict(m_archive_reader->get_variable_dictionary()),
               m_log_dict(m_archive_reader->get_log_type_dictionary()),
@@ -134,6 +139,10 @@ private:
     std::shared_ptr<TimestampDictionaryReader> m_timestamp_dict;
 
     std::shared_ptr<ReaderUtils::SchemaMap> m_schemas;
+
+    std::string m_schema_path;
+    log_surgeon::lexers::ByteLexer m_lexer;
+    bool m_use_heuristic{true};
 
     std::map<std::string, std::optional<clp::Query>> m_string_query_map;
     std::map<std::string, std::unordered_set<int64_t>> m_string_var_match_map;

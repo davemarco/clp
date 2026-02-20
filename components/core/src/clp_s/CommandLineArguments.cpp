@@ -547,6 +547,12 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                     ->default_value("")
                     ->value_name("MODE"),
                 "Column scan mode: gpu, gpu-bitmap, cpu-bitmap, or cpu-simd-bitmap"
+            )(
+                "schema-path",
+                po::value<std::string>(&m_schema_path)
+                    ->default_value(m_schema_path)
+                    ->value_name("PATH"),
+                "Path to log-surgeon schema used to enable DFA query planning"
             );
             // clang-format on
             search_options.add(match_options);

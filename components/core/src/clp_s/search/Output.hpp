@@ -36,8 +36,9 @@ public:
            std::shared_ptr<ArchiveReader> const& archive_reader,
            std::unique_ptr<OutputHandler> output_handler,
            bool ignore_case,
-           ScanMode scan_mode)
-            : m_query_runner(match, expr, archive_reader, ignore_case),
+           ScanMode scan_mode,
+           std::string schema_path)
+            : m_query_runner(match, expr, archive_reader, ignore_case, std::move(schema_path)),
               m_archive_reader(archive_reader),
               m_schema_tree(m_archive_reader->get_schema_tree()),
               m_expr(expr),

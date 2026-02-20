@@ -105,6 +105,7 @@ public:
 
     bool get_ignore_case() const { return m_ignore_case; }
     ScanMode get_scan_mode() const { return m_scan_mode; }
+    std::string const& get_schema_path() const { return m_schema_path; }
 
     std::string const& get_reducer_host() const { return m_reducer_host; }
 
@@ -249,6 +250,7 @@ private:
     bool m_ignore_case{false};
     std::string m_scan_mode_str;
     ScanMode m_scan_mode{ScanMode::None};
+    std::string m_schema_path{"components/core/config/schemas.txt"};
     std::vector<std::string> m_projection_columns;
 
     // Search aggregation variables

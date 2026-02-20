@@ -73,6 +73,8 @@ set(
         ../clp/hash_utils.hpp
         ../clp/SchemaSearcher.cpp
         ../clp/SchemaSearcher.hpp
+        ../clp/Utils.cpp
+        ../clp/Utils.hpp
         ../clp/ir/constants.hpp
         ../clp/ir/LogEvent.hpp
         ../clp/ir/parsing.cpp
