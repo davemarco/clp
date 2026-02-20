@@ -51,7 +51,17 @@ void compute_column_offsets(
             case ColumnType::DateString:
                 total_size += pack_ctx.num_matches * sizeof(int64_t) * 2;
                 break;
-            default:
+            case ColumnType::DeltaInt64:
+                total_size += pack_ctx.num_matches * sizeof(int64_t);
+                break;
+            case ColumnType::FormattedDouble:
+                total_size += pack_ctx.num_matches * (sizeof(double) + sizeof(uint16_t));
+                break;
+            case ColumnType::DictionaryFloat:
+                total_size += pack_ctx.num_matches * sizeof(int64_t);
+                break;
+            case ColumnType::Timestamp:
+                total_size += pack_ctx.num_matches * sizeof(int64_t) * 2;
                 break;
         }
     }
@@ -97,7 +107,25 @@ cudaError_t cuda_scan_to_encoded_buffer(
     device_ctx.ert.ptr = request.d_ert_ptr;
     device_ctx.ert.size = request.ert_size;
 
-    char const* d_ert_base = static_cast<char const*>(device_ctx.ert.ptr);
+    char* d_ert_mutable = static_cast<char*>(device_ctx.ert.ptr);
+    char const* d_ert_base = d_ert_mutable;
+
+    // Step 0: Prefix-sum all DeltaInt64/Timestamp columns in-place so they
+    // contain absolute values for scanning and packing.
+    for (auto const& col : request.columns) {
+        if (col.type == ColumnType::DeltaInt64 || col.type == ColumnType::Timestamp) {
+            auto ps_status = prefix_sum_column_in_place(
+                    d_ert_mutable, col.primary_offset_bytes, col.length
+            );
+            if (cudaSuccess != ps_status) {
+                fprintf(stderr,
+                        "[gpu] step=prefix_sum col_id=%d err=%s\n",
+                        col.column_id,
+                        cudaGetErrorString(ps_status));
+                return ps_status;
+            }
+        }
+    }
 
     // Step 1a: Copy all predicate var-dict IDs to device upfront
     std::vector<DeviceBufferGuard> d_predicate_var_dict_bufs(request.predicates.size());

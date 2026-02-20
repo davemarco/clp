@@ -9,7 +9,7 @@
 
 #include "ColumnReader.hpp"
 #include "DictionaryReader.hpp"
-#include "VariableDecoder.hpp"
+#include "../clp/EncodedVariableInterpreter.hpp"
 
 namespace clp_s {
 
@@ -77,7 +77,7 @@ private:
             logtype_entry.decode_log_type();
         }
         auto vars = gather_vars(cur_message);
-        VariableDecoder::decode_variables_into_message(logtype_entry, *m_var_dict, vars, out);
+        clp::EncodedVariableInterpreter::decode_variables_into_message(logtype_entry, *m_var_dict, vars, out);
     }
 
     Int64ColumnReader* m_logtype_reader;

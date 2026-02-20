@@ -38,7 +38,7 @@ size_t DeltaEncodedInt64ColumnWriter::add_value(ParsedMessage::variable_t& value
     return add_value(std::get<int64_t>(value));
 }
 
-void DeltaEncodedInt64ColumnWriter::store(ZstdCompressor& compressor) {
+void DeltaEncodedInt64ColumnWriter::store(ChunkedZstdCompressor& compressor) {
     size_t size = m_values.size() * sizeof(int64_t);
     compressor.write(reinterpret_cast<char const*>(m_values.data()), size);
 }
@@ -60,7 +60,7 @@ size_t FormattedFloatColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(double) + sizeof(float_format_t);
 }
 
-void FormattedFloatColumnWriter::store(ZstdCompressor& compressor) {
+void FormattedFloatColumnWriter::store(ChunkedZstdCompressor& compressor) {
     assert(m_formats.size() == m_values.size());
     auto const values_size = m_values.size() * sizeof(double);
     auto const format_size = m_formats.size() * sizeof(float_format_t);
@@ -75,7 +75,7 @@ size_t DictionaryFloatColumnWriter::add_value(ParsedMessage::variable_t& value) 
     return sizeof(clp::variable_dictionary_id_t);
 }
 
-void DictionaryFloatColumnWriter::store(ZstdCompressor& compressor) {
+void DictionaryFloatColumnWriter::store(ChunkedZstdCompressor& compressor) {
     auto size{m_var_dict_ids.size() * sizeof(clp::variable_dictionary_id_t)};
     compressor.write(reinterpret_cast<char const*>(m_var_dict_ids.data()), size);
 }
@@ -169,7 +169,7 @@ size_t VariableStringColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(clp::variable_dictionary_id_t);
 }
 
-void VariableStringColumnWriter::store(ZstdCompressor& compressor) {
+void VariableStringColumnWriter::store(ChunkedZstdCompressor& compressor) {
     auto size{m_var_dict_ids.size() * sizeof(clp::variable_dictionary_id_t)};
     compressor.write(reinterpret_cast<char const*>(m_var_dict_ids.data()), size);
 }
@@ -181,7 +181,7 @@ auto TimestampColumnWriter::add_value(ParsedMessage::variable_t& value) -> size_
     return encoded_timestamp_size + sizeof(uint64_t);
 }
 
-void TimestampColumnWriter::store(ZstdCompressor& compressor) {
+void TimestampColumnWriter::store(ChunkedZstdCompressor& compressor) {
     m_timestamps.store(compressor);
     size_t const encodings_size{m_timestamp_encodings.size() * sizeof(uint64_t)};
     compressor.write(reinterpret_cast<char const*>(m_timestamp_encodings.data()), encodings_size);

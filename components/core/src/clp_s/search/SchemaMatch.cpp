@@ -339,7 +339,7 @@ void SchemaMatch::map_descriptors_to_schema(int32_t node_id, int32_t schema_id) 
     }
     for (auto descriptor : m_column_to_descriptor[node_id]) {
         if (false == descriptor->is_pure_wildcard()) {
-            m_descriptor_to_schema[descriptor][schema_id] = node_id;
+            m_descriptor_to_schema[descriptor.get()][schema_id] = node_id;
         }
     }
 }

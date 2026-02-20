@@ -1,5 +1,6 @@
 #include "PackingKernels.cuh"
 
+#include <thrust/adjacent_difference.h>
 #include <thrust/copy.h>
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
@@ -82,6 +83,60 @@ cudaError_t pack_fixed_column(
             }
             return status;
         }
+        case ColumnType::Timestamp: {
+            // ERT primary column has been prefix-summed to absolute values.
+            // Gather absolute values, then re-delta-encode for the SchemaReader.
+            auto status = launch_gather_fixed<int64_t>(
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, ctx.num_matches, d_out
+            );
+            if (cudaSuccess == status && ctx.num_matches > 1) {
+                auto d_ptr = thrust::device_pointer_cast(reinterpret_cast<int64_t*>(d_out));
+                thrust::adjacent_difference(thrust::device, d_ptr, d_ptr + ctx.num_matches, d_ptr);
+                status = cudaGetLastError();
+            }
+            if (cudaSuccess == status) {
+                status = launch_gather_fixed<int64_t>(
+                        device_ert_base,
+                        column.secondary_offset_bytes,
+                        device_row_ids,
+                        ctx.num_matches,
+                        d_out + ctx.num_matches * sizeof(int64_t)
+                );
+            }
+            return status;
+        }
+        case ColumnType::DeltaInt64: {
+            // ERT has been prefix-summed to absolute values.
+            // Gather absolute values, then re-delta-encode for the SchemaReader.
+            auto status = launch_gather_fixed<int64_t>(
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, ctx.num_matches, d_out
+            );
+            if (cudaSuccess == status && ctx.num_matches > 1) {
+                auto d_ptr = thrust::device_pointer_cast(reinterpret_cast<int64_t*>(d_out));
+                thrust::adjacent_difference(thrust::device, d_ptr, d_ptr + ctx.num_matches, d_ptr);
+                status = cudaGetLastError();
+            }
+            return status;
+        }
+        case ColumnType::FormattedDouble: {
+            auto status = launch_gather_fixed<double>(
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, ctx.num_matches, d_out
+            );
+            if (cudaSuccess == status) {
+                status = launch_gather_fixed<uint16_t>(
+                        device_ert_base,
+                        column.secondary_offset_bytes,
+                        device_row_ids,
+                        ctx.num_matches,
+                        d_out + ctx.num_matches * sizeof(double)
+                );
+            }
+            return status;
+        }
+        case ColumnType::DictionaryFloat:
+            return launch_gather_fixed<int64_t>(
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, ctx.num_matches, d_out
+            );
         default:
             return cudaErrorInvalidValue;
     }

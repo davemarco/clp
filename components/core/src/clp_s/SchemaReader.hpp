@@ -202,19 +202,20 @@ public:
 
     /*** GPU integration start ***/
     /**
-     * Gets the message at a specific index without applying a filter.
-     * @param message
-     * @param message_idx
-     * @return true if the message index is valid, false otherwise
-     */
-    bool get_message_at(std::string& message, uint64_t message_idx);
-
-    /**
      * Resets the read state (message count, cursor, serializer) without tearing down the
      * schema or columns. Call load() after this to provide new data for the same schema.
      * @param num_messages
      */
     void reset_read_state(uint64_t num_messages);
+
+    /**
+     * Serializes the message at the given index for random-access output (e.g. bitmap scan).
+     * Ensures the serializer is initialized and sets m_cur_message so that structured CLP
+     * string fields decode the correct row. Appends a trailing newline.
+     * @param message_index
+     * @return The serialized JSON string.
+     */
+    [[nodiscard]] auto serialize_message_at(uint64_t message_index) -> std::string;
     /*** GPU integration end ***/
 
     /**

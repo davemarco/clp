@@ -66,10 +66,11 @@ if(CLP_BUILD_CLP_S_SEARCH)
                 clp::string_utils
                 clp_s::clp_dependencies
                 clp_s::io
-                clp_s_gpu
                 spdlog::spdlog
+                PUBLIC
+                clp_s_gpu
         )
         if(CLP_S_SEARCH_TIMING)
-                target_compile_definitions(clp_s_search PRIVATE CLP_S_SEARCH_TIMING_ENABLED=1)
+                target_compile_definitions(clp_s_search PUBLIC CLP_S_SEARCH_TIMING_ENABLED=1)
         endif()
 endif()

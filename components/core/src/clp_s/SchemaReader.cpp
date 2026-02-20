@@ -328,30 +328,22 @@ bool SchemaReader::get_next_message_with_metadata(
 }
 
 /*** GPU integration start ***/
-bool SchemaReader::get_message_at(std::string& message, uint64_t message_idx) {
-    if (message_idx >= m_num_messages) {
-        return false;
-    }
-
-    if (false == m_serializer_initialized) {
-        initialize_serializer();
-    }
-
-    auto const prev_message = m_cur_message;
-    m_cur_message = message_idx;
-    generate_json_string();
-    message = m_json_serializer.get_serialized_string();
-    if (message.back() != '\n') {
-        message += '\n';
-    }
-    m_cur_message = prev_message;
-    return true;
-}
-
 void SchemaReader::reset_read_state(uint64_t num_messages) {
     m_num_messages = num_messages;
     m_cur_message = 0;
     m_serializer_initialized = false;
+}
+
+auto SchemaReader::serialize_message_at(uint64_t message_index) -> std::string {
+    if (false == m_serializer_initialized) {
+        initialize_serializer();
+    }
+    m_cur_message = message_index;
+    auto message = generate_json_string(message_index);
+    if (message.empty() || message.back() != '\n') {
+        message += '\n';
+    }
+    return message;
 }
 /*** GPU integration end ***/
 

@@ -5,10 +5,10 @@
 #include <unordered_set>
 
 #include "../../../SchemaTree.hpp"
-#include "../../../search/AndExpr.hpp"
-#include "../../../search/Expression.hpp"
-#include "../../../search/FilterExpr.hpp"
-#include "../../../search/OrExpr.hpp"
+#include "../../../search/ast/AndExpr.hpp"
+#include "../../../search/ast/Expression.hpp"
+#include "../../../search/ast/FilterExpr.hpp"
+#include "../../../search/ast/OrExpr.hpp"
 
 namespace clp_s::gpu {
 namespace {
@@ -37,24 +37,24 @@ GpuFilterOp invert_op(GpuFilterOp op) {
  * Maps search::FilterOperation to GpuFilterOp.
  * @return true on success, false if the operation is not supported (EXISTS/NEXISTS).
  */
-bool map_filter_op(search::FilterOperation op, GpuFilterOp& out) {
+bool map_filter_op(search::ast::FilterOperation op, GpuFilterOp& out) {
     switch (op) {
-        case search::FilterOperation::EQ:
+        case search::ast::FilterOperation::EQ:
             out = GpuFilterOp::EQ;
             return true;
-        case search::FilterOperation::NEQ:
+        case search::ast::FilterOperation::NEQ:
             out = GpuFilterOp::NEQ;
             return true;
-        case search::FilterOperation::LT:
+        case search::ast::FilterOperation::LT:
             out = GpuFilterOp::LT;
             return true;
-        case search::FilterOperation::GT:
+        case search::ast::FilterOperation::GT:
             out = GpuFilterOp::GT;
             return true;
-        case search::FilterOperation::LTE:
+        case search::ast::FilterOperation::LTE:
             out = GpuFilterOp::LTE;
             return true;
-        case search::FilterOperation::GTE:
+        case search::ast::FilterOperation::GTE:
             out = GpuFilterOp::GTE;
             return true;
         default:
@@ -67,7 +67,7 @@ bool map_filter_op(search::FilterOperation op, GpuFilterOp& out) {
  * VarString predicates are resolved to dictionary IDs via var_match_map.
  */
 ScanCompatError convert_filter_to_predicate(
-        search::FilterExpr* filter,
+        search::ast::FilterExpr* filter,
         SchemaTree const& schema_tree,
         std::map<std::string, std::unordered_set<int64_t>> const& var_match_map,
         ColumnPredicate& out_pred
@@ -155,7 +155,7 @@ ScanCompatError convert_filter_to_predicate(
             out_pred.var_dict_ids.assign(it->second.begin(), it->second.end());
             return ScanCompatError::None;
         }
-        case NodeType::DateString: {
+        case NodeType::DeprecatedDateString: {
             out_pred.column_type = ColumnType::DateString;
             int64_t val{};
             if (false == literal->as_int(val, filter->get_operation())) {
@@ -164,6 +164,34 @@ ScanCompatError convert_filter_to_predicate(
             out_pred.int_value = val;
             return ScanCompatError::None;
         }
+        case NodeType::FormattedFloat: {
+            out_pred.column_type = ColumnType::FormattedDouble;
+            double val{};
+            if (false == literal->as_float(val, filter->get_operation())) {
+                return ScanCompatError::UnsupportedOperandType;
+            }
+            out_pred.double_value = val;
+            return ScanCompatError::None;
+        }
+        case NodeType::DeltaInteger: {
+            out_pred.column_type = ColumnType::DeltaInt64;
+            int64_t val{};
+            if (false == literal->as_int(val, filter->get_operation())) {
+                return ScanCompatError::NonIntegerLiteral;
+            }
+            out_pred.int_value = val;
+            return ScanCompatError::None;
+        }
+        case NodeType::Timestamp: {
+            out_pred.column_type = ColumnType::Timestamp;
+            int64_t val{};
+            if (false == literal->as_int(val, filter->get_operation())) {
+                return ScanCompatError::NonIntegerLiteral;
+            }
+            out_pred.int_value = val;
+            return ScanCompatError::None;
+        }
+        case NodeType::DictionaryFloat:
         case NodeType::StructuredClpString:
         case NodeType::ClpString:
         case NodeType::Object:
@@ -180,17 +208,17 @@ ScanCompatError convert_filter_to_predicate(
  * Returns an error if any child is itself a compound expression (nested AND/OR).
  */
 ScanCompatError extract_predicates(
-        search::Expression* expr,
+        search::ast::Expression* expr,
         SchemaTree const& schema_tree,
         std::map<std::string, std::unordered_set<int64_t>> const& var_match_map,
         std::vector<ColumnPredicate>& out_predicates
 ) {
     for (auto it = expr->op_begin(); it != expr->op_end(); ++it) {
-        auto* child = dynamic_cast<search::Expression*>(it->get());
+        auto* child = dynamic_cast<search::ast::Expression*>(it->get());
         if (nullptr == child) {
             return ScanCompatError::UnsupportedOperandType;
         }
-        auto* filter = dynamic_cast<search::FilterExpr*>(child);
+        auto* filter = dynamic_cast<search::ast::FilterExpr*>(child);
         if (nullptr == filter) {
             // Nested AND/OR — reject
             return ScanCompatError::UnsupportedCompoundExpression;
@@ -242,7 +270,7 @@ char const* scan_error_to_string(ScanCompatError error) {
 }
 
 ScanCompatError build_scan_request(
-        search::Expression* expr,
+        search::ast::Expression* expr,
         SchemaTree const& schema_tree,
         std::map<std::string, std::unordered_set<int64_t>> const& var_match_map,
         ScanRequest& out_request
@@ -254,9 +282,11 @@ ScanCompatError build_scan_request(
     out_request.predicates.clear();
 
     // Single FilterExpr at top level
-    if (auto* filter = dynamic_cast<search::FilterExpr*>(expr)) {
+    if (auto* filter = dynamic_cast<search::ast::FilterExpr*>(expr)) {
         ColumnPredicate pred{};
-        auto err = convert_filter_to_predicate(filter, schema_tree, var_match_map, pred);
+        auto err = convert_filter_to_predicate(
+                filter, schema_tree, var_match_map, pred
+        );
         if (ScanCompatError::None != err) {
             return err;
         }
@@ -266,9 +296,9 @@ ScanCompatError build_scan_request(
     }
 
     // AND/OR at top level
-    if (dynamic_cast<search::AndExpr*>(expr)) {
+    if (dynamic_cast<search::ast::AndExpr*>(expr)) {
         out_request.merge_op = MergeOp::And;
-    } else if (dynamic_cast<search::OrExpr*>(expr)) {
+    } else if (dynamic_cast<search::ast::OrExpr*>(expr)) {
         out_request.merge_op = MergeOp::Or;
     } else {
         return ScanCompatError::UnsupportedExpressionType;

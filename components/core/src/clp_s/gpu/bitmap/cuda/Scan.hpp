@@ -62,6 +62,21 @@ cudaError_t scan_predicate_into_bitmap(
 );
 
 /**
+ * Prefix-sums a column of int64_t values in the device ERT buffer in-place.
+ * Used to convert delta-encoded DeltaInt64/Timestamp columns to absolute values.
+ *
+ * @param device_ert_base Non-const device pointer to the ERT buffer.
+ * @param offset_bytes Byte offset to the column data.
+ * @param num_rows Number of elements in the column.
+ * @return cudaSuccess on success.
+ */
+cudaError_t prefix_sum_column_in_place(
+        char* device_ert_base,
+        size_t offset_bytes,
+        size_t num_rows
+);
+
+/**
  * Runs a scan on a host ERT buffer and returns a merged bitmap on the host.
  * Caller must pre-resolve ColumnDescs (one per predicate, in matching order).
  *

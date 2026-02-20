@@ -1,9 +1,10 @@
 #include "Output.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <span>
-#include <unordered_map>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -117,7 +118,6 @@ bool Output::filter() {
             );
         }
     }
-
     auto const string_query_plan_start = SearchTiming::Clock::now();
     m_query_runner.global_init();
     timing.add_string_query_plan(
@@ -213,7 +213,7 @@ bool Output::filter() {
 
                 clp_s::gpu::ScanRequest request;
                 auto error = clp_s::gpu::build_scan_request(
-                        m_expr.get(),
+                        m_match->get_query_for_schema(schema_id).get(),
                         *m_schema_tree,
                         m_query_runner.get_string_var_match_map(),
                         request
@@ -343,7 +343,7 @@ bool Output::filter() {
 
                 clp_s::gpu::ScanRequest request;
                 auto error = clp_s::gpu::build_scan_request(
-                        m_expr.get(),
+                        m_match->get_query_for_schema(schema_id).get(),
                         *m_schema_tree,
                         m_query_runner.get_string_var_match_map(),
                         request
@@ -411,7 +411,7 @@ bool Output::filter() {
                     auto const serialize_start = SearchTiming::Clock::now();
                     std::string error_message;
                     if (0
-                        != clp_s::gpu::emit_int_matches(
+                        != clp_s::gpu::emit_bitmap_matches(
                                 reader,
                                 bitmap,
                                 *m_output_handler,

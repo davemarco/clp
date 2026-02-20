@@ -8,7 +8,7 @@
 #include <unordered_set>
 
 #include "../../../SchemaTree.hpp"
-#include "../../../search/Expression.hpp"
+#include "../../../search/ast/Expression.hpp"
 #include "ScanRequestTypes.hpp"
 
 namespace clp_s::gpu {
@@ -24,7 +24,7 @@ namespace clp_s::gpu {
  * @return Error code (ScanCompatError::None on success).
  */
 ScanCompatError build_scan_request(
-        search::Expression* expr,
+        search::ast::Expression* expr,
         SchemaTree const& schema_tree,
         std::map<std::string, std::unordered_set<int64_t>> const& var_match_map,
         ScanRequest& out_request

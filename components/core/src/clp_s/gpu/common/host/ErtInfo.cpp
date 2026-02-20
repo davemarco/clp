@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "../../../FloatFormatEncoding.hpp"
 #include "../../../Schema.hpp"
 #include "../../../SchemaTree.hpp"
 
@@ -81,7 +82,7 @@ int compute_column_descs_from_metadata(
                 byte_offset += col_size;
                 break;
             }
-            case NodeType::DateString: {
+            case NodeType::DeprecatedDateString: {
                 size_t const ts_size = num_messages * sizeof(int64_t);
                 size_t const enc_offset = byte_offset + ts_size;
                 out.push_back(
@@ -91,6 +92,35 @@ int compute_column_descs_from_metadata(
                 byte_offset += ts_size * 2;  // timestamps + encodings
                 break;
             }
+            case NodeType::DeltaInteger: {
+                size_t const col_size = num_messages * sizeof(int64_t);
+                out.push_back(
+                        {id, ColumnType::DeltaInt64, byte_offset, 0, num_messages, sizeof(int64_t)}
+                );
+                byte_offset += col_size;
+                break;
+            }
+            case NodeType::FormattedFloat: {
+                size_t const values_size = num_messages * sizeof(double);
+                size_t const format_offset = byte_offset + values_size;
+                out.push_back(
+                        {id, ColumnType::FormattedDouble, byte_offset, format_offset,
+                         num_messages, sizeof(double)}
+                );
+                byte_offset += values_size + num_messages * sizeof(float_format_t);
+                break;
+            }
+            case NodeType::Timestamp: {
+                size_t const ts_size = num_messages * sizeof(int64_t);
+                size_t const enc_offset = byte_offset + ts_size;
+                out.push_back(
+                        {id, ColumnType::Timestamp, byte_offset, enc_offset, num_messages,
+                         sizeof(int64_t)}
+                );
+                byte_offset += ts_size * 2;  // delta timestamps + encodings
+                break;
+            }
+            case NodeType::DictionaryFloat:
             case NodeType::ClpString:
             case NodeType::UnstructuredArray:
                 error = "unsupported column type " + std::to_string(static_cast<int>(node.get_type()))

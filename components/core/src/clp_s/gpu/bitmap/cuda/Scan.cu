@@ -4,6 +4,10 @@
 #include <cstdint>
 
 #include <cuda_runtime.h>
+#include <thrust/device_ptr.h>
+#include <thrust/execution_policy.h>
+#include <thrust/scan.h>
+#include <thrust/adjacent_difference.h>
 
 #include "../../common/host/ScanRequestTypes.hpp"
 
@@ -88,7 +92,8 @@ cudaError_t copy_predicate_var_dict_ids_to_device(
         uint64_t const*& out_d_predicate_var_dict_ids
 ) {
     out_d_predicate_var_dict_ids = nullptr;
-    if (pred.column_type != ColumnType::VarString || pred.var_dict_ids.empty()) {
+    if (pred.column_type != ColumnType::VarString || pred.var_dict_ids.empty())
+    {
         return cudaSuccess;
     }
     size_t const bytes = pred.var_dict_ids.size() * sizeof(uint64_t);
@@ -187,7 +192,46 @@ cudaError_t scan_predicate_into_bitmap(
             );
             break;
         }
+        case ColumnType::FormattedDouble:
+            scan_cmp_kernel<double><<<blocks, threads_per_block>>>(
+                    device_ert_base,
+                    col.primary_offset_bytes,
+                    col.length,
+                    pred.double_value,
+                    pred.op,
+                    merge_op,
+                    device_bitmap
+            );
+            break;
         case ColumnType::DateString:
+            scan_cmp_kernel<int64_t><<<blocks, threads_per_block>>>(
+                    device_ert_base,
+                    col.primary_offset_bytes,
+                    col.length,
+                    pred.int_value,
+                    pred.op,
+                    merge_op,
+                    device_bitmap
+            );
+            break;
+        case ColumnType::DeltaInt64:
+            // ERT has been prefix-summed in-place before scanning.
+            scan_cmp_kernel<int64_t><<<blocks, threads_per_block>>>(
+                    device_ert_base,
+                    col.primary_offset_bytes,
+                    col.length,
+                    pred.int_value,
+                    pred.op,
+                    merge_op,
+                    device_bitmap
+            );
+            break;
+        case ColumnType::DictionaryFloat:
+            // DictionaryFloat predicates are rejected by build_scan_request;
+            // this case is unreachable but listed to avoid compiler warnings.
+            break;
+        case ColumnType::Timestamp:
+            // ERT has been prefix-summed in-place before scanning.
             scan_cmp_kernel<int64_t><<<blocks, threads_per_block>>>(
                     device_ert_base,
                     col.primary_offset_bytes,
@@ -200,6 +244,20 @@ cudaError_t scan_predicate_into_bitmap(
             break;
     }
 
+    return cudaGetLastError();
+}
+
+cudaError_t prefix_sum_column_in_place(
+        char* device_ert_base,
+        size_t offset_bytes,
+        size_t num_rows
+) {
+    if (0 == num_rows || nullptr == device_ert_base) {
+        return cudaSuccess;
+    }
+    auto* values = reinterpret_cast<int64_t*>(device_ert_base + offset_bytes);
+    auto d_ptr = thrust::device_pointer_cast(values);
+    thrust::inclusive_scan(thrust::device, d_ptr, d_ptr + num_rows, d_ptr);
     return cudaGetLastError();
 }
 }  // namespace clp_s::gpu

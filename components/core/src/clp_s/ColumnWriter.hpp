@@ -10,7 +10,7 @@
 #include "FloatFormatEncoding.hpp"
 #include "ParsedMessage.hpp"
 #include "TimestampDictionaryWriter.hpp"
-#include "VariableEncoder.hpp"
+#include "../clp/EncodedVariableInterpreter.hpp"
 #include "ChunkedZstdCompressor.hpp"
 #include "ZstdCompressor.hpp"
 
@@ -87,7 +87,7 @@ public:
     // Methods inherited from BaseColumnWriter
     size_t add_value(ParsedMessage::variable_t& value) override;
 
-    void store(ZstdCompressor& compressor) override;
+    void store(ChunkedZstdCompressor& compressor) override;
 
 private:
     std::vector<int64_t> m_values;
@@ -122,7 +122,7 @@ public:
     // Methods inherited from BaseColumnWriter
     size_t add_value(ParsedMessage::variable_t& value) override;
 
-    void store(ZstdCompressor& compressor) override;
+    void store(ChunkedZstdCompressor& compressor) override;
 
 private:
     std::vector<double> m_values;
@@ -142,7 +142,7 @@ public:
     // Methods inherited from BaseColumnWriter
     size_t add_value(ParsedMessage::variable_t& value) override;
 
-    void store(ZstdCompressor& compressor) override;
+    void store(ChunkedZstdCompressor& compressor) override;
 
 private:
     std::shared_ptr<VariableDictionaryWriter> m_var_dict;

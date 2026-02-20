@@ -8,7 +8,7 @@ include(../../args.cmake)
 ExternalProject_add(
     libLZMA
     GIT_REPOSITORY https://github.com/tukaani-project/xz
-    GIT_TAG v5.4.5
+    GIT_TAG v5.8.1
     PREFIX libLZMA
     STEP_TARGETS install
     CMAKE_ARGS ${CMAKE_ARGS}

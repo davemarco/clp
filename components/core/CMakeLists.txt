@@ -366,6 +366,8 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/ArchiveReaderAdaptor.hpp
     src/clp_s/ArchiveWriter.cpp
     src/clp_s/ArchiveWriter.hpp
+    src/clp_s/ChunkedZstdCompressor.cpp
+    src/clp_s/ChunkedZstdCompressor.hpp
     src/clp_s/ColumnReader.cpp
     src/clp_s/ColumnReader.hpp
     src/clp_s/ColumnWriter.cpp
@@ -406,6 +408,22 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/SchemaTree.hpp
     src/clp_s/SchemaWriter.cpp
     src/clp_s/SchemaWriter.hpp
+    src/clp_s/gpu/common/host/ErtInfo.cpp
+    src/clp_s/gpu/common/host/ErtInfo.hpp
+    src/clp_s/gpu/common/host/ErtInfoTypes.hpp
+    src/clp_s/gpu/common/host/ScanRequest.cpp
+    src/clp_s/gpu/common/host/ScanRequest.hpp
+    src/clp_s/gpu/common/host/ScanRequestTypes.hpp
+    src/clp_s/gpu/bitmap/host/Scan.cpp
+    src/clp_s/gpu/bitmap/host/Scan.hpp
+    src/clp_s/gpu/bitmap/host/Output.cpp
+    src/clp_s/gpu/bitmap/host/Output.hpp
+    src/clp_s/gpu/cpu_baseline/host/Scan.cpp
+    src/clp_s/gpu/cpu_baseline/host/Scan.hpp
+    src/clp_s/gpu/cpu_baseline/host/ScanSimd.cpp
+    src/clp_s/gpu/cpu_baseline/host/ScanSimd.hpp
+    src/clp_s/gpu/encoded_buffer/host/Scan.cpp
+    src/clp_s/gpu/encoded_buffer/host/Scan.hpp
     src/clp_s/search/AddTimestampConditions.cpp
     src/clp_s/search/AddTimestampConditions.hpp
     src/clp_s/search/EvaluateRangeIndexFilters.cpp
@@ -781,6 +799,7 @@ if(CLP_ENABLE_TESTS)
             clp_s::search::sql
             clp_s::timestamp_parser
             clp_s::timestamp_pattern
+            clp_s_gpu
             date::date
             fmt::fmt
             log_surgeon::log_surgeon

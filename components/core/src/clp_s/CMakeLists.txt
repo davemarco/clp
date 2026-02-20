@@ -232,6 +232,8 @@ set(
         archive_constants.hpp
         ArchiveWriter.cpp
         ArchiveWriter.hpp
+        ChunkedZstdCompressor.cpp
+        ChunkedZstdCompressor.hpp
         ColumnWriter.cpp
         ColumnWriter.hpp
         Defs.hpp

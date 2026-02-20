@@ -192,7 +192,8 @@ void search(
                 archive_expr,
                 archive_reader,
                 std::move(output_handler),
-                ignore_case
+                ignore_case,
+                clp_s::CommandLineArguments::ScanMode::None
         );
         output_pass.filter();
         archive_reader->close();

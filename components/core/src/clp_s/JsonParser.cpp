@@ -27,6 +27,7 @@
 #include <clp/ffi/KeyValuePairLogEvent.hpp>
 #include <clp/ffi/SchemaTree.hpp>
 #include <clp/ffi/Value.hpp>
+#include <clp/EncodedVariableInterpreter.hpp>
 #include <clp/NetworkReader.hpp>
 #include <clp/ReaderInterface.hpp>
 #include <clp/time_types.hpp>
@@ -1278,15 +1279,15 @@ void JsonParser::parse_kv_log_event_subtree(
             } break;
             case NodeType::StructuredClpString: {
                 std::string decoded_value;
-                if (pair.second.value().is<clp::ir::EightByteEncodedTextAst>()) {
+                if (pair.second.value().is<clp::ffi::EightByteEncodedTextAst>()) {
                     decoded_value = pair.second.value()
-                                            .get_immutable_view<clp::ir::EightByteEncodedTextAst>()
-                                            .decode_and_unparse()
+                                            .get_immutable_view<clp::ffi::EightByteEncodedTextAst>()
+                                            .to_string()
                                             .value();
                 } else {
                     decoded_value = pair.second.value()
-                                            .get_immutable_view<clp::ir::FourByteEncodedTextAst>()
-                                            .decode_and_unparse()
+                                            .get_immutable_view<clp::ffi::FourByteEncodedTextAst>()
+                                            .to_string()
                                             .value();
                 }
                 // node_id is the StructuredClpString node created by get_archive_node_id.
@@ -1407,13 +1408,15 @@ void JsonParser::encode_structurized_clp_string_children(
 
     LogTypeDictionaryEntry logtype_entry;
     m_encoded_vars_buf.clear();
-    VariableEncoder::encode_and_add_to_dictionary(
+    std::vector<clp::variable_dictionary_id_t> temp_var_dict_ids;
+    clp::EncodedVariableInterpreter::encode_and_add_to_dictionary(
             std::string(value),
             logtype_entry,
             *var_dict,
-            m_encoded_vars_buf
+            m_encoded_vars_buf,
+            temp_var_dict_ids
     );
-    uint64_t logtype_id;
+    clp::logtype_dictionary_id_t logtype_id;
     log_dict->add_entry(logtype_entry, logtype_id);
 
     size_t group_start = m_current_schema.start_unordered_object(NodeType::StructuredClpString);

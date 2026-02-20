@@ -1,5 +1,7 @@
 #include "Scan.hpp"
 
+#include <unordered_set>
+
 #include "../../common/cuda/Transfer.hpp"
 
 namespace clp_s::gpu {
@@ -29,7 +31,26 @@ int cuda_scan_to_bitmap(
         return 1;
     }
 
-    char const* d_ert_base = static_cast<char const*>(device_ert.buf.ptr);
+    char* d_ert_base = static_cast<char*>(device_ert.buf.ptr);
+
+    // Prefix-sum DeltaInt64/Timestamp predicate columns in-place so they
+    // contain absolute values for comparison.
+    // Deduplicate by column ID to avoid double-prefix-summing when multiple predicates
+    // reference the same column.
+    std::unordered_set<int32_t> prefix_summed_columns;
+    for (size_t i = 0; i < resolved_columns.size(); ++i) {
+        auto const& col = resolved_columns[i];
+        if ((col.type == ColumnType::DeltaInt64 || col.type == ColumnType::Timestamp)
+            && prefix_summed_columns.insert(col.column_id).second)
+        {
+            status = prefix_sum_column_in_place(
+                    d_ert_base, col.primary_offset_bytes, col.length
+            );
+            if (cudaSuccess != status) {
+                return 1;
+            }
+        }
+    }
 
     // Copy all predicate var-dict IDs to device upfront
     std::vector<DeviceBufferGuard> d_predicate_var_dict_bufs(request.predicates.size());

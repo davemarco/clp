@@ -281,16 +281,16 @@ void ArchiveReader::append_unordered_reader_columns(
                 column_reader = new Int64ColumnReader(entry);
                 break;
             case NodeType::DeltaInteger:
-                column_reader = new DeltaEncodedInt64ColumnReader(column_id);
+                column_reader = new DeltaEncodedInt64ColumnReader(entry);
                 break;
             case NodeType::Float:
                 column_reader = new FloatColumnReader(entry);
                 break;
             case NodeType::FormattedFloat:
-                column_reader = new FormattedFloatColumnReader(column_id);
+                column_reader = new FormattedFloatColumnReader(entry);
                 break;
             case NodeType::DictionaryFloat:
-                column_reader = new DictionaryFloatColumnReader(column_id, m_var_dict);
+                column_reader = new DictionaryFloatColumnReader(entry, m_var_dict);
                 break;
             case NodeType::ClpString:
                 column_reader = new ClpStringColumnReader(entry, m_var_dict, m_log_dict);
@@ -311,7 +311,6 @@ void ArchiveReader::append_unordered_reader_columns(
             case NodeType::StructuredArray:
             case NodeType::StructuredClpString:
             case NodeType::Object:
-            case NodeType::Metadata:
             case NodeType::NullValue:
             case NodeType::Unknown:
                 break;

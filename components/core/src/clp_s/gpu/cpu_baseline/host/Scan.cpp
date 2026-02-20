@@ -1,6 +1,8 @@
 #include "Scan.hpp"
 
 #include <algorithm>
+#include <numeric>
+#include <unordered_set>
 
 #include <spdlog/spdlog.h>
 
@@ -90,7 +92,31 @@ void cpu_scan_predicate_to_bitmap(
             }
             break;
         }
+        case ColumnType::FormattedDouble:
+            scan_cmp_to_bitmap<double>(
+                    buffer_base, col.primary_offset_bytes,
+                    pred.double_value, pred.op, bitmap, num_rows
+            );
+            break;
         case ColumnType::DateString:
+            scan_cmp_to_bitmap<int64_t>(
+                    buffer_base, col.primary_offset_bytes,
+                    pred.int_value, pred.op, bitmap, num_rows
+            );
+            break;
+        case ColumnType::DeltaInt64:
+            // ERT has been prefix-summed in-place before scanning.
+            scan_cmp_to_bitmap<int64_t>(
+                    buffer_base, col.primary_offset_bytes,
+                    pred.int_value, pred.op, bitmap, num_rows
+            );
+            break;
+        case ColumnType::DictionaryFloat:
+            // DictionaryFloat predicates are rejected by build_scan_request;
+            // this case is unreachable but listed to avoid compiler warnings.
+            break;
+        case ColumnType::Timestamp:
+            // ERT has been prefix-summed in-place before scanning.
             scan_cmp_to_bitmap<int64_t>(
                     buffer_base, col.primary_offset_bytes,
                     pred.int_value, pred.op, bitmap, num_rows
@@ -127,6 +153,25 @@ ScanCompatError run_cpu_scan_to_bitmap(
 
     auto const buffer_view = get_ert_buffer_view(reader);
 
+    // Prefix-sum DeltaInt64/Timestamp predicate columns in-place so they
+    // contain absolute values for comparison.
+    // Deduplicate by column ID to avoid double-prefix-summing when multiple predicates
+    // reference the same column.
+    std::unordered_set<int32_t> prefix_summed_columns;
+    for (auto const& pred : request.predicates) {
+        ScanCompatError ps_err;
+        auto const* col = find_column(buffer_view, columns, pred.column_id, ps_err);
+        if (nullptr != col
+            && (col->type == ColumnType::DeltaInt64 || col->type == ColumnType::Timestamp)
+            && prefix_summed_columns.insert(col->column_id).second)
+        {
+            auto* values = reinterpret_cast<int64_t*>(
+                    buffer_view.data + col->primary_offset_bytes
+            );
+            std::partial_sum(values, values + col->length, values);
+        }
+    }
+
     // Validate and find all columns
     ScanCompatError err;
     auto const* first_col = find_column(
@@ -154,8 +199,23 @@ ScanCompatError run_cpu_scan_to_bitmap(
             return err;
         }
 
-        cpu_scan_predicate_to_bitmap(buffer_view.data, *col, pred, temp_bitmap.data(), num_rows);
+        cpu_scan_predicate_to_bitmap(
+                buffer_view.data, *col, pred, temp_bitmap.data(), num_rows
+        );
         cpu_merge_bitmaps(out_bitmap.data(), temp_bitmap.data(), num_rows, request.merge_op);
+    }
+
+    // Restore delta encoding for any prefix-summed columns so that the reader's
+    // DeltaEncodedInt64ColumnReader (which re-accumulates on read) sees original deltas.
+    for (int32_t col_id : prefix_summed_columns) {
+        ScanCompatError restore_err;
+        auto const* col = find_column(buffer_view, columns, col_id, restore_err);
+        if (nullptr != col) {
+            auto* values = reinterpret_cast<int64_t*>(
+                    buffer_view.data + col->primary_offset_bytes
+            );
+            std::adjacent_difference(values, values + col->length, values);
+        }
     }
 
     auto matches = std::count(out_bitmap.begin(), out_bitmap.end(), static_cast<uint8_t>(1));

@@ -21,7 +21,7 @@ namespace clp_s::gpu {
  * @param error Error message on failure.
  * @return 0 on success, non-zero on failure.
  */
-int emit_int_matches(
+int emit_bitmap_matches(
         SchemaReader& reader,
         std::vector<uint8_t> const& bitmap,
         search::OutputHandler& output_handler,
