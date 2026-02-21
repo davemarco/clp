@@ -193,7 +193,8 @@ void search(
                 archive_reader,
                 std::move(output_handler),
                 ignore_case,
-                clp_s::CommandLineArguments::ScanMode::None
+                clp_s::CommandLineArguments::ScanMode::None,
+                ""
         );
         output_pass.filter();
         archive_reader->close();

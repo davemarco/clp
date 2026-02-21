@@ -150,14 +150,15 @@ bool Output::filter() {
 
         switch (m_scan_mode) {
             case ScanMode::None: {
-                // Default row-by-row path
                 auto const schema_table_start = SearchTiming::Clock::now();
                 auto& reader = m_archive_reader->read_schema_table(
                         schema_id,
                         m_output_handler->should_output_metadata(),
                         m_should_marshal_records
                 );
-                timing.add_schema_table_load(SearchTiming::Clock::now() - schema_table_start);
+                timing.add_schema_table_load(
+                        SearchTiming::Clock::now() - schema_table_start
+                );
                 reader.initialize_filter(&m_query_runner);
 
                 auto const scan_start = SearchTiming::Clock::now();
@@ -170,7 +171,12 @@ bool Output::filter() {
                             log_event_idx,
                             &m_query_runner
                     )) {
-                        m_output_handler->write(message, timestamp, archive_id, log_event_idx);
+                        m_output_handler->write(
+                                message,
+                                timestamp,
+                                archive_id,
+                                log_event_idx
+                        );
                     }
                 } else {
                     while (reader.get_next_message(message, &m_query_runner)) {
@@ -211,24 +217,22 @@ bool Output::filter() {
                     return false;
                 }
 
-                clp_s::gpu::ScanRequest request;
-                auto error = clp_s::gpu::build_scan_request(
+                std::vector<clp_s::gpu::ScanClause> clauses;
+                auto error = clp_s::gpu::build_scan_clauses(
                         m_match->get_query_for_schema(schema_id).get(),
                         *m_schema_tree,
                         m_query_runner.get_string_var_match_map(),
-                        request
+                        m_query_runner.get_structured_clp_column_layout(),
+                        m_query_runner.get_string_query_map(),
+                        clauses
                 );
                 if (clp_s::gpu::ScanCompatError::None != error) {
-                    if (clp_s::gpu::ScanCompatError::VarStringNotInDictionary == error) {
-                        // Defensive: upstream evaluation should have already pruned
-                        // schemas with no matching VarString dict entry
-                        break;
-                    }
-                    SPDLOG_ERROR(
-                            "Column scan enabled but query is incompatible: {}",
+                    SPDLOG_DEBUG(
+                            "schema {}: GPU scan incompatible (skipping): {}",
+                            schema_id,
                             clp_s::gpu::scan_error_to_string(error)
                     );
-                    return false;
+                    break;
                 }
 
                 size_t const stream_id = schema_meta.stream_id;
@@ -278,9 +282,9 @@ bool Output::filter() {
                 clp_s::gpu::EncodedBuffer encoded_buffer;
                 std::string error_message;
                 if (0
-                    != clp_s::gpu::run_scan_to_encoded_buffer(
+                    != clp_s::gpu::run_scan_to_encoded_buffer_clauses(
                             reader,
-                            request,
+                            clauses,
                             encoded_buffer,
                             error_message,
                             device_stream.ptr,
@@ -300,7 +304,20 @@ bool Output::filter() {
                 if (0 != matches) {
                     auto const serialize_start = SearchTiming::Clock::now();
                     reader.reset_read_state(encoded_buffer.num_rows);
-                    reader.load(encoded_buffer.data, 0, encoded_buffer.size);
+                    try {
+                        reader.load(encoded_buffer.data, 0, encoded_buffer.size);
+                    } catch (std::exception const& e) {
+                        SPDLOG_ERROR(
+                                "schema {}: encoded buffer load failed ({} matches, "
+                                "buf_size={}, {} clauses): {}",
+                                schema_id,
+                                matches,
+                                encoded_buffer.size,
+                                clauses.size(),
+                                e.what()
+                        );
+                        return false;
+                    }
                     std::string msg;
                     while (reader.get_next_message(msg)) {
                         m_output_handler->write(msg);
@@ -341,24 +358,22 @@ bool Output::filter() {
                     return false;
                 }
 
-                clp_s::gpu::ScanRequest request;
-                auto error = clp_s::gpu::build_scan_request(
+                std::vector<clp_s::gpu::ScanClause> clauses;
+                auto error = clp_s::gpu::build_scan_clauses(
                         m_match->get_query_for_schema(schema_id).get(),
                         *m_schema_tree,
                         m_query_runner.get_string_var_match_map(),
-                        request
+                        m_query_runner.get_structured_clp_column_layout(),
+                        m_query_runner.get_string_query_map(),
+                        clauses
                 );
                 if (clp_s::gpu::ScanCompatError::None != error) {
-                    if (clp_s::gpu::ScanCompatError::VarStringNotInDictionary == error) {
-                        // Defensive: upstream evaluation should have already pruned
-                        // schemas with no matching VarString dict entry
-                        break;
-                    }
-                    SPDLOG_ERROR(
-                            "Column scan enabled but query is incompatible: {}",
+                    SPDLOG_DEBUG(
+                            "schema {}: bitmap scan incompatible (skipping): {}",
+                            schema_id,
                             clp_s::gpu::scan_error_to_string(error)
                     );
-                    return false;
+                    break;
                 }
 
                 auto const schema_table_start = SearchTiming::Clock::now();
@@ -372,33 +387,46 @@ bool Output::filter() {
 
                 auto const scan_start = SearchTiming::Clock::now();
                 std::vector<uint8_t> bitmap;
-                clp_s::gpu::ScanCompatError scan_err;
-                switch (m_scan_mode) {
-                    case ScanMode::CpuBitmap:
-                        scan_err = clp_s::gpu::run_cpu_scan_to_bitmap(
-                                reader, request, column_descs, bitmap
+                for (size_t clause_idx = 0; clause_idx < clauses.size(); ++clause_idx) {
+                    auto& request = clauses[clause_idx].base_request;
+                    auto& sclp_infos = clauses[clause_idx].sclp_infos;
+                    std::vector<uint8_t> clause_bitmap;
+                    clp_s::gpu::ScanCompatError scan_err;
+                    switch (m_scan_mode) {
+                        case ScanMode::CpuBitmap:
+                            scan_err = clp_s::gpu::run_cpu_scan_to_bitmap_with_sclp(
+                                    reader, request, sclp_infos, column_descs, clause_bitmap
+                            );
+                            break;
+                        case ScanMode::CpuSimdBitmap:
+                            scan_err = clp_s::gpu::run_cpu_simd_scan_to_bitmap(
+                                    reader, request, column_descs, clause_bitmap
+                            );
+                            break;
+                        case ScanMode::GpuBitmap:
+                            scan_err = clp_s::gpu::run_scan_to_bitmap_with_sclp(
+                                    reader, request, sclp_infos, column_descs, clause_bitmap
+                            );
+                            break;
+                        default:
+                            SPDLOG_ERROR("Unexpected scan mode in bitmap path");
+                            return false;
+                    }
+                    if (clp_s::gpu::ScanCompatError::None != scan_err) {
+                        SPDLOG_ERROR(
+                                "Bitmap scan failed: {}",
+                                clp_s::gpu::scan_error_to_string(scan_err)
                         );
-                        break;
-                    case ScanMode::CpuSimdBitmap:
-                        scan_err = clp_s::gpu::run_cpu_simd_scan_to_bitmap(
-                                reader, request, column_descs, bitmap
-                        );
-                        break;
-                    case ScanMode::GpuBitmap:
-                        scan_err = clp_s::gpu::run_scan_to_bitmap(
-                                reader, request, column_descs, bitmap
-                        );
-                        break;
-                    default:
-                        SPDLOG_ERROR("Unexpected scan mode in bitmap path");
                         return false;
-                }
-                if (clp_s::gpu::ScanCompatError::None != scan_err) {
-                    SPDLOG_ERROR(
-                            "Bitmap scan failed: {}",
-                            clp_s::gpu::scan_error_to_string(scan_err)
-                    );
-                    return false;
+                    }
+                    if (0 == clause_idx) {
+                        bitmap = std::move(clause_bitmap);
+                    } else {
+                        // OR the clause bitmaps together
+                        for (size_t i = 0; i < bitmap.size(); ++i) {
+                            bitmap[i] |= clause_bitmap[i];
+                        }
+                    }
                 }
                 timing.add_scan(
                         SearchTiming::Clock::now() - scan_start,

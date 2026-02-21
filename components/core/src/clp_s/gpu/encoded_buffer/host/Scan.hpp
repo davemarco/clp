@@ -55,6 +55,38 @@ int run_scan_to_encoded_buffer(
         std::span<ColumnDesc const> columns,
         size_t stream_offset
 );
+/**
+ * Runs a GPU scan with StructuredClpString support and builds an
+ * encoded buffer containing only the matching rows.
+ */
+int run_scan_to_encoded_buffer_with_sclp(
+        SchemaReader& reader,
+        ScanRequest const& base_request,
+        std::vector<StructuredClpStringScanInfo> const& sclp_infos,
+        EncodedBuffer& out_buffer,
+        std::string& error,
+        void* d_ert,
+        size_t d_ert_size,
+        std::span<ColumnDesc const> columns,
+        size_t stream_offset
+);
+/**
+ * Runs a GPU scan with multiple clauses (OR-of-ANDs support) and builds an
+ * encoded buffer containing only the matching rows.
+ * For single clause, delegates to run_scan_to_encoded_buffer_with_sclp.
+ * For multiple clauses, builds per-clause bitmaps (AND), OR-merges them,
+ * then converts the combined bitmap to an encoded buffer.
+ */
+int run_scan_to_encoded_buffer_clauses(
+        SchemaReader& reader,
+        std::vector<ScanClause> const& clauses,
+        EncodedBuffer& out_buffer,
+        std::string& error,
+        void* d_ert,
+        size_t d_ert_size,
+        std::span<ColumnDesc const> columns,
+        size_t stream_offset
+);
 }  // namespace clp_s::gpu
 
 #endif  // CLP_S_GPU_ENCODED_BUFFER_HOST_SCAN_HPP

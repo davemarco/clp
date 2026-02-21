@@ -38,7 +38,10 @@ enum class ScanCompatError {
     CudaScanFailed,
     UnsupportedColumnTypeForGpu,
     InvertedCompoundExpression,
-    VarStringNotInDictionary
+    VarStringNotInDictionary,
+    StructuredClpStringWildcardRequired,
+    PredicateAlwaysTrue,
+    PredicateAlwaysFalse
 };
 
 /**
@@ -65,6 +68,49 @@ struct ColumnPredicate {
 struct ScanRequest {
     std::vector<ColumnPredicate> predicates;
     MergeOp merge_op{MergeOp::And};
+};
+
+/**
+ * Column layout for a StructuredClpString group (per-schema, per parent node).
+ */
+struct StructuredClpStringColumnLayout {
+    int32_t logtype_column_id{-1};
+    std::vector<int32_t> var_column_ids;
+};
+
+/**
+ * Per-variable info for a StructuredClpString subquery.
+ * Stores the set of encoded_variable_t values that this variable position can match.
+ */
+struct StructuredClpStringVarInfo {
+    std::vector<int64_t> possible_encoded_values;  // single element for precise, multiple for imprecise
+};
+
+/**
+ * Per-subquery info for a StructuredClpString scan.
+ */
+struct StructuredClpStringSubQueryInfo {
+    std::vector<int64_t> possible_logtype_ids;
+    std::vector<StructuredClpStringVarInfo> vars;  // one per var column, positional
+};
+
+/**
+ * Combined scan info for one StructuredClpString filter expression.
+ */
+struct StructuredClpStringScanInfo {
+    int32_t logtype_column_id{-1};
+    std::vector<int32_t> var_column_ids;
+    std::vector<StructuredClpStringSubQueryInfo> subqueries;
+    bool is_negated{false};  // true for NEQ/inverted: invert bitmap after positive match
+};
+
+/**
+ * A single scan clause: a flat AND of base predicates + SCLP filters.
+ * An OR-of-ANDs query produces multiple clauses whose bitmaps are ORed.
+ */
+struct ScanClause {
+    ScanRequest base_request;
+    std::vector<StructuredClpStringScanInfo> sclp_infos;
 };
 
 }  // namespace clp_s::gpu

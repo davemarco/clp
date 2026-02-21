@@ -26,6 +26,18 @@ ScanCompatError run_scan_to_bitmap(
         std::span<ColumnDesc const> columns,
         std::vector<uint8_t>& out_bitmap
 );
+
+/**
+ * Runs a GPU scan with StructuredClpString support.
+ * Handles base predicates + SCLP predicates, composing their bitmaps.
+ */
+ScanCompatError run_scan_to_bitmap_with_sclp(
+        SchemaReader& reader,
+        ScanRequest const& base_request,
+        std::vector<StructuredClpStringScanInfo> const& sclp_infos,
+        std::span<ColumnDesc const> columns,
+        std::vector<uint8_t>& out_bitmap
+);
 }  // namespace clp_s::gpu
 
 #endif  // CLP_S_GPU_BITMAP_HOST_SCAN_HPP

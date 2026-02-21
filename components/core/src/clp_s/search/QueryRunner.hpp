@@ -20,12 +20,14 @@
 
 #include "../../clp/Query.hpp"
 #include "../../clp/Utils.hpp"
+#include "../gpu/common/host/ScanRequestTypes.hpp"
 #include "../ArchiveReader.hpp"
 #include "../ColumnReader.hpp"
 #include "../DictionaryReader.hpp"
 #include "../ReaderUtils.hpp"
 #include "../SchemaReader.hpp"
 #include "../SchemaTree.hpp"
+#include "../StructuredClpStringReader.hpp"
 #include "../TimestampDictionaryReader.hpp"
 #include "../Utils.hpp"
 #include "ast/ColumnDescriptor.hpp"
@@ -85,6 +87,22 @@ public:
     auto get_string_var_match_map() const
             -> std::map<std::string, std::unordered_set<int64_t>> const& {
         return m_string_var_match_map;
+    }
+
+    /**
+     * @return A const reference to the pre-computed SCLP column layout map for GPU scan requests.
+     */
+    auto get_structured_clp_column_layout() const
+            -> std::map<int32_t, gpu::StructuredClpStringColumnLayout> const& {
+        return m_structured_clp_column_layout;
+    }
+
+    /**
+     * @return A const reference to the string query map for GPU scan requests.
+     */
+    auto get_string_query_map() const
+            -> std::map<std::string, std::optional<clp::Query>> const& {
+        return m_string_query_map;
     }
 
     /**
@@ -149,6 +167,7 @@ private:
     std::unordered_map<ast::Expression*, clp::Query*> m_expr_clp_query;
     std::unordered_map<ast::Expression*, std::unordered_set<int64_t>*> m_expr_var_match_map;
     std::unordered_map<int32_t, std::vector<ClpStringColumnReader*>> m_clp_string_readers;
+    std::unordered_map<int32_t, StructuredClpStringReader*> m_structured_clp_string_readers;
     std::unordered_map<int32_t, std::vector<VariableStringColumnReader*>> m_var_string_readers;
     std::unordered_map<int32_t, TimestampColumnReader*> m_timestamp_readers;
     DeprecatedDateStringColumnReader* m_deprecated_datestring_reader{nullptr};
@@ -156,6 +175,8 @@ private:
     std::unordered_map<int32_t, std::string> m_extracted_unstructured_arrays;
     uint64_t m_cur_message{0};
     EvaluatedValue m_expression_value{EvaluatedValue::Unknown};
+
+    std::map<int32_t, gpu::StructuredClpStringColumnLayout> m_structured_clp_column_layout;
 
     std::vector<ast::ColumnDescriptor*> m_wildcard_columns;
     std::map<ast::ColumnDescriptor*, std::set<int32_t>> m_wildcard_to_searched_basic_columns;
@@ -262,6 +283,19 @@ private:
             clp::Query* q,
             std::vector<ClpStringColumnReader*> const& readers
     ) const -> bool;
+
+    /**
+     * Evaluates a structured CLP string filter expression
+     * @param op
+     * @param q
+     * @param reader
+     * @return true if the expression evaluates to true, false otherwise
+     */
+    auto evaluate_structured_clp_string_filter(
+            ast::FilterOperation op,
+            clp::Query* q,
+            StructuredClpStringReader* reader
+    ) -> bool;
 
     /**
      * Evaluates a var string filter expression
@@ -430,6 +464,12 @@ private:
      * Populates the set of internal columns that get ignored during dynamic wildcard expansion.
      */
     void populate_internal_columns();
+
+    /**
+     * Populates the StructuredClpString column layout for the current schema by walking
+     * the schema entries. Used for GPU scan request generation.
+     */
+    void populate_structured_clp_column_layout();
 
     /**
      * Constant propagates an expression

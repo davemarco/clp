@@ -42,9 +42,15 @@ void compute_column_offsets(
             case ColumnType::Double:
                 total_size += pack_ctx.num_matches * sizeof(double);
                 break;
-            case ColumnType::Boolean:
+            case ColumnType::Boolean: {
                 total_size += pack_ctx.num_matches * sizeof(uint8_t);
+                // Archive format pads boolean columns to 8-byte boundaries so subsequent
+                // columns stay aligned. SchemaReader always skips this padding, so we must
+                // include it even if this is the last column.
+                size_t const pad = (8 - (pack_ctx.num_matches % 8)) % 8;
+                total_size += pad;
                 break;
+            }
             case ColumnType::VarString:
                 total_size += pack_ctx.num_matches * sizeof(uint64_t);
                 break;

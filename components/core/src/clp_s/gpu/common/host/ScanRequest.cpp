@@ -1,13 +1,19 @@
 #include "ScanRequest.hpp"
 
 #include <map>
+#include <optional>
 #include <string>
 #include <unordered_set>
+#include <vector>
+
+#include <clp/Query.hpp>
+#include <spdlog/spdlog.h>
 
 #include "../../../SchemaTree.hpp"
 #include "../../../search/ast/AndExpr.hpp"
 #include "../../../search/ast/Expression.hpp"
 #include "../../../search/ast/FilterExpr.hpp"
+#include "../../../search/ast/Literal.hpp"
 #include "../../../search/ast/OrExpr.hpp"
 
 namespace clp_s::gpu {
@@ -75,6 +81,15 @@ ScanCompatError convert_filter_to_predicate(
     auto column = filter->get_column();
     if (nullptr == column || column->is_unresolved_descriptor() || column->get_column_id() < 0) {
         return ScanCompatError::UnsupportedColumnDescriptor;
+    }
+
+    // EXISTS/NEXISTS: resolved column (column_id >= 0) always exists in its schema.
+    // EXISTS → always true, NEXISTS → always false. Callers handle these.
+    if (filter->get_operation() == search::ast::FilterOperation::EXISTS) {
+        return ScanCompatError::PredicateAlwaysTrue;
+    }
+    if (filter->get_operation() == search::ast::FilterOperation::NEXISTS) {
+        return ScanCompatError::PredicateAlwaysFalse;
     }
 
     // Map FilterOperation -> GpuFilterOp
@@ -225,6 +240,14 @@ ScanCompatError extract_predicates(
         }
         ColumnPredicate pred{};
         auto err = convert_filter_to_predicate(filter, schema_tree, var_match_map, pred);
+        if (ScanCompatError::PredicateAlwaysTrue == err) {
+            // EXISTS on resolved column — always true. Caller handles merge semantics.
+            continue;
+        }
+        if (ScanCompatError::PredicateAlwaysFalse == err) {
+            // NEXISTS on resolved column — always false. Caller handles merge semantics.
+            continue;
+        }
         if (ScanCompatError::None != err) {
             return err;
         }
@@ -265,6 +288,12 @@ char const* scan_error_to_string(ScanCompatError error) {
                    " transform";
         case ScanCompatError::VarStringNotInDictionary:
             return "VarString query value not found in dictionary";
+        case ScanCompatError::StructuredClpStringWildcardRequired:
+            return "StructuredClpString subquery requires wildcard match (not GPU-compatible)";
+        case ScanCompatError::PredicateAlwaysTrue:
+            return "predicate is always true (EXISTS on resolved column)";
+        case ScanCompatError::PredicateAlwaysFalse:
+            return "predicate is always false (NEXISTS on resolved column)";
     }
     return "unknown error";
 }
@@ -287,6 +316,16 @@ ScanCompatError build_scan_request(
         auto err = convert_filter_to_predicate(
                 filter, schema_tree, var_match_map, pred
         );
+        if (ScanCompatError::PredicateAlwaysTrue == err) {
+            // EXISTS: all rows match — return empty predicates with AND merge (identity = all 1s)
+            out_request.merge_op = MergeOp::And;
+            return ScanCompatError::None;
+        }
+        if (ScanCompatError::PredicateAlwaysFalse == err) {
+            // NEXISTS: no rows match — return empty predicates with OR merge (identity = all 0s)
+            out_request.merge_op = MergeOp::Or;
+            return ScanCompatError::None;
+        }
         if (ScanCompatError::None != err) {
             return err;
         }
@@ -312,5 +351,351 @@ ScanCompatError build_scan_request(
     return extract_predicates(
             expr, schema_tree, var_match_map, out_request.predicates
     );
+}
+
+namespace {
+/**
+ * Checks if a FilterExpr targets a StructuredClpString column and, if so, builds a
+ * StructuredClpStringScanInfo for it.
+ *
+ * @return ScanCompatError::None if successfully built (or not SCLP), error otherwise.
+ */
+ScanCompatError try_build_sclp_info(
+        search::ast::FilterExpr* filter,
+        SchemaTree const& schema_tree,
+        std::map<int32_t, StructuredClpStringColumnLayout> const& sclp_column_layout,
+        std::map<std::string, std::optional<clp::Query>> const& string_query_map,
+        bool& is_sclp,
+        StructuredClpStringScanInfo& out_info
+) {
+    is_sclp = false;
+
+    auto column = filter->get_column();
+    if (nullptr == column || column->is_unresolved_descriptor() || column->get_column_id() < 0) {
+        return ScanCompatError::None;  // Not SCLP — let regular path handle it
+    }
+
+    int32_t const col_id = column->get_column_id();
+    auto layout_it = sclp_column_layout.find(col_id);
+    if (layout_it == sclp_column_layout.end()) {
+        return ScanCompatError::None;  // Not an SCLP column
+    }
+
+    is_sclp = true;
+    auto const& layout = layout_it->second;
+
+    // Determine GPU filter op (with inversion handling)
+    GpuFilterOp gpu_op{};
+    if (false == map_filter_op(filter->get_operation(), gpu_op)) {
+        return ScanCompatError::UnsupportedFilterOperation;
+    }
+    if (filter->is_inverted()) {
+        gpu_op = invert_op(gpu_op);
+    }
+
+    // Only EQ/NEQ supported for string filters
+    if (gpu_op != GpuFilterOp::EQ && gpu_op != GpuFilterOp::NEQ) {
+        return ScanCompatError::UnsupportedFilterOperation;
+    }
+
+    // Extract the filter string from the operand
+    auto literal = filter->get_operand();
+    if (nullptr == literal) {
+        return ScanCompatError::MissingLiteral;
+    }
+    std::string filter_string;
+    if (false == literal->as_clp_string(filter_string, filter->get_operation())) {
+        return ScanCompatError::UnsupportedOperandType;
+    }
+
+    // Look up SubQueries from string_query_map
+    auto query_it = string_query_map.find(filter_string);
+    if (query_it == string_query_map.end() || false == query_it->second.has_value()) {
+        // No query means no possible matches — for EQ this means the bitmap should be all 0s.
+        // We represent this as an SCLP info with no subqueries.
+        out_info.logtype_column_id = layout.logtype_column_id;
+        out_info.var_column_ids = layout.var_column_ids;
+        out_info.subqueries.clear();
+        out_info.is_negated = (gpu_op == GpuFilterOp::NEQ);
+        return ScanCompatError::None;
+    }
+
+    auto const& query = query_it->second.value();
+
+    // If search_string_matches_all, the bitmap should be all 1s (for EQ) or all 0s (for NEQ).
+    // Represent as no subqueries with appropriate negation.
+    if (query.search_string_matches_all()) {
+        out_info.logtype_column_id = layout.logtype_column_id;
+        out_info.var_column_ids = layout.var_column_ids;
+        out_info.subqueries.clear();
+        // matches_all + EQ → all match → represented as negated empty (invert all-0s = all-1s)
+        // matches_all + NEQ → none match → represented as non-negated empty (all-0s)
+        out_info.is_negated = (gpu_op == GpuFilterOp::EQ);
+        return ScanCompatError::None;
+    }
+
+    if (false == query.contains_sub_queries()) {
+        // No subqueries but not matches_all — can't evaluate on GPU
+        return ScanCompatError::UnsupportedColumnTypeForGpu;
+    }
+
+    out_info.logtype_column_id = layout.logtype_column_id;
+    out_info.var_column_ids = layout.var_column_ids;
+    out_info.is_negated = (gpu_op == GpuFilterOp::NEQ);
+
+    for (auto const& sub_query : query.get_sub_queries()) {
+        if (sub_query.wildcard_match_required()) {
+            return ScanCompatError::StructuredClpStringWildcardRequired;
+        }
+
+        // The global clp::Query contains SubQueries for ALL schemas in the archive.
+        // SubQueries whose var count doesn't match this schema's column layout can't
+        // match any row here (on CPU, matches_vars() rejects the count mismatch).
+        // Skip them — other SubQueries or schemas may still match.
+        auto const sq_var_count = sub_query.get_vars().size();
+        if (sq_var_count != 0 && sq_var_count != layout.var_column_ids.size()) {
+            SPDLOG_DEBUG(
+                    "Skipping SCLP subquery: var count ({}) != schema var columns ({})",
+                    sq_var_count,
+                    layout.var_column_ids.size()
+            );
+            continue;
+        }
+
+        StructuredClpStringSubQueryInfo sq_info;
+        sq_info.possible_logtype_ids.assign(
+                sub_query.get_possible_logtypes().begin(),
+                sub_query.get_possible_logtypes().end()
+        );
+        // Convert QueryVars to resolved encoded values for GPU scanning
+        sq_info.vars.reserve(sub_query.get_vars().size());
+        for (auto const& qvar : sub_query.get_vars()) {
+            StructuredClpStringVarInfo var_info;
+            if (qvar.is_precise_var()) {
+                var_info.possible_encoded_values.push_back(
+                        static_cast<int64_t>(qvar.get_precise_var())
+                );
+            } else {
+                auto const& possible = qvar.get_possible_dict_vars();
+                var_info.possible_encoded_values.reserve(possible.size());
+                for (auto enc_val : possible) {
+                    var_info.possible_encoded_values.push_back(static_cast<int64_t>(enc_val));
+                }
+            }
+            sq_info.vars.push_back(std::move(var_info));
+        }
+        out_info.subqueries.push_back(std::move(sq_info));
+    }
+
+    return ScanCompatError::None;
+}
+}  // namespace
+
+ScanCompatError build_scan_request_with_sclp(
+        search::ast::Expression* expr,
+        SchemaTree const& schema_tree,
+        std::map<std::string, std::unordered_set<int64_t>> const& var_match_map,
+        std::map<int32_t, StructuredClpStringColumnLayout> const& sclp_column_layout,
+        std::map<std::string, std::optional<clp::Query>> const& string_query_map,
+        ScanRequest& out_base_request,
+        std::vector<StructuredClpStringScanInfo>& out_sclp_infos
+) {
+    if (nullptr == expr) {
+        return ScanCompatError::UnsupportedExpressionType;
+    }
+
+    out_base_request.predicates.clear();
+    out_sclp_infos.clear();
+
+    // If no SCLP layout, fall back to regular build
+    if (sclp_column_layout.empty()) {
+        return build_scan_request(expr, schema_tree, var_match_map, out_base_request);
+    }
+
+    // Single FilterExpr at top level
+    if (auto* filter = dynamic_cast<search::ast::FilterExpr*>(expr)) {
+        bool is_sclp{false};
+        StructuredClpStringScanInfo sclp_info;
+        auto err = try_build_sclp_info(
+                filter,
+                schema_tree,
+                sclp_column_layout,
+                string_query_map,
+                is_sclp,
+                sclp_info
+        );
+        if (ScanCompatError::None != err) {
+            return err;
+        }
+        if (is_sclp) {
+            out_sclp_infos.push_back(std::move(sclp_info));
+            out_base_request.merge_op = MergeOp::And;
+            return ScanCompatError::None;
+        }
+        // Not SCLP — regular predicate
+        ColumnPredicate pred{};
+        err = convert_filter_to_predicate(filter, schema_tree, var_match_map, pred);
+        if (ScanCompatError::PredicateAlwaysTrue == err) {
+            // EXISTS: all rows match
+            out_base_request.merge_op = MergeOp::And;
+            return ScanCompatError::None;
+        }
+        if (ScanCompatError::PredicateAlwaysFalse == err) {
+            // NEXISTS: no rows match
+            out_base_request.merge_op = MergeOp::Or;
+            return ScanCompatError::None;
+        }
+        if (ScanCompatError::None != err) {
+            return err;
+        }
+        out_base_request.predicates.push_back(pred);
+        out_base_request.merge_op = MergeOp::And;
+        return ScanCompatError::None;
+    }
+
+    // AND/OR at top level
+    if (dynamic_cast<search::ast::AndExpr*>(expr)) {
+        out_base_request.merge_op = MergeOp::And;
+    } else if (dynamic_cast<search::ast::OrExpr*>(expr)) {
+        out_base_request.merge_op = MergeOp::Or;
+    } else {
+        return ScanCompatError::UnsupportedExpressionType;
+    }
+
+    if (expr->is_inverted()) {
+        return ScanCompatError::InvertedCompoundExpression;
+    }
+
+    // Walk children, separating SCLP from base predicates
+    for (auto it = expr->op_begin(); it != expr->op_end(); ++it) {
+        auto* child = dynamic_cast<search::ast::Expression*>(it->get());
+        if (nullptr == child) {
+            return ScanCompatError::UnsupportedOperandType;
+        }
+        auto* filter = dynamic_cast<search::ast::FilterExpr*>(child);
+        if (nullptr == filter) {
+            // Nested AND/OR — reject
+            return ScanCompatError::UnsupportedCompoundExpression;
+        }
+
+        // Handle EXISTS/NEXISTS before SCLP or regular predicate check
+        if (filter->get_operation() == search::ast::FilterOperation::EXISTS) {
+            // Always true for resolved column. Skip in AND (true AND rest = rest).
+            // In OR, this makes the whole OR true — but we can't easily short-circuit
+            // here, so we skip and rely on the bitmap identity + other predicates.
+            // The caller (build_scan_clauses) handles OR-of-ANDs decomposition where
+            // an EXISTS-only clause produces an all-1s bitmap via empty AND predicates.
+            continue;
+        }
+        if (filter->get_operation() == search::ast::FilterOperation::NEXISTS) {
+            // Always false for resolved column. Skip in OR (false OR rest = rest).
+            // In AND, this makes the whole AND false — but same as above, we skip
+            // and rely on the empty predicate + merge_op identity behavior.
+            continue;
+        }
+
+        bool is_sclp{false};
+        StructuredClpStringScanInfo sclp_info;
+        auto err = try_build_sclp_info(
+                filter,
+                schema_tree,
+                sclp_column_layout,
+                string_query_map,
+                is_sclp,
+                sclp_info
+        );
+        if (ScanCompatError::None != err) {
+            return err;
+        }
+        if (is_sclp) {
+            out_sclp_infos.push_back(std::move(sclp_info));
+            continue;
+        }
+
+        // Regular predicate
+        ColumnPredicate pred{};
+        err = convert_filter_to_predicate(filter, schema_tree, var_match_map, pred);
+        if (ScanCompatError::PredicateAlwaysTrue == err) {
+            continue;  // Skip: always true
+        }
+        if (ScanCompatError::PredicateAlwaysFalse == err) {
+            continue;  // Skip: always false
+        }
+        if (ScanCompatError::None != err) {
+            return err;
+        }
+        out_base_request.predicates.push_back(pred);
+    }
+
+    return ScanCompatError::None;
+}
+ScanCompatError build_scan_clauses(
+        search::ast::Expression* expr,
+        SchemaTree const& schema_tree,
+        std::map<std::string, std::unordered_set<int64_t>> const& var_match_map,
+        std::map<int32_t, StructuredClpStringColumnLayout> const& sclp_column_layout,
+        std::map<std::string, std::optional<clp::Query>> const& string_query_map,
+        std::vector<ScanClause>& out_clauses
+) {
+    out_clauses.clear();
+
+    if (nullptr == expr) {
+        return ScanCompatError::UnsupportedExpressionType;
+    }
+
+    // Check if this is an OR-of-ANDs expression (e.g. from OrOfAndForm normalization).
+    // If so, build one clause per child.
+    auto* or_expr = dynamic_cast<search::ast::OrExpr*>(expr);
+    if (nullptr != or_expr && false == or_expr->is_inverted()) {
+        bool has_compound_child = false;
+        for (auto it = or_expr->op_begin(); it != or_expr->op_end(); ++it) {
+            if (nullptr == dynamic_cast<search::ast::FilterExpr*>(it->get())) {
+                has_compound_child = true;
+                break;
+            }
+        }
+
+        if (has_compound_child) {
+            // OR-of-ANDs: build a clause for each child
+            for (auto it = or_expr->op_begin(); it != or_expr->op_end(); ++it) {
+                auto* child = dynamic_cast<search::ast::Expression*>(it->get());
+                if (nullptr == child) {
+                    return ScanCompatError::UnsupportedOperandType;
+                }
+                ScanClause clause;
+                auto err = build_scan_request_with_sclp(
+                        child,
+                        schema_tree,
+                        var_match_map,
+                        sclp_column_layout,
+                        string_query_map,
+                        clause.base_request,
+                        clause.sclp_infos
+                );
+                if (ScanCompatError::None != err) {
+                    return err;
+                }
+                out_clauses.push_back(std::move(clause));
+            }
+            return ScanCompatError::None;
+        }
+    }
+
+    // Single clause: FilterExpr, flat AND, or flat OR of FilterExprs
+    ScanClause clause;
+    auto err = build_scan_request_with_sclp(
+            expr,
+            schema_tree,
+            var_match_map,
+            sclp_column_layout,
+            string_query_map,
+            clause.base_request,
+            clause.sclp_infos
+    );
+    if (ScanCompatError::None != err) {
+        return err;
+    }
+    out_clauses.push_back(std::move(clause));
+    return ScanCompatError::None;
 }
 }  // namespace clp_s::gpu

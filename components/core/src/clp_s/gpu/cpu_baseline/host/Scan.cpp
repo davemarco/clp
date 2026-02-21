@@ -227,4 +227,184 @@ ScanCompatError run_cpu_scan_to_bitmap(
     );
     return ScanCompatError::None;
 }
+
+ScanCompatError run_cpu_scan_to_bitmap_with_sclp(
+        SchemaReader& reader,
+        ScanRequest const& base_request,
+        std::vector<StructuredClpStringScanInfo> const& sclp_infos,
+        std::span<ColumnDesc const> columns,
+        std::vector<uint8_t>& out_bitmap
+) {
+    // If no SCLP, delegate to the regular scan
+    if (sclp_infos.empty()) {
+        return run_cpu_scan_to_bitmap(reader, base_request, columns, out_bitmap);
+    }
+
+    auto const buffer_view = get_ert_buffer_view(reader);
+    size_t const num_rows = reader.get_num_messages();
+    MergeOp const merge_op = base_request.merge_op;
+
+    // Helper to find a column by ID
+    auto find_col = [&](int32_t col_id) -> ColumnDesc const* {
+        for (auto const& c : columns) {
+            if (c.column_id == col_id) {
+                return &c;
+            }
+        }
+        return nullptr;
+    };
+
+    // Prefix-sum DeltaInt64/Timestamp columns in-place
+    std::unordered_set<int32_t> prefix_summed_columns;
+    for (auto const& pred : base_request.predicates) {
+        ScanCompatError ps_err;
+        auto const* col = find_column(buffer_view, columns, pred.column_id, ps_err);
+        if (nullptr != col
+            && (col->type == ColumnType::DeltaInt64 || col->type == ColumnType::Timestamp)
+            && prefix_summed_columns.insert(col->column_id).second)
+        {
+            auto* values = reinterpret_cast<int64_t*>(
+                    buffer_view.data + col->primary_offset_bytes
+            );
+            std::partial_sum(values, values + col->length, values);
+        }
+    }
+
+    // Initialize result bitmap with identity value for merge_op
+    uint8_t const identity = (MergeOp::And == merge_op) ? 1 : 0;
+    out_bitmap.assign(num_rows, identity);
+
+    // Scan base predicates (if any)
+    if (false == base_request.predicates.empty()) {
+        std::vector<uint8_t> base_bitmap(num_rows, 0);
+
+        ScanCompatError err;
+        auto const* first_col = find_column(
+                buffer_view, columns, base_request.predicates[0].column_id, err
+        );
+        if (nullptr == first_col) {
+            return err;
+        }
+
+        cpu_scan_predicate_to_bitmap(
+                buffer_view.data, *first_col, base_request.predicates[0],
+                base_bitmap.data(), num_rows
+        );
+
+        std::vector<uint8_t> temp_bitmap(num_rows);
+        for (size_t i = 1; i < base_request.predicates.size(); ++i) {
+            auto const* col = find_column(
+                    buffer_view, columns, base_request.predicates[i].column_id, err
+            );
+            if (nullptr == col) {
+                return err;
+            }
+            cpu_scan_predicate_to_bitmap(
+                    buffer_view.data, *col, base_request.predicates[i],
+                    temp_bitmap.data(), num_rows
+            );
+            cpu_merge_bitmaps(
+                    base_bitmap.data(), temp_bitmap.data(), num_rows, base_request.merge_op
+            );
+        }
+
+        cpu_merge_bitmaps(out_bitmap.data(), base_bitmap.data(), num_rows, merge_op);
+    }
+
+    // Scan each SCLP info and merge into result bitmap
+    std::vector<uint8_t> sclp_bitmap(num_rows);
+    std::vector<uint8_t> temp_bitmap(num_rows);
+    std::vector<uint8_t> pred_bitmap(num_rows);
+
+    for (auto const& sclp_info : sclp_infos) {
+        // Initialize sclp_bitmap to OR identity (all 0s) — subqueries are OR'd
+        std::fill(sclp_bitmap.begin(), sclp_bitmap.end(), static_cast<uint8_t>(0));
+
+        auto const* logtype_col = find_col(sclp_info.logtype_column_id);
+        if (nullptr == logtype_col) {
+            return ScanCompatError::ColumnOutOfBounds;
+        }
+
+        for (auto const& subquery : sclp_info.subqueries) {
+            // Initialize temp_bitmap to AND identity (all 1s) — predicates within
+            // a subquery are AND'd
+            std::fill(temp_bitmap.begin(), temp_bitmap.end(), static_cast<uint8_t>(1));
+
+            // Scan logtype IN-list (treated as VarString for IN-set matching)
+            ColumnPredicate logtype_pred{};
+            logtype_pred.column_type = ColumnType::VarString;
+            logtype_pred.column_id = sclp_info.logtype_column_id;
+            logtype_pred.op = GpuFilterOp::EQ;
+            logtype_pred.var_dict_ids = subquery.possible_logtype_ids;
+            cpu_scan_predicate_to_bitmap(
+                    buffer_view.data, *logtype_col, logtype_pred, pred_bitmap.data(), num_rows
+            );
+            cpu_merge_bitmaps(temp_bitmap.data(), pred_bitmap.data(), num_rows, MergeOp::And);
+
+            // Scan each var predicate
+            for (size_t v = 0; v < subquery.vars.size(); ++v) {
+                auto const& var_info = subquery.vars[v];
+                auto const* var_col = find_col(sclp_info.var_column_ids[v]);
+                if (nullptr == var_col) {
+                    return ScanCompatError::ColumnOutOfBounds;
+                }
+
+                ColumnPredicate var_pred{};
+                var_pred.column_id = sclp_info.var_column_ids[v];
+                if (var_info.possible_encoded_values.size() == 1) {
+                    // Precise var: Int64 EQ
+                    var_pred.column_type = ColumnType::Int64;
+                    var_pred.op = GpuFilterOp::EQ;
+                    var_pred.int_value = var_info.possible_encoded_values[0];
+                } else {
+                    // Imprecise var: VarString IN-list
+                    var_pred.column_type = ColumnType::VarString;
+                    var_pred.op = GpuFilterOp::EQ;
+                    var_pred.var_dict_ids = var_info.possible_encoded_values;
+                }
+                cpu_scan_predicate_to_bitmap(
+                        buffer_view.data, *var_col, var_pred, pred_bitmap.data(), num_rows
+                );
+                cpu_merge_bitmaps(
+                        temp_bitmap.data(), pred_bitmap.data(), num_rows, MergeOp::And
+                );
+            }
+
+            // OR-merge subquery result into sclp_bitmap
+            cpu_merge_bitmaps(sclp_bitmap.data(), temp_bitmap.data(), num_rows, MergeOp::Or);
+        }
+
+        // Invert if negated (NEQ)
+        if (sclp_info.is_negated) {
+            for (size_t i = 0; i < num_rows; ++i) {
+                sclp_bitmap[i] = 1 - sclp_bitmap[i];
+            }
+        }
+
+        // Merge SCLP bitmap into result with the expression's merge_op
+        cpu_merge_bitmaps(out_bitmap.data(), sclp_bitmap.data(), num_rows, merge_op);
+    }
+
+    // Restore delta encoding for any prefix-summed columns
+    for (int32_t col_id : prefix_summed_columns) {
+        ScanCompatError restore_err;
+        auto const* col = find_column(buffer_view, columns, col_id, restore_err);
+        if (nullptr != col) {
+            auto* values = reinterpret_cast<int64_t*>(
+                    buffer_view.data + col->primary_offset_bytes
+            );
+            std::adjacent_difference(values, values + col->length, values);
+        }
+    }
+
+    auto matches = std::count(out_bitmap.begin(), out_bitmap.end(), static_cast<uint8_t>(1));
+    SPDLOG_DEBUG(
+            "CPU bitmap+SCLP scan base_preds={} sclp_filters={} matches={}/{}.",
+            base_request.predicates.size(),
+            sclp_infos.size(),
+            matches,
+            num_rows
+    );
+    return ScanCompatError::None;
+}
 }  // namespace clp_s::gpu
