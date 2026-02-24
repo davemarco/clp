@@ -3,10 +3,29 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
+#include <vector>
 
 #include "Types.hpp"
 
 namespace clp_s::gpu {
+
+/**
+ * Computes the byte offset and total size for each column in a packed output buffer.
+ * All columns are aligned to 8-byte boundaries. Boolean columns include archive-format
+ * padding to maintain alignment.
+ *
+ * @param columns Column descriptors for the schema.
+ * @param num_matches Number of matching rows to pack.
+ * @param[out] column_offsets Byte offset into the output buffer for each column.
+ * @param[out] total_size Total output buffer size in bytes.
+ */
+void compute_column_offsets(
+        std::span<ColumnDesc const> columns,
+        uint64_t num_matches,
+        std::vector<size_t>& column_offsets,
+        size_t& total_size
+);
 /**
  * Compacts a 1-byte-per-row bitmap into an array of matching row indices.
  *

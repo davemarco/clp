@@ -2,10 +2,12 @@
 
 #include <vector>
 
+#include "../../bitmap/cuda/Scan.hpp"
 #include "../../common/cuda/NvcompDecompress.hpp"
 #include "../../common/cuda/Transfer.hpp"
 #include "../../common/host/ErtInfo.hpp"
-#include "../cuda/Scan.hpp"
+#include "../cuda/Packing.hpp"
+#include "../cuda/Types.hpp"
 
 namespace clp_s::gpu {
 namespace {
@@ -26,6 +28,98 @@ std::vector<ColumnDesc> offset_columns(
         }
     }
     return result;
+}
+
+/**
+ * Prefix-sums all DeltaInt64/Timestamp columns in the adjusted column list.
+ * Must be called once before scanning predicates on the decompressed ERT buffer.
+ */
+int prefix_sum_delta_columns(
+        char* d_ert_mutable,
+        std::vector<ColumnDesc> const& adjusted_columns,
+        std::string& error
+) {
+    for (auto const& col : adjusted_columns) {
+        if (col.type == ColumnType::DeltaInt64 || col.type == ColumnType::Timestamp) {
+            auto status
+                    = prefix_sum_column_in_place(d_ert_mutable, col.primary_offset_bytes, col.length);
+            if (cudaSuccess != status) {
+                error = std::string("prefix_sum failed: ") + cudaGetErrorString(status);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/**
+ * Converts a device bitmap to an encoded buffer (row IDs -> pack -> copy to host).
+ * Takes ownership of the bitmap in result_bitmap (detaches from guard).
+ */
+int bitmap_to_encoded_buffer(
+        void* d_ert,
+        size_t d_ert_size,
+        DeviceBufferGuard& result_bitmap,
+        std::span<ColumnDesc const> adjusted_columns,
+        size_t num_rows,
+        EncodedBuffer& out_buffer,
+        std::string& error
+) {
+    DeviceContext device_ctx;
+    device_ctx.ert.ptr = d_ert;
+    device_ctx.ert.size = d_ert_size;
+    device_ctx.bitmap.buf = result_bitmap.buf;
+    result_bitmap.buf = {};  // Prevent double-free
+
+    uint64_t num_matches = 0;
+    auto status = bitmap_to_row_ids(
+            static_cast<uint8_t const*>(device_ctx.bitmap.buf.ptr),
+            num_rows,
+            device_ctx.row_ids.buf,
+            num_matches
+    );
+    if (cudaSuccess != status) {
+        error = std::string("bitmap_to_row_ids failed: ") + cudaGetErrorString(status);
+        return 1;
+    }
+
+    out_buffer.num_rows = num_matches;
+    if (0 == num_matches) {
+        return 0;
+    }
+
+    PackContext pack_ctx{adjusted_columns, device_ctx, num_matches};
+
+    std::vector<size_t> column_offsets;
+    size_t total_size = 0;
+    compute_column_offsets(adjusted_columns, num_matches, column_offsets, total_size);
+
+    status = cudaMalloc(&device_ctx.encoded_buffer.buf.ptr, total_size);
+    if (cudaSuccess != status) {
+        error = std::string("output alloc failed: ") + cudaGetErrorString(status);
+        return 1;
+    }
+    device_ctx.encoded_buffer.buf.size = total_size;
+
+    for (size_t i = 0; i < adjusted_columns.size(); ++i) {
+        status = pack_fixed_column(adjusted_columns[i], column_offsets[i], pack_ctx);
+        if (cudaSuccess != status) {
+            error = std::string("pack failed: ") + cudaGetErrorString(status);
+            return 1;
+        }
+    }
+
+    void* host_ptr = nullptr;
+    status = copy_to_host(device_ctx.encoded_buffer.buf, &host_ptr);
+    if (cudaSuccess != status) {
+        error = std::string("copy to host failed: ") + cudaGetErrorString(status);
+        return 1;
+    }
+
+    out_buffer.data = std::shared_ptr<char[]>(static_cast<char*>(host_ptr), free_host_buffer);
+    out_buffer.size = total_size;
+
+    return 0;
 }
 }  // namespace
 
@@ -54,9 +148,9 @@ int decompress_stream_to_device(
     return 0;
 }
 
-int run_scan_to_encoded_buffer(
+int run_scan_to_encoded_buffer_clauses(
         SchemaReader& reader,
-        ScanRequest const& request,
+        std::vector<ScanClause> const& clauses,
         EncodedBuffer& out_buffer,
         std::string& error,
         void* d_ert,
@@ -66,60 +160,67 @@ int run_scan_to_encoded_buffer(
 ) {
     out_buffer = {};
 
-    if (request.predicates.empty()) {
-        error = "no predicates in scan request";
+    if (clauses.empty()) {
+        error = "no clauses in scan request";
         return 1;
     }
 
-    // Adjust column offsets to account for table position within the buffer
     auto adjusted_columns = offset_columns(columns, stream_offset);
 
-    // Resolve each predicate's column
-    ErtBufferView view{static_cast<char*>(d_ert), d_ert_size};
-    std::vector<ColumnDesc> resolved_pred_cols;
-    resolved_pred_cols.reserve(request.predicates.size());
-    for (auto const& pred : request.predicates) {
-        ScanCompatError col_err;
-        auto const* col = find_column(
-                view, std::span<ColumnDesc const>{adjusted_columns}, pred.column_id, col_err
-        );
-        if (nullptr == col) {
-            error = "column not found or out of bounds for predicate (column_id="
-                    + std::to_string(pred.column_id) + ")";
-            return 1;
-        }
-        resolved_pred_cols.push_back(*col);
-    }
-
-    EncodedBufferRequest gpu_request{
-            d_ert,
-            d_ert_size,
-            reader.get_num_messages(),
-            std::span<ColumnDesc const>{adjusted_columns},
-            std::span<ColumnDesc const>{resolved_pred_cols},
-            std::span<ColumnPredicate const>{request.predicates},
-            request.merge_op
-    };
-
-    EncodedBufferResult gpu_result;
-    auto status = cuda_scan_to_encoded_buffer(gpu_request, gpu_result);
-    if (cudaSuccess != status) {
-        if (nullptr != gpu_result.buffer) {
-            free_host_buffer(gpu_result.buffer);
-        }
-        error = std::string("failed to build compact ERT buffer on GPU: ")
-                + cudaGetErrorString(status) + " (num_rows="
-                + std::to_string(reader.get_num_messages()) + ", num_cols="
-                + std::to_string(adjusted_columns.size()) + ", ert_size="
-                + std::to_string(d_ert_size) + ")";
+    if (0 != prefix_sum_delta_columns(static_cast<char*>(d_ert), adjusted_columns, error)) {
         return 1;
     }
 
-    if (nullptr != gpu_result.buffer) {
-        out_buffer.data = std::shared_ptr<char[]>(gpu_result.buffer, free_host_buffer);
+    ErtBufferView view{static_cast<char*>(d_ert), d_ert_size};
+    size_t const num_rows = reader.get_num_messages();
+
+    // Scan first clause directly into the combined bitmap
+    DeviceBufferGuard combined_bitmap;
+    if (0
+        != scan_clause_to_device_bitmap(
+                static_cast<char const*>(d_ert),
+                view,
+                clauses[0],
+                adjusted_columns,
+                num_rows,
+                combined_bitmap,
+                error
+        ))
+    {
+        return 1;
     }
-    out_buffer.size = gpu_result.size;
-    out_buffer.num_rows = gpu_result.num_matches;
-    return 0;
+
+    // OR-merge remaining clauses into the combined bitmap
+    for (size_t i = 1; i < clauses.size(); ++i) {
+        DeviceBufferGuard clause_bitmap;
+        if (0
+            != scan_clause_to_device_bitmap(
+                    static_cast<char const*>(d_ert),
+                    view,
+                    clauses[i],
+                    adjusted_columns,
+                    num_rows,
+                    clause_bitmap,
+                    error
+            ))
+        {
+            return 1;
+        }
+
+        auto status = merge_device_bitmaps(
+                static_cast<uint8_t*>(combined_bitmap.buf.ptr),
+                static_cast<uint8_t const*>(clause_bitmap.buf.ptr),
+                num_rows,
+                MergeOp::Or
+        );
+        if (cudaSuccess != status) {
+            error = std::string("clause OR merge failed: ") + cudaGetErrorString(status);
+            return 1;
+        }
+    }
+
+    return bitmap_to_encoded_buffer(
+            d_ert, d_ert_size, combined_bitmap, adjusted_columns, num_rows, out_buffer, error
+    );
 }
 }  // namespace clp_s::gpu

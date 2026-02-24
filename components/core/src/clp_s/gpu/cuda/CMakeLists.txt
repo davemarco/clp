@@ -9,12 +9,10 @@ add_library(clp_s_gpu
         ${GPU_BASE}/common/cuda/Transfer.hpp
         ${GPU_BASE}/common/cuda/NvcompDecompress.cpp
         ${GPU_BASE}/common/cuda/NvcompDecompress.hpp
-        ${GPU_BASE}/bitmap/cuda/Scan.cpp
         ${GPU_BASE}/bitmap/cuda/Scan.cu
         ${GPU_BASE}/bitmap/cuda/Scan.hpp
         ${GPU_BASE}/encoded_buffer/cuda/Scan.cpp
         ${GPU_BASE}/encoded_buffer/cuda/Packing.cu
-        ${GPU_BASE}/encoded_buffer/cuda/Scan.hpp
         ${GPU_BASE}/encoded_buffer/cuda/Packing.hpp
         ${GPU_BASE}/encoded_buffer/cuda/Types.hpp
         ${GPU_BASE}/encoded_buffer/cuda/PackingKernels.cuh

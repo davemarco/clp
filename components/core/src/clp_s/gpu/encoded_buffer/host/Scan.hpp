@@ -42,12 +42,13 @@ int decompress_stream_to_device(
 );
 
 /**
- * Runs a GPU scan on a device-resident ERT stream and builds an
+ * Runs a GPU scan with multiple clauses (OR-of-ANDs support) and builds an
  * encoded buffer containing only the matching rows.
+ * Builds per-clause bitmaps, OR-merges them, and converts to an encoded buffer.
  */
-int run_scan_to_encoded_buffer(
+int run_scan_to_encoded_buffer_clauses(
         SchemaReader& reader,
-        ScanRequest const& request,
+        std::vector<ScanClause> const& clauses,
         EncodedBuffer& out_buffer,
         std::string& error,
         void* d_ert,

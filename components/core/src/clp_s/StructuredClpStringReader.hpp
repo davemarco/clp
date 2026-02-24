@@ -57,6 +57,23 @@ public:
     size_t get_num_vars() const { return m_var_readers.size(); }
 
     /**
+     * @return the column ID of the logtype reader.
+     */
+    int32_t get_logtype_column_id() const { return m_logtype_reader->get_id(); }
+
+    /**
+     * @return the column IDs of the variable readers, in positional order.
+     */
+    std::vector<int32_t> get_var_column_ids() const {
+        std::vector<int32_t> ids;
+        ids.reserve(m_var_readers.size());
+        for (auto* r : m_var_readers) {
+            ids.push_back(r->get_id());
+        }
+        return ids;
+    }
+
+    /**
      * Gathers the encoded variable values for the given message into an internal buffer and
      * returns a span over them. The span is valid until the next call to gather_vars().
      */

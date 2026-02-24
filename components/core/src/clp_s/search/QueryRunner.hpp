@@ -20,12 +20,14 @@
 
 #include "../../clp/Query.hpp"
 #include "../../clp/Utils.hpp"
+#include "../gpu/common/host/ScanRequestTypes.hpp"
 #include "../ArchiveReader.hpp"
 #include "../ColumnReader.hpp"
 #include "../DictionaryReader.hpp"
 #include "../ReaderUtils.hpp"
 #include "../SchemaReader.hpp"
 #include "../SchemaTree.hpp"
+#include "../StructuredClpStringReader.hpp"
 #include "../TimestampDictionaryReader.hpp"
 #include "../Utils.hpp"
 #include "ast/ColumnDescriptor.hpp"
@@ -80,12 +82,33 @@ public:
     void global_init();
 
     /**
-     * @return A const reference to the pre-computed var match map for GPU scan requests.
+     * @return The pre-computed var match map for GPU scan requests.
      */
     auto get_string_var_match_map() const
             -> std::map<std::string, std::unordered_set<int64_t>> const& {
         return m_string_var_match_map;
     }
+
+    /**
+     * @return The pre-computed SCLP columns map for GPU scan requests.
+     */
+    auto get_sclp_columns() const
+            -> std::map<int32_t, gpu::SclpColumns> const& {
+        return m_sclp_columns;
+    }
+
+    /**
+     * @return The string query map for GPU scan requests.
+     */
+    auto get_string_query_map() const
+            -> std::map<std::string, std::optional<clp::Query>> const& {
+        return m_string_query_map;
+    }
+
+    /**
+     * @return The schema-specific query expression currently prepared by schema_init().
+     */
+    auto get_schema_expr() const -> std::shared_ptr<ast::Expression> const& { return m_expr; }
 
     /**
      * Initializes the query processing context for a given schema.
@@ -144,11 +167,15 @@ private:
     log_surgeon::lexers::ByteLexer m_lexer;
     bool m_use_heuristic{true};
 
+    // Maps each CLP search string (e.g. "*rollback*") to its pre-computed clp::Query
+    // containing SubQueries (logtype IDs + encoded variable values). Used by both the
+    // CPU filter path and the GPU scan request builder.
     std::map<std::string, std::optional<clp::Query>> m_string_query_map;
     std::map<std::string, std::unordered_set<int64_t>> m_string_var_match_map;
     std::unordered_map<ast::Expression*, clp::Query*> m_expr_clp_query;
     std::unordered_map<ast::Expression*, std::unordered_set<int64_t>*> m_expr_var_match_map;
     std::unordered_map<int32_t, std::vector<ClpStringColumnReader*>> m_clp_string_readers;
+    std::unordered_map<int32_t, StructuredClpStringReader*> m_structured_clp_string_readers;
     std::unordered_map<int32_t, std::vector<VariableStringColumnReader*>> m_var_string_readers;
     std::unordered_map<int32_t, TimestampColumnReader*> m_timestamp_readers;
     DeprecatedDateStringColumnReader* m_deprecated_datestring_reader{nullptr};
@@ -156,6 +183,8 @@ private:
     std::unordered_map<int32_t, std::string> m_extracted_unstructured_arrays;
     uint64_t m_cur_message{0};
     EvaluatedValue m_expression_value{EvaluatedValue::Unknown};
+
+    std::map<int32_t, gpu::SclpColumns> m_sclp_columns;
 
     std::vector<ast::ColumnDescriptor*> m_wildcard_columns;
     std::map<ast::ColumnDescriptor*, std::set<int32_t>> m_wildcard_to_searched_basic_columns;
@@ -262,6 +291,19 @@ private:
             clp::Query* q,
             std::vector<ClpStringColumnReader*> const& readers
     ) const -> bool;
+
+    /**
+     * Evaluates a structured CLP string filter expression
+     * @param op
+     * @param q
+     * @param reader
+     * @return true if the expression evaluates to true, false otherwise
+     */
+    auto evaluate_structured_clp_string_filter(
+            ast::FilterOperation op,
+            clp::Query* q,
+            StructuredClpStringReader* reader
+    ) -> bool;
 
     /**
      * Evaluates a var string filter expression
@@ -430,6 +472,12 @@ private:
      * Populates the set of internal columns that get ignored during dynamic wildcard expansion.
      */
     void populate_internal_columns();
+
+    /**
+     * Populates the StructuredClpString column layout for the current schema by walking
+     * the schema entries. Used for GPU scan request generation.
+     */
+    void populate_sclp_columns();
 
     /**
      * Constant propagates an expression

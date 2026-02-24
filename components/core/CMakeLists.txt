@@ -413,6 +413,7 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/gpu/common/host/ErtInfoTypes.hpp
     src/clp_s/gpu/common/host/ScanRequest.cpp
     src/clp_s/gpu/common/host/ScanRequest.hpp
+    src/clp_s/gpu/common/host/ScanRequestTypeUtils.hpp
     src/clp_s/gpu/common/host/ScanRequestTypes.hpp
     src/clp_s/gpu/bitmap/host/Scan.cpp
     src/clp_s/gpu/bitmap/host/Scan.hpp
@@ -420,8 +421,6 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/gpu/bitmap/host/Output.hpp
     src/clp_s/gpu/cpu_baseline/host/Scan.cpp
     src/clp_s/gpu/cpu_baseline/host/Scan.hpp
-    src/clp_s/gpu/cpu_baseline/host/ScanSimd.cpp
-    src/clp_s/gpu/cpu_baseline/host/ScanSimd.hpp
     src/clp_s/gpu/encoded_buffer/host/Scan.cpp
     src/clp_s/gpu/encoded_buffer/host/Scan.hpp
     src/clp_s/search/AddTimestampConditions.cpp

@@ -55,6 +55,12 @@ public:
         return m_possible_var_dict_ids;
     }
 
+    encoded_variable_t get_precise_var() const { return m_precise_var; }
+
+    std::unordered_set<encoded_variable_t> const& get_possible_dict_vars() const {
+        return m_possible_dict_vars;
+    }
+
 private:
     // Variables
     bool m_is_precise_var{};

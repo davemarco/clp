@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace clp_s::gpu {
 
@@ -20,7 +21,8 @@ enum class ColumnType : uint8_t {
     DeltaInt64,       // Delta-encoded 64-bit signed integer
     FormattedDouble,  // 64-bit double + uint16_t format encoding per row
     DictionaryFloat,  // Variable dictionary ID for float representation
-    Timestamp         // Delta-encoded int64 timestamp + uint64 encoding per row
+    Timestamp,        // Delta-encoded int64 timestamp + uint64 encoding per row
+    Int64InList       // IN-list match on int64 column values (e.g., logtype IDs)
 };
 
 /**
@@ -42,6 +44,18 @@ struct ErtBufferView {
     char* data{nullptr};  ///< Base pointer to the decompressed ERT buffer.
     size_t size{0};       ///< Size in bytes of the ERT buffer.
 };
+
+/**
+ * Finds a column descriptor by ID. Returns nullptr if not found.
+ */
+inline ColumnDesc const* find_column_by_id(std::span<ColumnDesc const> columns, int32_t col_id) {
+    for (auto const& c : columns) {
+        if (c.column_id == col_id) {
+            return &c;
+        }
+    }
+    return nullptr;
+}
 
 }  // namespace clp_s::gpu
 

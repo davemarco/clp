@@ -3,8 +3,8 @@
 
 #include <span>
 
-#include "Scan.hpp"
 #include "../../common/cuda/Transfer.hpp"
+#include "../../common/host/ErtInfoTypes.hpp"
 
 namespace clp_s::gpu {
 /**

@@ -546,7 +546,7 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 po::value<std::string>(&m_scan_mode_str)
                     ->default_value("")
                     ->value_name("MODE"),
-                "Column scan mode: gpu, gpu-bitmap, cpu-bitmap, or cpu-simd-bitmap"
+                "Column scan mode: gpu, gpu-bitmap, or cpu-bitmap"
             )(
                 "schema-path",
                 po::value<std::string>(&m_schema_path)
@@ -740,12 +740,10 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 m_scan_mode = ScanMode::GpuBitmap;
             } else if (m_scan_mode_str == "cpu-bitmap") {
                 m_scan_mode = ScanMode::CpuBitmap;
-            } else if (m_scan_mode_str == "cpu-simd-bitmap") {
-                m_scan_mode = ScanMode::CpuSimdBitmap;
             } else {
                 throw std::invalid_argument(
                         "Invalid --scan mode '" + m_scan_mode_str
-                        + "'. Valid options: gpu, gpu-bitmap, cpu-bitmap, cpu-simd-bitmap"
+                        + "'. Valid options: gpu, gpu-bitmap, cpu-bitmap"
                 );
             }
 

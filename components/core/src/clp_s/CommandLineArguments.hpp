@@ -47,8 +47,7 @@ public:
         None = 0,
         Gpu,
         GpuBitmap,
-        CpuBitmap,
-        CpuSimdBitmap
+        CpuBitmap
     };
 
     // Constructors

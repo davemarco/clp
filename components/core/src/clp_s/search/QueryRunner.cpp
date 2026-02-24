@@ -4,12 +4,14 @@
 #include <vector>
 
 #include <log_surgeon/Lexer.hpp>
+#include <spdlog/spdlog.h>
 #include <string_utils/string_utils.hpp>
 
 #include "../../clp/Defs.h"
 #include "../../clp/GrepCore.hpp"
 #include "../../clp/Query.hpp"
 #include "../../clp/type_utils.hpp"
+#include "../Schema.hpp"
 #include "../SchemaTree.hpp"
 #include "../Utils.hpp"
 #include "ast/AndExpr.hpp"
@@ -59,8 +61,25 @@ auto QueryRunner::schema_init(int32_t schema_id) -> EvaluatedValue {
 
     m_expression_value = constant_propagate(m_expr);
     if (m_expression_value == EvaluatedValue::False) {
+        SPDLOG_DEBUG("schema {}: 0 CLP subqueries (constant-propagated false)", schema_id);
         return m_expression_value;
     }
+
+    size_t total_clp_subqueries{0};
+    size_t clp_filters{0};
+    for (auto const& [_, query_ptr] : m_expr_clp_query) {
+        if (nullptr == query_ptr) {
+            continue;
+        }
+        ++clp_filters;
+        total_clp_subqueries += query_ptr->get_sub_queries().size();
+    }
+    SPDLOG_DEBUG(
+            "schema {}: {} CLP filter(s), {} total subquery(ies)",
+            schema_id,
+            clp_filters,
+            total_clp_subqueries
+    );
 
     add_wildcard_columns_to_searched_columns();
     return m_expression_value;
@@ -68,6 +87,7 @@ auto QueryRunner::schema_init(int32_t schema_id) -> EvaluatedValue {
 
 void QueryRunner::clear_readers() {
     m_clp_string_readers.clear();
+    m_structured_clp_string_readers.clear();
     m_var_string_readers.clear();
     m_timestamp_readers.clear();
     m_deprecated_datestring_reader = nullptr;
@@ -114,6 +134,12 @@ void QueryRunner::init(SchemaReader* reader, std::vector<BaseColumnReader*> cons
         auto column_id = column_reader->get_id();
         initialize_reader(column_id, column_reader);
     }
+
+    for (auto& [parent_id, sclp_reader] : reader->get_structured_clp_string_readers()) {
+        m_structured_clp_string_readers[parent_id] = &sclp_reader;
+    }
+
+    populate_sclp_columns();
 }
 
 std::string& QueryRunner::get_cached_decompressed_unstructured_array(int32_t column_id) {
@@ -229,6 +255,14 @@ bool QueryRunner::evaluate_wildcard_filter(FilterExpr* expr, int32_t schema) {
                 return true;
             }
         }
+        for (auto& [parent_id, sclp_reader] : m_structured_clp_string_readers) {
+            if (false == matches_metadata && m_metadata_columns.contains(parent_id)) {
+                continue;
+            }
+            if (evaluate_structured_clp_string_filter(op, q, sclp_reader)) {
+                return true;
+            }
+        }
     }
 
     if (column->matches_type(LiteralType::VarStringT)) {
@@ -306,13 +340,22 @@ bool QueryRunner::evaluate_filter(FilterExpr* expr, int32_t schema) {
             return evaluate_int_filter(expr->get_operation(), column_id, literal);
         case LiteralType::FloatT:
             return evaluate_float_filter(expr->get_operation(), column_id, literal);
-        case LiteralType::ClpStringT:
+        case LiteralType::ClpStringT: {
             q = m_expr_clp_query.at(expr);
+            auto sclp_it = m_structured_clp_string_readers.find(column_id);
+            if (sclp_it != m_structured_clp_string_readers.end()) {
+                return evaluate_structured_clp_string_filter(
+                        expr->get_operation(),
+                        q,
+                        sclp_it->second
+                );
+            }
             return evaluate_clp_string_filter(
                     expr->get_operation(),
                     q,
                     m_clp_string_readers[column_id]
             );
+        }
         case LiteralType::VarStringT:
             matching_vars = m_expr_var_match_map.at(expr);
             return evaluate_var_string_filter(
@@ -490,6 +533,56 @@ bool QueryRunner::evaluate_clp_string_filter(
         }
     }
     return false;
+}
+
+bool QueryRunner::evaluate_structured_clp_string_filter(
+        FilterOperation op,
+        clp::Query* q,
+        StructuredClpStringReader* reader
+) {
+    if (FilterOperation::EXISTS == op || FilterOperation::NEXISTS == op) {
+        return true;
+    }
+
+    if (op != FilterOperation::EQ && op != FilterOperation::NEQ) {
+        return false;
+    }
+
+    if (nullptr == q) {
+        return op == FilterOperation::NEQ;
+    }
+
+    if (q->search_string_matches_all()) {
+        return op == FilterOperation::EQ;
+    }
+
+    bool matched = false;
+    int64_t id = reader->get_logtype_id(m_cur_message);
+    auto vars = reader->gather_vars(m_cur_message);
+    if (q->contains_sub_queries()) {
+        for (auto const& subquery : q->get_sub_queries()) {
+            if (subquery.matches_logtype(id) && subquery.matches_vars(vars)) {
+                if (subquery.wildcard_match_required()) {
+                    matched = clp::string_utils::wildcard_match_unsafe(
+                            reader->decode(m_cur_message),
+                            q->get_search_string(),
+                            !q->get_ignore_case()
+                    );
+                } else {
+                    matched = true;
+                }
+                break;
+            }
+        }
+    } else {
+        matched = clp::string_utils::wildcard_match_unsafe(
+                reader->decode(m_cur_message),
+                q->get_search_string(),
+                !q->get_ignore_case()
+        );
+    }
+
+    return (op == FilterOperation::EQ) == matched;
 }
 
 bool QueryRunner::evaluate_var_string_filter(
@@ -868,6 +961,16 @@ bool QueryRunner::evaluate_bool_filter(
         }
     }
     return false;
+}
+
+void QueryRunner::populate_sclp_columns() {
+    m_sclp_columns.clear();
+    for (auto const& [parent_id, reader] : m_structured_clp_string_readers) {
+        gpu::SclpColumns cols;
+        cols.logtype_column_id = reader->get_logtype_column_id();
+        cols.var_column_ids = reader->get_var_column_ids();
+        m_sclp_columns[parent_id] = std::move(cols);
+    }
 }
 
 void QueryRunner::populate_string_queries(std::shared_ptr<Expression> const& expr) {

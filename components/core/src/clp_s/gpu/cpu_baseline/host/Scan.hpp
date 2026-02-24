@@ -12,17 +12,13 @@
 
 namespace clp_s::gpu {
 /**
- * Runs a CPU scan and returns a merged bitmap.
- *
- * @param reader Schema reader for the current ERT.
- * @param request Scan request.
- * @param columns Precomputed column descriptors.
- * @param out_bitmap Output bitmap with one byte per row (1=match, 0=non-match).
- * @return Error code (ScanCompatError::None on success).
+ * Runs a CPU bitmap scan over multiple OR-clauses.
+ * Prefix-sums delta columns once, scans all clauses, OR-merges, and restores
+ * delta encoding.
  */
-ScanCompatError run_cpu_scan_to_bitmap(
+ScanCompatError run_cpu_scan_to_bitmap_clauses(
         SchemaReader& reader,
-        ScanRequest const& request,
+        std::vector<ScanClause> const& clauses,
         std::span<ColumnDesc const> columns,
         std::vector<uint8_t>& out_bitmap
 );

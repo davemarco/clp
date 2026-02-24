@@ -38,7 +38,10 @@ enum class ScanCompatError {
     CudaScanFailed,
     UnsupportedColumnTypeForGpu,
     InvertedCompoundExpression,
-    VarStringNotInDictionary
+    VarStringNotInDictionary,
+    StructuredClpStringWildcardRequired,
+    PredicateAlwaysTrue,
+    PredicateAlwaysFalse
 };
 
 /**
@@ -60,11 +63,60 @@ struct ColumnPredicate {
 };
 
 /**
- * Scan request: a flat list of predicates merged with AND or OR.
+ * A flat set of column predicates combined with a single merge operation (AND or OR).
  */
-struct ScanRequest {
+struct ColumnPredicates {
     std::vector<ColumnPredicate> predicates;
     MergeOp merge_op{MergeOp::And};
+};
+
+/**
+ * Maps a StructuredClpString parent node to its child column IDs in the schema.
+ * The first child is always the logtype column; the rest are variable columns in
+ * positional order.
+ */
+struct SclpColumns {
+    int32_t logtype_column_id{-1};
+    std::vector<int32_t> var_column_ids;
+};
+
+/**
+ * Encoded values a variable position can match. A single element means the variable
+ * encodes to exactly one value (precise match -> Int64 EQ). Multiple elements mean
+ * the variable could encode to several values (imprecise -> IN-list).
+ */
+struct SclpVarPredicate {
+    std::vector<int64_t> possible_encoded_values;  // single element for precise, multiple for imprecise
+};
+
+/**
+ * One possible way a search pattern can match: a set of logtype IDs paired with
+ * per-variable encoded values. A CLP query generates multiple subqueries -- a row
+ * matches if ANY subquery matches.
+ */
+struct SclpSubQuery {
+    std::vector<int64_t> possible_logtype_ids;
+    std::vector<SclpVarPredicate> vars;  // one per var column, positional
+};
+
+/**
+ * Everything needed to scan one StructuredClpString filter on the GPU: column layout,
+ * subqueries, and whether to invert the result (for NEQ/NOT filters).
+ */
+struct SclpFilter {
+    int32_t logtype_column_id{-1};
+    std::vector<int32_t> var_column_ids;
+    std::vector<SclpSubQuery> subqueries;
+    bool is_negated{false};  // true for NEQ/inverted: invert bitmap after positive match
+};
+
+/**
+ * One AND-clause in a disjunctive normal form query. Contains simple single-column
+ * predicates and compound CLP string filters. Multiple clauses are OR'd together.
+ */
+struct ScanClause {
+    ColumnPredicates column_predicates;
+    std::vector<SclpFilter> sclp_filters;
 };
 
 }  // namespace clp_s::gpu

@@ -6,10 +6,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 
 #include <cuda_runtime.h>
 
 #include "../../common/cuda/Transfer.hpp"
+#include "../../common/host/ErtInfoTypes.hpp"
 #include "../../common/host/ScanRequestTypes.hpp"
 
 namespace clp_s::gpu {
@@ -77,26 +79,57 @@ cudaError_t prefix_sum_column_in_place(
 );
 
 /**
- * Runs a scan on a host ERT buffer and returns a merged bitmap on the host.
- * Caller must pre-resolve ColumnDescs (one per predicate, in matching order).
+ * Inverts a device bitmap (1->0, 0->1).
+ */
+cudaError_t invert_device_bitmap(uint8_t* device_bitmap, size_t num_rows);
+
+/**
+ * Merges src bitmap into dst bitmap element-wise on the device.
+ */
+cudaError_t merge_device_bitmaps(uint8_t* dst, uint8_t const* src, size_t num_rows, MergeOp op);
+
+/**
+ * Scans a StructuredClpString filter into a device bitmap.
+ * Multi-pass: for each subquery, scans logtype + vars with AND, then OR-merges into output.
+ * If is_negated, inverts the final bitmap.
  *
- * @param host_ert_buffer Base pointer to the decompressed ERT buffer (host memory).
- * @param ert_size Size of the ERT buffer in bytes.
- * @param request Scan request with predicates and merge op.
- * @param resolved_columns Pre-resolved ColumnDescs (one per predicate, same order).
- * @param num_rows Number of rows (all columns must have this length).
- * @param out_bitmap Output bitmap buffer (must be at least num_rows bytes).
- * @param bitmap_size Size of the output buffer in bytes.
+ * @param device_ert_base Device pointer to the ERT buffer.
+ * @param info SCLP scan info (column IDs, subqueries, negation flag).
+ * @param columns All column descriptors for this schema.
+ * @param num_rows Number of rows.
+ * @param device_out_bitmap Output device bitmap (must be pre-allocated, num_rows bytes).
+ * @return cudaSuccess on success.
+ */
+cudaError_t scan_sclp_to_device_bitmap(
+        char const* device_ert_base,
+        SclpFilter const& info,
+        std::span<ColumnDesc const> columns,
+        size_t num_rows,
+        uint8_t* device_out_bitmap
+);
+
+/**
+ * Scans base predicates + SCLP filters for one clause into a device bitmap.
+ * The bitmap is allocated internally and returned via out_bitmap_guard.
+ * Assumes delta columns have already been prefix-summed on device.
+ *
+ * @param d_ert_base Device pointer to the ERT buffer.
+ * @param view ERT buffer view (for column lookup / bounds checking).
+ * @param clause The scan clause containing predicates, SCLP filters, and merge op.
+ * @param columns All column descriptors for this schema.
+ * @param num_rows Number of rows.
+ * @param out_bitmap_guard Output: allocated device bitmap (1=match, 0=no match).
+ * @param error Output: error message on failure.
  * @return 0 on success, non-zero on failure.
  */
-int cuda_scan_to_bitmap(
-        void const* host_ert_buffer,
-        size_t ert_size,
-        ScanRequest const& request,
-        std::span<ColumnDesc const> resolved_columns,
+int scan_clause_to_device_bitmap(
+        char const* d_ert_base,
+        ErtBufferView const& view,
+        ScanClause const& clause,
+        std::span<ColumnDesc const> columns,
         size_t num_rows,
-        uint8_t* out_bitmap,
-        size_t bitmap_size
+        DeviceBufferGuard& out_bitmap_guard,
+        std::string& error
 );
 }  // namespace clp_s::gpu
 
