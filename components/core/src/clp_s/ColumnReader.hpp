@@ -217,7 +217,9 @@ private:
 class BooleanColumnReader : public BaseColumnReader {
 public:
     // Constructor
-    explicit BooleanColumnReader(int32_t id) : BaseColumnReader(id) {}
+    explicit BooleanColumnReader(int32_t id, bool has_padding = false)
+            : BaseColumnReader(id),
+              m_has_padding(has_padding) {}
 
     // Destructor
     ~BooleanColumnReader() override = default;
@@ -237,6 +239,7 @@ public:
 
 private:
     UnalignedMemSpan<uint8_t> m_values;
+    bool m_has_padding{false};
 };
 
 class ClpStringColumnReader : public BaseColumnReader {

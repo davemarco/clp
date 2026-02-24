@@ -747,6 +747,12 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 );
             }
 
+            if (m_scan_mode != ScanMode::None && m_schema_path.empty()) {
+                throw std::invalid_argument(
+                        "--schema-path is required when using --scan gpu/gpu-bitmap/cpu-bitmap"
+                );
+            }
+
             if (parsed_command_line_options.count("tge")) {
                 m_search_begin_ts = parsed_command_line_options["tge"].as<epochtime_t>();
             }

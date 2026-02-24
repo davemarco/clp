@@ -107,6 +107,8 @@ public:
 
     [[nodiscard]] size_t get_num_streams() const { return m_stream_metadata.size(); }
 
+    [[nodiscard]] bool has_chunk_metadata() const { return m_has_chunk_metadata; }
+
 private:
     enum PackedStreamReaderState {
         Uninitialized,
@@ -122,6 +124,7 @@ private:
     PackedStreamReaderState m_state{PackedStreamReaderState::Uninitialized};
     size_t m_begin_offset{};
     size_t m_prev_stream_id{0ULL};
+    bool m_has_chunk_metadata{false};
 };
 }  // namespace clp_s
 

@@ -131,13 +131,20 @@ PackedStreamReader::read_stream(size_t stream_id, std::shared_ptr<char[]>& buf, 
 }
 
 void PackedStreamReader::read_chunk_metadata(ZstdDecompressor& decompressor) {
+    bool first_read{true};
     for (auto& stream : m_stream_metadata) {
         uint32_t chunk_size;
         if (auto error = decompressor.try_read_numeric_value(chunk_size);
             ErrorCodeSuccess != error)
         {
+            if (first_read && ErrorCodeEndOfFile == error) {
+                // No chunk metadata in this archive (pre-GPU format). Leave defaults.
+                m_has_chunk_metadata = false;
+                return;
+            }
             throw OperationFailed(error, __FILE__, __LINE__);
         }
+        first_read = false;
         stream.chunk_size = chunk_size;
 
         uint32_t num_chunks;
@@ -156,6 +163,7 @@ void PackedStreamReader::read_chunk_metadata(ZstdDecompressor& decompressor) {
             }
         }
     }
+    m_has_chunk_metadata = true;
 }
 
 void PackedStreamReader::read_stream_compressed(

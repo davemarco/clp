@@ -88,10 +88,12 @@ std::variant<int64_t, double, std::string, uint8_t> FormattedFloatColumnReader::
 void BooleanColumnReader::load(BufferViewReader& reader, uint64_t num_messages) {
     m_values = reader.read_unaligned_span<uint8_t>(num_messages);
 
-    // Skip alignment padding written by BooleanColumnWriter::store() so that subsequent
-    // columns start at 8-byte aligned offsets.
-    size_t const padding = (8 - (num_messages % 8)) % 8;
-    reader.skip(padding);
+    if (m_has_padding) {
+        // Skip alignment padding written by BooleanColumnWriter::store() so that subsequent
+        // columns start at 8-byte aligned offsets.
+        size_t const padding = (8 - (num_messages % 8)) % 8;
+        reader.skip(padding);
+    }
 }
 
 void

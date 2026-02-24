@@ -249,7 +249,7 @@ private:
     bool m_ignore_case{false};
     std::string m_scan_mode_str;
     ScanMode m_scan_mode{ScanMode::None};
-    std::string m_schema_path{"components/core/config/schemas.txt"};
+    std::string m_schema_path;
     std::vector<std::string> m_projection_columns;
 
     // Search aggregation variables

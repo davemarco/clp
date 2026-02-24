@@ -211,7 +211,7 @@ BaseColumnReader* ArchiveReader::append_reader_column(SchemaReader& reader, int3
             column_reader = new VariableStringColumnReader(column_id, m_var_dict);
             break;
         case NodeType::Boolean:
-            column_reader = new BooleanColumnReader(column_id);
+            column_reader = new BooleanColumnReader(column_id, m_stream_reader.has_chunk_metadata());
             break;
         case NodeType::UnstructuredArray:
             column_reader = new ClpStringColumnReader(column_id, m_var_dict, m_array_dict, true);
@@ -299,7 +299,7 @@ void ArchiveReader::append_unordered_reader_columns(
                 column_reader = new VariableStringColumnReader(entry, m_var_dict);
                 break;
             case NodeType::Boolean:
-                column_reader = new BooleanColumnReader(entry);
+                column_reader = new BooleanColumnReader(entry, m_stream_reader.has_chunk_metadata());
                 break;
             // UnstructuredArray, DeprecatedDateString, and Timestamp currently aren't supported as
             // part of any unordered object, so we disregard them here
