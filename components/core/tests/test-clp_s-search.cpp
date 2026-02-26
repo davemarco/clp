@@ -44,6 +44,9 @@ constexpr std::string_view cTestSearchInputFile{"test_search.jsonl"};
 constexpr std::string_view cTestSearchFormattedFloatFile{"test_search_formatted_float.jsonl"};
 constexpr std::string_view cTestSearchFloatTimestampFile{"test_search_float_timestamp.jsonl"};
 constexpr std::string_view cTestSearchIntTimestampFile{"test_search_int_timestamp.jsonl"};
+constexpr std::string_view cTestSearchPositionAmbiguityFile{
+        "test_search_position_ambiguity.jsonl"
+};
 constexpr std::string_view cTestIdxKey{"idx"};
 constexpr std::string_view cTestTimestampKey{"timestamp"};
 
@@ -346,6 +349,45 @@ TEST_CASE("clp-s-search-epoch-timestamp", "[clp-s][search]") {
                     get_test_input_local_path(cTestSearchIntTimestampFile),
                     std::string{cTestSearchArchiveDirectory},
                     std::string{cTestTimestampKey},
+                    true,
+                    single_file_archive,
+                    false
+            )
+    );
+
+    for (auto const& [query, expected_results] : queries_and_results) {
+        CAPTURE(query);
+        REQUIRE_NOTHROW(search(query, false, expected_results));
+    }
+}
+
+TEST_CASE("clp-s-search-position-ambiguity", "[clp-s][search]") {
+    // Tests for Part 1 (pinned variable positions) and Part 2 (mask-encoded wildcard variables).
+    // Position ambiguity: messages with same logtype "alert \x11 error \x11 end" but different
+    // variable arrangements. Pinned positions ensure the correct variable is matched at each
+    // position. Mask-encoded wildcards: "count *12* total" must only match integers whose string
+    // form contains "12".
+    std::vector<std::pair<std::string, std::vector<int64_t>>> queries_and_results{
+            // Position ambiguity queries
+            {R"aa(msg: "*alert 100 error*")aa", {0, 2}},
+            {R"aa(msg: "*error 100 end")aa", {1, 2}},
+            {R"aa(msg: "*100*")aa", {0, 1, 2}},
+            {R"aa(msg: "*alert 100 error 200 end")aa", {0}},
+            {R"aa(msg: "*300*")aa", {3}},
+            // Mask-encoded wildcard variable queries
+            {R"aa(msg: "count *12* total")aa", {10, 12}},
+            {R"aa(msg: "count *9* total")aa", {11, 13}},
+            {R"aa(msg: "count *99* total")aa", {13}},
+    };
+    auto single_file_archive = GENERATE(true, false);
+
+    TestOutputCleaner const test_cleanup{{std::string{cTestSearchArchiveDirectory}}};
+
+    REQUIRE_NOTHROW(
+            std::ignore = compress_archive(
+                    get_test_input_local_path(cTestSearchPositionAmbiguityFile),
+                    std::string{cTestSearchArchiveDirectory},
+                    std::nullopt,
                     true,
                     single_file_archive,
                     false

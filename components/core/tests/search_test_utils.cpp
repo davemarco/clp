@@ -79,7 +79,8 @@ auto check_sub_query(
         vector<SubQuery> const& sub_queries,
         bool const wildcard_match_required,
         vector<VarInfo> const& vars_info,
-        unordered_set<logtype_dictionary_id_t> const& logtype_ids
+        unordered_set<logtype_dictionary_id_t> const& logtype_ids,
+        vector<size_t> const& expected_var_logtype_positions
 ) -> void {
     CAPTURE(id);
     REQUIRE(id < sub_queries.size());
@@ -104,4 +105,9 @@ auto check_sub_query(
     }
 
     REQUIRE(logtype_ids == sub_query.get_possible_logtypes());
+
+    if (false == expected_var_logtype_positions.empty()) {
+        REQUIRE(sub_query.has_var_logtype_positions());
+        REQUIRE(expected_var_logtype_positions == sub_query.get_var_logtype_positions());
+    }
 }

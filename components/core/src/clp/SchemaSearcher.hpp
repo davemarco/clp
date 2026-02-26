@@ -5,8 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
+#include <numeric>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -18,6 +21,7 @@
 #include <clp/Defs.h>
 #include <clp/EncodedVariableInterpreter.hpp>
 #include <clp/ErrorCode.hpp>
+#include <clp/ir/parsing.hpp>
 #include <clp/LogTypeDictionaryReaderReq.hpp>
 #include <clp/Query.hpp>
 #include <clp/TraceableException.hpp>
@@ -180,17 +184,36 @@ private:
     ) -> std::vector<size_t>;
 
     /**
-     * Generates a logtype string from an interpretation, applying a mask to determine which
-     * encodable wildcard positions are treated as encoded vs dictionary variables.
-     *
-     * @param interpretation The interpretation to convert to a logtype string.
-     * @param wildcard_encodable_positions A vector of positions of encodable wildcard variables.
-     * @param mask_encoded_flags A vector indicating if a variable is mask encoded.
-     * @return The logtype string corresponding to this combination of encoded variables.
+     * Finds all valid ways to map the pattern's variable placeholders to the entry's variable
+     * placeholders using backtracking wildcard matching.
+     * @param logtype_pattern The candidate logtype pattern (may contain `*`, `?`, and placeholder
+     * bytes).
+     * @param logtype_entry A stored logtype from the dictionary (placeholder bytes and literal
+     * text, no wildcards).
+     * @return A vector of position mappings. Each mapping is a vector where element i is the
+     * entry placeholder index that pattern placeholder i maps to. Empty if no valid mapping
+     * exists.
      */
-    static auto generate_logtype_string(
+    static auto resolve_var_logtype_positions(
+            std::string_view logtype_pattern,
+            std::string_view logtype_entry
+    ) -> std::vector<std::vector<size_t>>;
+
+    /**
+     * Generates a candidate logtype pattern from an interpretation, applying a mask to determine
+     * which positions are treated as encoded vs dictionary variables. The result may contain
+     * wildcards (`*`, `?`) from the original query as well as placeholder bytes.
+     *
+     * For positions where mask_encoded_flags[i] is true, the variable is forced to its encoded
+     * type (int or float). For all other positions, encoding is attempted and falls back to
+     * dictionary variable on failure.
+     *
+     * @param interpretation The interpretation to convert to a logtype pattern.
+     * @param mask_encoded_flags A vector indicating if a variable is mask encoded.
+     * @return The candidate logtype pattern for this combination of encoded variables.
+     */
+    static auto generate_logtype_pattern(
             log_surgeon::wildcard_query_parser::QueryInterpretation const& interpretation,
-            std::vector<size_t> const& wildcard_encodable_positions,
             std::vector<bool> const& mask_encoded_flags
     ) -> std::string;
 
@@ -233,9 +256,13 @@ auto SchemaSearcher::generate_schema_sub_queries(
         bool const ignore_case,
         size_t const max_encodable_wildcard_variables
 ) -> std::vector<SubQuery> {
+    if (ignore_case) {
+        throw OperationFailed(ErrorCode_Unsupported, __FILENAME__, __LINE__);
+    }
+
     std::vector<SubQuery> sub_queries;
     for (auto const& interpretation : interpretations) {
-        auto const logtype{interpretation.get_logtype()};
+        auto const logtype_tokens{interpretation.get_logtype()};
         auto const wildcard_encodable_positions{get_wildcard_encodable_positions(interpretation)};
         if (wildcard_encodable_positions.size() > max_encodable_wildcard_variables
             || wildcard_encodable_positions.size() >= std::numeric_limits<uint64_t>::digits)
@@ -244,20 +271,17 @@ auto SchemaSearcher::generate_schema_sub_queries(
         }
         uint64_t const num_combos{1ULL << wildcard_encodable_positions.size()};
         for (uint64_t mask{0}; mask < num_combos; ++mask) {
-            std::vector<bool> mask_encoded_flags(logtype.size(), false);
+            std::vector<bool> mask_encoded_flags(logtype_tokens.size(), false);
             for (size_t i{0}; i < wildcard_encodable_positions.size(); ++i) {
                 mask_encoded_flags[wildcard_encodable_positions[i]] = (mask >> i) & 1ULL;
             }
 
-            auto const logtype_string{generate_logtype_string(
-                    interpretation,
-                    wildcard_encodable_positions,
-                    mask_encoded_flags
-            )};
+            // --- Generate candidate logtype and match against dictionary ---
+            auto const logtype_pattern{generate_logtype_pattern(interpretation, mask_encoded_flags)};
 
             std::unordered_set<typename LogTypeDictionaryReaderType::Entry const*> logtype_entries;
             logtype_dict.get_entries_matching_wildcard_string(
-                    logtype_string,
+                    logtype_pattern,
                     ignore_case,
                     logtype_entries
             );
@@ -265,20 +289,16 @@ auto SchemaSearcher::generate_schema_sub_queries(
                 continue;
             }
 
+            // --- Build variable list from interpretation tokens ---
             SubQuery sub_query;
             bool has_vars{true};
-            for (size_t i{0}; i < logtype.size(); ++i) {
-                auto const& token{logtype[i]};
+            for (size_t i{0}; i < logtype_tokens.size(); ++i) {
+                auto const& token{logtype_tokens[i]};
                 if (std::holds_alternative<log_surgeon::wildcard_query_parser::VariableQueryToken>(
                             token
                     ))
                 {
-                    bool is_mask_encoded{false};
-                    if (wildcard_encodable_positions.end()
-                        != std::ranges::find(wildcard_encodable_positions, i))
-                    {
-                        is_mask_encoded = mask_encoded_flags[i];
-                    }
+                    bool const is_mask_encoded{mask_encoded_flags[i]};
 
                     has_vars = process_schema_var_token(
                             std::get<log_surgeon::wildcard_query_parser::VariableQueryToken>(token),
@@ -296,14 +316,69 @@ auto SchemaSearcher::generate_schema_sub_queries(
                 continue;
             }
 
-            std::unordered_set<logtype_dictionary_id_t> possible_logtype_ids;
-            possible_logtype_ids.reserve(logtype_entries.size());
-            for (auto const* entry : logtype_entries) {
-                possible_logtype_ids.emplace(entry->get_id());
+            // --- Group matching logtypes by variable logtype position and emit SubQueries ---
+            //
+            // Each SubQuery stores "pinned positions": for each query variable, the index
+            // of the logtype placeholder it corresponds to. At scan time this lets us do a
+            // direct positional check (column[positions[i]] == var[i]) rather than scanning
+            // all variable columns. Grouping logtypes that share the same position mapping
+            // into one SubQuery also means fewer scan passes.
+            //
+            // Without wildcards the mapping is always sequential: query var 0 → placeholder
+            // 0, query var 1 → placeholder 1, etc. All matched logtypes share this single
+            // mapping, so they all go into one SubQuery.
+            //
+            // With wildcards, `*` can absorb extra placeholders in the stored logtype, so
+            // the same query variable may land at different placeholder indices depending
+            // on which stored logtype matched. We compute all valid position mappings per
+            // stored logtype, then group logtypes that share the same mapping together.
+            //
+            // Example: query "* dog: *" produces candidate "*\x12: *" (one dict var).
+            //
+            //   Stored logtype id=3: "\x12: \x12" (2 placeholders)
+            //     The `*` before \x12 matches nothing, so "dog" → placeholder 0.
+            //     → positions [0]
+            //
+            //   Stored logtype id=7: "\x12: \x12: \x12" (3 placeholders)
+            //     The `*` can absorb the first "\x12: ", so "dog" → placeholder 0 or 1.
+            //     → positions [0] and [1]
+            //
+            //   Resulting SubQueries:
+            //     { vars=["dog"], positions=[0], logtypes={3, 7} }
+            //     { vars=["dog"], positions=[1], logtypes={7} }
+            bool const has_wildcard{logtype_pattern.find('*') != std::string::npos
+                                    || logtype_pattern.find('?') != std::string::npos};
+
+            std::map<std::vector<size_t>, std::unordered_set<logtype_dictionary_id_t>>
+                    var_logtype_positions_to_logtype_ids;
+
+            size_t const num_query_vars = sub_query.get_num_possible_vars();
+            if (0 == num_query_vars || false == has_wildcard) {
+                // No wildcards or no variables — single group with sequential positions
+                // (empty when num_query_vars == 0)
+                std::vector<size_t> positions(num_query_vars);
+                std::iota(positions.begin(), positions.end(), 0);
+                auto& ids = var_logtype_positions_to_logtype_ids[std::move(positions)];
+                for (auto const* entry : logtype_entries) {
+                    ids.insert(entry->get_id());
+                }
+            } else {
+                for (auto const* entry : logtype_entries) {
+                    for (auto& var_logtype_positions :
+                         resolve_var_logtype_positions(logtype_pattern, entry->get_value()))
+                    {
+                        var_logtype_positions_to_logtype_ids[var_logtype_positions].insert(entry->get_id());
+                    }
+                }
             }
-            sub_query.set_possible_logtypes(possible_logtype_ids);
-            if (sub_queries.end() == std::ranges::find(sub_queries, sub_query)) {
-                sub_queries.push_back(std::move(sub_query));
+
+            for (auto& [var_logtype_positions, lt_ids] : var_logtype_positions_to_logtype_ids) {
+                SubQuery pinned_subquery{sub_query};
+                pinned_subquery.set_var_logtype_positions(var_logtype_positions);
+                pinned_subquery.set_possible_logtypes(lt_ids);
+                if (sub_queries.end() == std::ranges::find(sub_queries, pinned_subquery)) {
+                    sub_queries.push_back(std::move(pinned_subquery));
+                }
             }
         }
     }
@@ -325,7 +400,7 @@ auto SchemaSearcher::process_schema_var_token(
     bool const is_float{log_surgeon::SymbolId::TokenFloat == var_type};
 
     if (is_mask_encoded) {
-        sub_query.mark_wildcard_match_required();
+        sub_query.add_wildcard_pattern_var(std::string{raw_string}, is_float);
         return true;
     }
 

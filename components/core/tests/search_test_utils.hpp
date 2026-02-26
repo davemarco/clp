@@ -70,19 +70,22 @@ auto generate_expected_logtype_string(
  * - The number and type of variables;
  * - For dictionary variables, the precise or possible dictionary IDs;
  * - The set of possible logtype IDs.
+ * - Optionally, the pinned variable positions.
  *
  * @param id Index of the sub-query to check in `sub_queries`.
  * @param sub_queries Vector of `SubQuery` objects.
  * @param wildcard_match_required Expected wildcard match requirement.
  * @param vars_info Object describing expected variable properties.
  * @param logtype_ids Expected set of possible logtype IDs.
+ * @param expected_var_logtype_positions Expected pinned variable positions (empty = don't check).
  */
 auto check_sub_query(
         size_t id,
         std::vector<clp::SubQuery> const& sub_queries,
         bool wildcard_match_required,
         std::vector<VarInfo> const& vars_info,
-        std::unordered_set<clp::logtype_dictionary_id_t> const& logtype_ids
+        std::unordered_set<clp::logtype_dictionary_id_t> const& logtype_ids,
+        std::vector<size_t> const& expected_var_logtype_positions = {}
 ) -> void;
 
 #endif  // SEARCH_TEST_UTILS_HPP

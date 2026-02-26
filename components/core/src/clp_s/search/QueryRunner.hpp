@@ -111,6 +111,11 @@ public:
     auto get_schema_expr() const -> std::shared_ptr<ast::Expression> const& { return m_expr; }
 
     /**
+     * @return true if the heuristic (schema-less) parser is being used.
+     */
+    auto is_using_heuristic() const -> bool { return m_use_heuristic; }
+
+    /**
      * Initializes the query processing context for a given schema.
      *
      * It clears any previous schema-specific data and initializes internal data structures required

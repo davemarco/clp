@@ -1,14 +1,17 @@
 #include "SchemaSearcher.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <set>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
 #include <log_surgeon/Constants.hpp>
 
 #include <clp/EncodedVariableInterpreter.hpp>
+#include <clp/ir/parsing.hpp>
 
 namespace clp {
 using log_surgeon::SymbolId::TokenFloat;
@@ -81,29 +84,28 @@ auto SchemaSearcher::get_wildcard_encodable_positions(QueryInterpretation const&
     return wildcard_encodable_positions;
 }
 
-auto SchemaSearcher::generate_logtype_string(
+auto SchemaSearcher::generate_logtype_pattern(
         QueryInterpretation const& interpretation,
-        vector<size_t> const& wildcard_encodable_positions,
         vector<bool> const& mask_encoded_flags
 ) -> string {
-    string logtype_string;
+    string logtype_pattern;
 
-    size_t logtype_string_size{0};
+    size_t logtype_pattern_size{0};
     auto const logtype{interpretation.get_logtype()};
     for (auto const& token : logtype) {
         if (holds_alternative<StaticQueryToken>(token)) {
             auto const& static_token{std::get<StaticQueryToken>(token)};
-            logtype_string_size += static_token.get_query_substring().size();
+            logtype_pattern_size += static_token.get_query_substring().size();
         } else {
-            ++logtype_string_size;
+            ++logtype_pattern_size;
         }
     }
-    logtype_string.reserve(logtype_string_size);
+    logtype_pattern.reserve(logtype_pattern_size);
 
     for (size_t i{0}; i < logtype.size(); ++i) {
         auto const& token{logtype[i]};
         if (holds_alternative<StaticQueryToken>(token)) {
-            logtype_string += std::get<StaticQueryToken>(token).get_query_substring();
+            logtype_pattern += std::get<StaticQueryToken>(token).get_query_substring();
             continue;
         }
 
@@ -113,17 +115,11 @@ auto SchemaSearcher::generate_logtype_string(
         bool const is_int{TokenInt == var_type};
         bool const is_float{TokenFloat == var_type};
 
-        if (wildcard_encodable_positions.end()
-            != std::ranges::find(wildcard_encodable_positions, i))
-        {
-            if (mask_encoded_flags[i]) {
-                if (is_int) {
-                    EncodedVariableInterpreter::add_int_var(logtype_string);
-                } else {
-                    EncodedVariableInterpreter::add_float_var(logtype_string);
-                }
+        if (mask_encoded_flags[i]) {
+            if (is_int) {
+                EncodedVariableInterpreter::add_int_var(logtype_pattern);
             } else {
-                EncodedVariableInterpreter::add_dict_var(logtype_string);
+                EncodedVariableInterpreter::add_float_var(logtype_pattern);
             }
             continue;
         }
@@ -135,18 +131,231 @@ auto SchemaSearcher::generate_logtype_string(
                     encoded_var
             ))
         {
-            EncodedVariableInterpreter::add_int_var(logtype_string);
+            EncodedVariableInterpreter::add_int_var(logtype_pattern);
         } else if (is_float
                    && EncodedVariableInterpreter::convert_string_to_representable_float_var(
                            raw_string,
                            encoded_var
                    ))
         {
-            EncodedVariableInterpreter::add_float_var(logtype_string);
+            EncodedVariableInterpreter::add_float_var(logtype_pattern);
         } else {
-            EncodedVariableInterpreter::add_dict_var(logtype_string);
+            EncodedVariableInterpreter::add_dict_var(logtype_pattern);
         }
     }
-    return logtype_string;
+    return logtype_pattern;
+}
+
+namespace {
+// Cap on the number of valid position mappings returned by match_recursive.
+//
+// Why a cap is needed: each `*` in the pattern creates a binary branch (stop vs. consume)
+// at every entry character it sees. With N entry placeholders and a pattern like "*\x12*",
+// the pattern placeholder can map to any of the N positions — that's N mappings. With k
+// pattern placeholders and generous `*` spacing, the count can grow as C(N, k). In
+// practice, queries have few wildcards and logtypes are short, so counts stay small. The
+// cap is a safety net for pathological cases (e.g., "*\x12*\x12*\x12*" against a logtype
+// with 20+ placeholders).
+//
+// If the cap is hit, `resolve_var_logtype_positions` throws `OperationFailed` rather than
+// returning incomplete results (which would cause silent false negatives). This is
+// consistent with the mask encoding cap on `generate_schema_sub_queries`. In practice this
+// is unlikely — 50 mappings requires a pathological combination of many wildcards and many
+// entry placeholders, which real queries almost never produce.
+constexpr size_t cMaxMappings{50};
+
+// Backtracking wildcard matcher that finds all valid ways to map the pattern's variable
+// placeholders to the entry's variable placeholders.
+//
+// Problem
+// -------
+// We have a candidate logtype pattern (from the query — may contain `*`, `?`, and placeholder
+// bytes \x11/\x12/\x13) and a stored logtype entry from the dictionary (placeholder bytes and
+// literal text, no wildcards). We need every valid way to map the pattern's placeholders to
+// the entry's placeholders, so that at scan time we know exactly which variable column to
+// check for each query variable.
+//
+// A simple "does the pattern match?" answer is not enough — we need to know *which* entry
+// placeholder each pattern placeholder lined up with. Different `*` expansion choices can
+// produce different mappings, so we use backtracking to explore all of them.
+//
+// Algorithm
+// ---------
+// Two pointers (pattern_idx, entry_idx) walk forward through the strings. At each step we
+// look at the current pattern character and handle it:
+//
+//   Literal char ('a', ':', ' ', etc.)
+//     Must match the entry char exactly. Mismatch → this path is dead, return.
+//
+//   '?' (single-char wildcard)
+//     Matches any one entry char. If that char is a placeholder byte, bump
+//     entry_placeholder_idx to keep placeholder numbering correct.
+//
+//   Placeholder byte (\x11, \x12, \x13)
+//     Must match the *same type* in the entry (e.g. \x12 must pair with \x12).
+//     Type mismatch → dead path. On match, record "pattern placeholder #N → entry
+//     placeholder #M" in current_mapping.
+//
+//   '*' (greedy wildcard)
+//     This is the only place where the search branches. We try two things:
+//       (a) Stop consuming: recurse with pattern_idx+1, same entry_idx.
+//           "What if the `*` matched zero more chars?"
+//       (b) Consume one entry char: advance entry_idx, keep pattern_idx on `*`.
+//           "What if the `*` eats this char and keeps going?"
+//     Path (a) is explored via recursion first. When it returns, we continue with (b)
+//     in the while loop. Both paths can succeed with different placeholder mappings.
+//
+//   Both pointers exhausted + all pattern placeholders assigned → save mapping.
+//
+// Example walkthrough
+// -------------------
+// Suppose we have:
+//
+//   logtype_pattern: "*\x12*"      — one dict placeholder (P0), with `*` on each side
+//   logtype_entry:   "\x12 \x12"   — two dict placeholders (E0, E1)
+//
+// The question is: does P0 map to E0 or E1?
+//
+// Each `*` creates a branch: (a) stop consuming, or (b) consume one more entry char.
+// Below, each line is one step, indented under the branch that created it. "dead"
+// means a mismatch killed the path.
+//
+//   Start: pattern_idx=0 (`*`), entry_idx=0 (E0)
+//   |
+//   |-- (a) stop `*`, advance pattern to P0
+//   |     P0 matches E0  →  record P0=E0
+//   |     pattern at trailing `*`, entry at ' '
+//   |     |
+//   |     |-- (a) stop `*`, pattern done but entry has " \x12" left → dead
+//   |     |-- (b) consume ' ', then consume E1, entry done → save [0]  ✓
+//   |
+//   |-- (b) consume E0, pattern still on leading `*`, entry at ' '
+//       |
+//       |-- (a) stop `*`, advance pattern to P0; needs \x12 but entry has ' ' → dead
+//       |-- (b) consume ' ', pattern still on leading `*`, entry at E1
+//           |
+//           |-- (a) stop `*`, advance pattern to P0
+//           |     P0 matches E1  →  record P0=E1
+//           |     pattern at trailing `*`, entry done; `*` matches zero → save [1]  ✓
+//           |
+//           |-- (b) consume E1, entry done, `*` stops; pattern at P0, nothing left → dead
+//
+//   Result: two valid mappings — [0] and [1].
+//
+// @param logtype_pattern The candidate logtype pattern from the query (may contain `*`, `?`,
+// and placeholder bytes).
+// @param pattern_idx Current position in logtype_pattern.
+// @param logtype_entry A stored logtype from the dictionary (placeholder bytes and literal
+// text, no wildcards).
+// @param entry_idx Current position in logtype_entry.
+// @param num_pattern_placeholders Total number of placeholder bytes in logtype_pattern.
+// @param pattern_placeholder_idx How many pattern placeholders have been matched so far.
+// @param entry_placeholder_idx How many entry placeholders have been seen so far (used to
+// number the entry placeholders for the mapping).
+// @param current_mapping The in-progress position mapping being built. Element i is the entry
+// placeholder index that pattern placeholder i maps to. Passed by reference and
+// modified/restored during backtracking.
+// @param results All complete position mappings found so far. When a path reaches the end of
+// both strings with all pattern placeholders matched, current_mapping is appended here.
+void match_recursive(
+        std::string_view logtype_pattern,
+        size_t pattern_idx,
+        std::string_view logtype_entry,
+        size_t entry_idx,
+        size_t num_pattern_placeholders,
+        size_t pattern_placeholder_idx,
+        size_t entry_placeholder_idx,
+        std::vector<size_t>& current_mapping,
+        std::vector<std::vector<size_t>>& results
+) {
+    if (results.size() >= cMaxMappings) {
+        return;
+    }
+
+    while (pattern_idx < logtype_pattern.size() && entry_idx < logtype_entry.size()) {
+        char const pattern_char = logtype_pattern[pattern_idx];
+
+        if ('*' == pattern_char) {
+            size_t const saved_size = current_mapping.size();
+            match_recursive(
+                    logtype_pattern, pattern_idx + 1, logtype_entry, entry_idx,
+                    num_pattern_placeholders, pattern_placeholder_idx, entry_placeholder_idx,
+                    current_mapping, results
+            );
+            current_mapping.resize(saved_size);
+            if (results.size() >= cMaxMappings) {
+                return;
+            }
+            if (ir::is_variable_placeholder(logtype_entry[entry_idx])) {
+                ++entry_placeholder_idx;
+            }
+            ++entry_idx;
+            continue;
+        }
+
+        if ('?' == pattern_char) {
+            if (ir::is_variable_placeholder(logtype_entry[entry_idx])) {
+                ++entry_placeholder_idx;
+            }
+            ++pattern_idx;
+            ++entry_idx;
+            continue;
+        }
+
+        if (ir::is_variable_placeholder(pattern_char)) {
+            if (logtype_entry[entry_idx] != pattern_char) {
+                return;
+            }
+            current_mapping.push_back(entry_placeholder_idx);
+            ++pattern_placeholder_idx;
+            ++entry_placeholder_idx;
+            ++pattern_idx;
+            ++entry_idx;
+            continue;
+        }
+
+        if (pattern_char != logtype_entry[entry_idx]) {
+            return;
+        }
+        ++pattern_idx;
+        ++entry_idx;
+    }
+
+    while (pattern_idx < logtype_pattern.size() && '*' == logtype_pattern[pattern_idx]) {
+        ++pattern_idx;
+    }
+
+    if (pattern_idx == logtype_pattern.size() && entry_idx == logtype_entry.size()
+        && pattern_placeholder_idx == num_pattern_placeholders)
+    {
+        results.push_back(current_mapping);
+    }
+}
+}  // namespace
+
+auto SchemaSearcher::resolve_var_logtype_positions(
+        std::string_view logtype_pattern,
+        std::string_view logtype_entry
+) -> std::vector<std::vector<size_t>> {
+    size_t const num_pattern_placeholders = std::count_if(
+            logtype_pattern.begin(),
+            logtype_pattern.end(),
+            ir::is_variable_placeholder
+    );
+
+    std::vector<std::vector<size_t>> results;
+    std::vector<size_t> current_mapping;
+    current_mapping.reserve(num_pattern_placeholders);
+
+    match_recursive(logtype_pattern, 0, logtype_entry, 0, num_pattern_placeholders, 0, 0, current_mapping, results);
+
+    std::sort(results.begin(), results.end());
+    results.erase(std::unique(results.begin(), results.end()), results.end());
+
+    if (results.size() >= cMaxMappings) {
+        throw OperationFailed(ErrorCode_Unsupported, __FILENAME__, __LINE__);
+    }
+
+    return results;
 }
 }  // namespace clp

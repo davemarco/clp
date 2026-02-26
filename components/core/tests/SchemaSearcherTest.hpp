@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <log_surgeon/wildcard_query_parser/QueryInterpretation.hpp>
@@ -35,6 +36,13 @@ public:
         return SchemaSearcher::normalize_interpretations(interps);
     }
 
+    static auto resolve_var_logtype_positions(
+            std::string_view pattern,
+            std::string_view entry_value
+    ) -> std::vector<std::vector<size_t>> {
+        return SchemaSearcher::resolve_var_logtype_positions(pattern, entry_value);
+    }
+
     template <
             LogTypeDictionaryReaderReq LogTypeDictionaryReaderType,
             VariableDictionaryReaderReq VariableDictionaryReaderType
@@ -53,16 +61,11 @@ public:
         return SchemaSearcher::get_wildcard_encodable_positions(interpretation);
     }
 
-    static auto generate_logtype_string(
+    static auto generate_logtype_pattern(
             log_surgeon::wildcard_query_parser::QueryInterpretation const& interpretation,
-            std::vector<size_t> const& wildcard_encodable_positions,
             std::vector<bool> const& mask_encoded_flags
     ) -> std::string {
-        return SchemaSearcher::generate_logtype_string(
-                interpretation,
-                wildcard_encodable_positions,
-                mask_encoded_flags
-        );
+        return SchemaSearcher::generate_logtype_pattern(interpretation, mask_encoded_flags);
     }
 
     template <typename VariableDictionaryReaderType>

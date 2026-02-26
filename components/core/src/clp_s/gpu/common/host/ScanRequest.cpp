@@ -1,5 +1,7 @@
 #include "ScanRequest.hpp"
 
+#include <algorithm>
+#include <cstddef>
 #include <map>
 #include <optional>
 #include <string>
@@ -7,6 +9,7 @@
 #include <vector>
 
 #include <clp/Query.hpp>
+#include <log_surgeon/Constants.hpp>
 #include <spdlog/spdlog.h>
 
 #include "../../../SchemaTree.hpp"
@@ -185,7 +188,7 @@ ScanCompatError convert_filter_to_predicate(
             if (it == var_match_map.end() || it->second.empty()) {
                 return ScanCompatError::VarStringNotInDictionary;
             }
-            out_pred.var_dict_ids.assign(it->second.begin(), it->second.end());
+            out_pred.id_list.assign(it->second.begin(), it->second.end());
             return ScanCompatError::None;
         }
         case NodeType::DictionaryFloat:
@@ -202,31 +205,39 @@ ScanCompatError convert_filter_to_predicate(
 
 /**
  * Converts a single clp::SubQuery into an SclpSubQuery by extracting logtype IDs and
- * converting each QueryVar to its encoded values.
+ * converting each QueryVar to its encoded values. Handles pinned positions and
+ * wildcard pattern variables.
  */
 SclpSubQuery convert_sub_query(clp::SubQuery const& sub_query) {
-    SclpSubQuery sq;
-    sq.possible_logtype_ids.assign(
+    SclpSubQuery sclp_sub_query;
+    sclp_sub_query.possible_logtype_ids.assign(
             sub_query.get_possible_logtypes().begin(),
             sub_query.get_possible_logtypes().end()
     );
-    sq.vars.reserve(sub_query.get_vars().size());
-    for (auto const& qvar : sub_query.get_vars()) {
-        SclpVarPredicate var_info;
-        if (qvar.is_precise_var()) {
-            var_info.possible_encoded_values.push_back(
-                    static_cast<int64_t>(qvar.get_precise_var())
-            );
+
+    auto const& positions = sub_query.get_var_logtype_positions();
+
+    sclp_sub_query.vars.reserve(sub_query.get_vars().size());
+    for (size_t i = 0; i < sub_query.get_vars().size(); ++i) {
+        auto const& qvar = sub_query.get_vars()[i];
+        SclpVarPredicate sclp_var_predicate;
+        sclp_var_predicate.var_column_index = positions[i];
+
+        if (qvar.is_wildcard_pattern_var()) {
+            // Wildcard pattern variable (from mask-encoded)
+            sclp_var_predicate.wildcard_pattern = qvar.get_wildcard_pattern();
+            sclp_var_predicate.var_type
+                    = qvar.is_float_var() ? MaskVarEncoding::Float : MaskVarEncoding::Int;
+        } else if (qvar.is_precise_var()) {
+            sclp_var_predicate.possible_encoded_values.push_back(qvar.get_precise_var());
         } else {
+            // encoded_variable_t is int64_t, so assign directly
             auto const& possible = qvar.get_possible_dict_vars();
-            var_info.possible_encoded_values.reserve(possible.size());
-            for (auto enc_val : possible) {
-                var_info.possible_encoded_values.push_back(static_cast<int64_t>(enc_val));
-            }
+            sclp_var_predicate.possible_encoded_values.assign(possible.begin(), possible.end());
         }
-        sq.vars.push_back(std::move(var_info));
+        sclp_sub_query.vars.push_back(std::move(sclp_var_predicate));
     }
-    return sq;
+    return sclp_sub_query;
 }
 
 /**
@@ -312,21 +323,27 @@ ScanCompatError build_sclp_filter(
     out_info.is_negated = (gpu_op == GpuFilterOp::NEQ);
 
     for (auto const& sub_query : query.get_sub_queries()) {
+        // With pinned positions and wildcard pattern vars, wildcard_match_required
+        // is no longer set for position ambiguity or mask-encoded variables.
+        // If it's still set for some other reason, reject for GPU.
         if (sub_query.wildcard_match_required()) {
             return ScanCompatError::StructuredClpStringWildcardRequired;
         }
 
-        // The global clp::Query contains SubQueries for ALL schemas in the archive.
-        // SubQueries whose var count doesn't match this schema's column layout can't
-        // match any row here (on CPU, matches_vars() rejects the count mismatch).
-        // Skip them — other SubQueries or schemas may still match.
-        auto const sq_var_count = sub_query.get_vars().size();
-        if (sq_var_count != 0 && sq_var_count != columns.var_column_ids.size()) {
-            SPDLOG_DEBUG(
-                    "Skipping SCLP subquery: var count ({}) != schema var columns ({})",
-                    sq_var_count,
-                    columns.var_column_ids.size()
-            );
+        // SubQueries with vars but no pinned positions come from the heuristic path,
+        // which is not supported on GPU.
+        if (sub_query.has_unpinned_vars()) {
+            return ScanCompatError::StructuredClpStringNoPinnedPositions;
+        }
+
+        // Skip SubQueries whose pinned positions exceed this ERT's column count.
+        // This is expected — SubQueries are generated archive-wide and may target
+        // logtypes in other ERTs with more variable columns.
+        auto const& positions = sub_query.get_var_logtype_positions();
+        if (std::any_of(positions.begin(), positions.end(), [&](size_t pos) {
+                return pos >= columns.var_column_ids.size();
+            }))
+        {
             continue;
         }
 
@@ -356,12 +373,12 @@ ScanCompatError build_filter_predicate(
     }
 
     if (is_sclp_column(filter, sclp_columns)) {
-        SclpFilter sclp_info;
-        auto err = build_sclp_filter(filter, sclp_columns, string_query_map, sclp_info);
+        SclpFilter sclp_filter;
+        auto err = build_sclp_filter(filter, sclp_columns, string_query_map, sclp_filter);
         if (ScanCompatError::None != err) {
             return err;
         }
-        out_sclp_filters.push_back(std::move(sclp_info));
+        out_sclp_filters.push_back(std::move(sclp_filter));
         return ScanCompatError::None;
     }
 
@@ -493,6 +510,9 @@ char const* scan_error_to_string(ScanCompatError error) {
                    " transform";
         case ScanCompatError::VarStringNotInDictionary:
             return "VarString query value not found in dictionary";
+        case ScanCompatError::StructuredClpStringNoPinnedPositions:
+            return "StructuredClpString subquery has vars but no pinned positions"
+                   " (heuristic path not supported on GPU)";
         case ScanCompatError::StructuredClpStringWildcardRequired:
             return "StructuredClpString subquery requires wildcard match (not GPU-compatible)";
         case ScanCompatError::PredicateAlwaysTrue:

@@ -16,18 +16,18 @@
 
 namespace clp_s::gpu {
 /**
- * Copies predicate VarString dictionary IDs to device memory. For non-VarString
- * predicates, sets out to nullptr and returns cudaSuccess.
+ * Copies a predicate's id_list to device memory for VarString and Int64InList predicates.
+ * For all other predicate types, sets out_d_id_list to nullptr and returns cudaSuccess.
  *
  * @param pred Column predicate.
  * @param guard DeviceBufferGuard that owns the allocated device memory.
- * @param out_d_predicate_var_dict_ids Device pointer to the IDs (nullptr for non-VarString).
+ * @param out_d_id_list Device pointer to the id_list (nullptr if no copy was needed).
  * @return cudaSuccess on success.
  */
-cudaError_t copy_predicate_var_dict_ids_to_device(
+cudaError_t copy_id_list_to_device(
         ColumnPredicate const& pred,
         DeviceBufferGuard& guard,
-        uint64_t const*& out_d_predicate_var_dict_ids
+        uint64_t const*& out_d_id_list
 );
 
 /**
@@ -47,8 +47,9 @@ cudaError_t alloc_initialized_bitmap(size_t num_rows, MergeOp merge_op, DeviceBu
  * @param device_ert_base Device pointer to the ERT buffer.
  * @param col Column descriptor (offset, length, type).
  * @param pred Column predicate (op, target value).
- * @param d_predicate_var_dict_ids Device pointer to VarString dictionary IDs (ignored for other types).
- * @param num_predicate_var_dict_ids Number of VarString dictionary IDs.
+ * @param d_id_list Device pointer to the ID/value list (used for VarString, Int64InList, and
+ *                 logtype-ID predicates; ignored for scalar types).
+ * @param num_ids Number of entries in d_id_list.
  * @param merge_op How to merge scan result with existing bitmap (And or Or).
  * @param device_bitmap Device bitmap to scan into (must be pre-allocated and initialized).
  * @return cudaSuccess on success.
@@ -57,8 +58,8 @@ cudaError_t scan_predicate_into_bitmap(
         char const* device_ert_base,
         ColumnDesc const& col,
         ColumnPredicate const& pred,
-        uint64_t const* d_predicate_var_dict_ids,
-        size_t num_predicate_var_dict_ids,
+        uint64_t const* d_id_list,
+        size_t num_ids,
         MergeOp merge_op,
         uint8_t* device_bitmap
 );

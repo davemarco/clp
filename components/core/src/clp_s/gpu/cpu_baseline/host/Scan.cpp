@@ -1,10 +1,15 @@
 #include "Scan.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <numeric>
+#include <string>
 #include <unordered_set>
 
 #include <spdlog/spdlog.h>
+
+#include <clp/EncodedVariableInterpreter.hpp>
+#include <clp/string_utils/string_utils.hpp>
 
 #include "../../../SchemaReader.hpp"
 #include "../../common/host/ErtInfo.hpp"
@@ -88,7 +93,7 @@ void cpu_scan_predicate_to_bitmap(
             for (size_t i = 0; i < num_rows; ++i) {
                 uint64_t val = values[i];
                 bool found = false;
-                for (int64_t target_id : pred.var_dict_ids) {
+                for (int64_t target_id : pred.id_list) {
                     if (val == static_cast<uint64_t>(target_id)) {
                         found = true;
                         break;
@@ -173,47 +178,72 @@ ScanCompatError cpu_scan_clause_to_bitmap(
         cpu_merge_bitmaps(out_bitmap.data(), base_bitmap.data(), num_rows, merge_op);
     }
 
-    // Scan each SCLP info and merge into result bitmap
+    // Scan each SCLP filter and merge into result bitmap
     std::vector<uint8_t> sclp_bitmap(num_rows);
     std::vector<uint8_t> temp_bitmap(num_rows);
     std::vector<uint8_t> pred_bitmap(num_rows);
 
-    for (auto const& sclp_info : sclp_filters) {
+    for (auto const& sclp_filter : sclp_filters) {
         // Initialize sclp_bitmap to OR identity (all 0s) — subqueries are OR'd
         std::fill(sclp_bitmap.begin(), sclp_bitmap.end(), static_cast<uint8_t>(0));
 
-        auto const* logtype_col = find_column_by_id(columns, sclp_info.logtype_column_id);
+        auto const* logtype_col = find_column_by_id(columns, sclp_filter.logtype_column_id);
         if (nullptr == logtype_col) {
             return ScanCompatError::ColumnOutOfBounds;
         }
 
-        for (auto const& subquery : sclp_info.subqueries) {
+        for (auto const& subquery : sclp_filter.subqueries) {
             // Initialize temp_bitmap to AND identity (all 1s) — predicates within
             // a subquery are AND'd
             std::fill(temp_bitmap.begin(), temp_bitmap.end(), static_cast<uint8_t>(1));
 
             // Scan logtype IN-list
-            auto logtype_pred = make_sclp_logtype_predicate(
-                    sclp_info.logtype_column_id, subquery.possible_logtype_ids
+            auto logtype_pred = make_sclp_predicate(
+                    sclp_filter.logtype_column_id, subquery.possible_logtype_ids
             );
             cpu_scan_predicate_to_bitmap(
                     buffer_view.data, *logtype_col, logtype_pred, pred_bitmap.data(), num_rows
             );
             cpu_merge_bitmaps(temp_bitmap.data(), pred_bitmap.data(), num_rows, MergeOp::And);
 
-            // Scan each var predicate
-            for (size_t v = 0; v < subquery.vars.size(); ++v) {
-                auto const* var_col = find_column_by_id(columns, sclp_info.var_column_ids[v]);
+            // Scan each var predicate using pinned column index
+            for (auto const& var_predicate : subquery.vars) {
+                if (var_predicate.var_column_index >= sclp_filter.var_column_ids.size()) {
+                    return ScanCompatError::ColumnOutOfBounds;
+                }
+                int32_t const var_col_id
+                        = sclp_filter.var_column_ids[var_predicate.var_column_index];
+                auto const* var_col = find_column_by_id(columns, var_col_id);
                 if (nullptr == var_col) {
                     return ScanCompatError::ColumnOutOfBounds;
                 }
 
-                auto var_pred = make_sclp_var_predicate(
-                        sclp_info.var_column_ids[v], subquery.vars[v]
-                );
-                cpu_scan_predicate_to_bitmap(
-                        buffer_view.data, *var_col, var_pred, pred_bitmap.data(), num_rows
-                );
+                if (false == var_predicate.wildcard_pattern.empty()) {
+                    // Wildcard pattern: convert each encoded var to string and match
+                    auto const* values = reinterpret_cast<int64_t const*>(
+                            buffer_view.data + var_col->primary_offset_bytes
+                    );
+                    for (size_t i = 0; i < num_rows; ++i) {
+                        std::string str_val;
+                        if (MaskVarEncoding::Float == var_predicate.var_type) {
+                            clp::EncodedVariableInterpreter::
+                                    convert_encoded_float_to_string(values[i], str_val);
+                        } else {
+                            str_val = std::to_string(values[i]);
+                        }
+                        pred_bitmap[i] = clp::string_utils::wildcard_match_unsafe_case_sensitive(
+                                str_val,
+                                var_predicate.wildcard_pattern
+                        );
+                    }
+                } else {
+                    auto var_pred
+                            = make_sclp_predicate(var_col_id, var_predicate.possible_encoded_values);
+                    cpu_scan_predicate_to_bitmap(
+                            buffer_view.data, *var_col, var_pred,
+                            pred_bitmap.data(), num_rows
+                    );
+                }
                 cpu_merge_bitmaps(
                         temp_bitmap.data(), pred_bitmap.data(), num_rows, MergeOp::And
                 );
@@ -224,7 +254,7 @@ ScanCompatError cpu_scan_clause_to_bitmap(
         }
 
         // Invert if negated (NEQ)
-        if (sclp_info.is_negated) {
+        if (sclp_filter.is_negated) {
             for (size_t i = 0; i < num_rows; ++i) {
                 sclp_bitmap[i] = 1 - sclp_bitmap[i];
             }

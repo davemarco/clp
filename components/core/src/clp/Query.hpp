@@ -1,6 +1,7 @@
 #ifndef CLP_QUERY_HPP
 #define CLP_QUERY_HPP
 
+#include <cstdint>
 #include <functional>
 #include <set>
 #include <string>
@@ -23,6 +24,8 @@ public:
             std::unordered_set<encoded_variable_t> const& possible_dict_vars,
             std::unordered_set<variable_dictionary_id_t> const& possible_var_dict_ids
     );
+    // Wildcard pattern variable (for mask-encoded variables)
+    QueryVar(std::string wildcard_pattern, bool is_float_var);
 
     // Methods
     auto operator==(QueryVar const& rhs) const -> bool = default;
@@ -49,6 +52,8 @@ public:
 
     bool is_dict_var() const { return m_is_dict_var; }
 
+    bool is_wildcard_pattern_var() const { return m_is_wildcard_pattern_var; }
+
     variable_dictionary_id_t get_var_dict_id() const { return m_var_dict_id; }
 
     std::unordered_set<variable_dictionary_id_t> const& get_possible_var_dict_ids() const {
@@ -61,18 +66,28 @@ public:
         return m_possible_dict_vars;
     }
 
+    std::string const& get_wildcard_pattern() const { return m_wildcard_pattern; }
+
+    bool is_float_var() const { return m_is_float_var; }
+
 private:
-    // Variables
+    // Decode the encoded variable to a string, then wildcard-match against the pattern.
+    bool matches_wildcard_pattern(encoded_variable_t var) const;
+
     bool m_is_precise_var{};
     bool m_is_dict_var{};
+    bool m_is_wildcard_pattern_var{};
 
     encoded_variable_t m_precise_var{};
-    // Only used if the precise variable is a dictionary variable
     variable_dictionary_id_t m_var_dict_id{};
 
     // Only used if the variable is an imprecise dictionary variable
     std::unordered_set<encoded_variable_t> m_possible_dict_vars;
     std::unordered_set<variable_dictionary_id_t> m_possible_var_dict_ids;
+
+    // Only used for wildcard pattern variables (mask-encoded)
+    std::string m_wildcard_pattern;
+    bool m_is_float_var{};
 };
 
 /**
@@ -106,12 +121,15 @@ public:
             std::unordered_set<encoded_variable_t> const& possible_dict_vars,
             std::unordered_set<variable_dictionary_id_t> const& possible_var_dict_ids
     );
+    void add_wildcard_pattern_var(std::string const& wildcard_pattern, bool is_float_var);
     /**
      * Add a set of possible logtypes to the subquery
      * @param logtype_ids
      */
     void set_possible_logtypes(std::unordered_set<logtype_dictionary_id_t> const& logtype_ids);
     void mark_wildcard_match_required();
+
+    void set_var_logtype_positions(std::vector<size_t> const& positions);
 
     /**
      * Calculates the segment IDs that should contain a match for the subquery's current logtypes
@@ -140,6 +158,14 @@ public:
 
     std::vector<QueryVar> const& get_vars() const { return m_vars; }
 
+    bool has_var_logtype_positions() const { return false == m_var_logtype_positions.empty(); }
+
+    bool has_unpinned_vars() const {
+        return false == m_vars.empty() && false == has_var_logtype_positions();
+    }
+
+    std::vector<size_t> const& get_var_logtype_positions() const { return m_var_logtype_positions; }
+
     std::set<segment_id_t> const& get_ids_of_matching_segments() const {
         return m_ids_of_matching_segments;
     }
@@ -152,7 +178,7 @@ public:
     bool matches_logtype(logtype_dictionary_id_t logtype) const;
     /**
      * Whether the given variables contain the subquery's variables in order (but not necessarily
-     * contiguously)
+     * contiguously). If pinned positions are set, uses direct positional lookup instead.
      * @tparam EncodedVariableContainerType A random access list of `clp::encoded_variable_t`.
      * @param vars
      * @return true if matched, false otherwise
@@ -165,6 +191,8 @@ private:
     std::unordered_set<logtype_dictionary_id_t> m_possible_logtypes;
     std::set<segment_id_t> m_ids_of_matching_segments;
     std::vector<QueryVar> m_vars;
+    // m_var_logtype_positions[i] = logtype placeholder index for m_vars[i]
+    std::vector<size_t> m_var_logtype_positions;
     bool m_wildcard_match_required{false};
 };
 
@@ -254,21 +282,29 @@ bool SubQuery::matches_vars(EncodedVariableContainerType const& vars) const {
         return false;
     }
 
-    // Try to find m_vars in vars, in order, but not necessarily contiguously
+    // Pinned positions: direct positional lookup
+    if (false == m_var_logtype_positions.empty()) {
+        for (size_t i = 0; i < m_vars.size(); ++i) {
+            if (m_var_logtype_positions[i] >= vars.size()) {
+                return false;
+            }
+            if (false == m_vars[i].matches(vars[m_var_logtype_positions[i]])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Fallback: subsequence scan (heuristic path has no pinned positions)
     size_t possible_vars_ix = 0;
     size_t const num_possible_vars = m_vars.size();
     size_t vars_ix = 0;
     size_t const num_vars = vars.size();
     while (possible_vars_ix < num_possible_vars && vars_ix < num_vars) {
-        QueryVar const& possible_var = m_vars[possible_vars_ix];
-
-        if (possible_var.matches(vars[vars_ix])) {
-            // Matched
+        if (m_vars[possible_vars_ix].matches(vars[vars_ix])) {
             ++possible_vars_ix;
-            ++vars_ix;
-        } else {
-            ++vars_ix;
         }
+        ++vars_ix;
     }
     return (num_possible_vars == possible_vars_ix);
 }

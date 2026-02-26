@@ -50,11 +50,11 @@ int scan_clause_to_device_bitmap(
         std::vector<DeviceBufferGuard> d_var_bufs(column_predicates.predicates.size());
         std::vector<uint64_t const*> d_var_ids(column_predicates.predicates.size(), nullptr);
         for (size_t i = 0; i < column_predicates.predicates.size(); ++i) {
-            status = copy_predicate_var_dict_ids_to_device(
+            status = copy_id_list_to_device(
                     column_predicates.predicates[i], d_var_bufs[i], d_var_ids[i]
             );
             if (cudaSuccess != status) {
-                error = std::string("var dict copy failed: ") + cudaGetErrorString(status);
+                error = std::string("id_list copy to device failed: ") + cudaGetErrorString(status);
                 return 1;
             }
         }
@@ -65,7 +65,7 @@ int scan_clause_to_device_bitmap(
                     resolved_pred_cols[i],
                     column_predicates.predicates[i],
                     d_var_ids[i],
-                    column_predicates.predicates[i].var_dict_ids.size(),
+                    column_predicates.predicates[i].id_list.size(),
                     merge_op,
                     d_bitmap
             );
@@ -88,12 +88,12 @@ int scan_clause_to_device_bitmap(
         sclp_bitmap_guard.buf = sclp_buf;
     }
 
-    for (auto const& sclp_info : sclp_filters) {
+    for (auto const& sclp_filter : sclp_filters) {
         auto* sclp_bitmap = static_cast<uint8_t*>(sclp_bitmap_guard.buf.ptr);
 
         status = scan_sclp_to_device_bitmap(
                 d_ert_base,
-                sclp_info,
+                sclp_filter,
                 columns,
                 num_rows,
                 sclp_bitmap

@@ -1,9 +1,11 @@
 #include "Scan.hpp"
+#include "ScanKernels.cuh"
 
 #include <cstddef>
 #include <cstdint>
 
 #include <span>
+#include <vector>
 
 #include <cuda_runtime.h>
 #include <thrust/adjacent_difference.h>
@@ -15,113 +17,18 @@
 
 namespace clp_s::gpu {
 
-__global__ void invert_bitmap_kernel(uint8_t* bitmap, size_t num_rows) {
-    size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (idx < num_rows) {
-        bitmap[idx] = 1 - bitmap[idx];
-    }
-}
-
-__global__ void and_merge_bitmap_kernel(uint8_t* dst, uint8_t const* src, size_t num_rows) {
-    size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (idx < num_rows) {
-        dst[idx] = dst[idx] & src[idx];
-    }
-}
-
-__global__ void or_merge_bitmap_kernel(uint8_t* dst, uint8_t const* src, size_t num_rows) {
-    size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (idx < num_rows) {
-        dst[idx] = dst[idx] | src[idx];
-    }
-}
-
-namespace {
-template <typename T>
-__device__ bool compare(T val, T target, GpuFilterOp op) {
-    switch (op) {
-        case GpuFilterOp::EQ:
-            return val == target;
-        case GpuFilterOp::NEQ:
-            return val != target;
-        case GpuFilterOp::LT:
-            return val < target;
-        case GpuFilterOp::GT:
-            return val > target;
-        case GpuFilterOp::LTE:
-            return val <= target;
-        case GpuFilterOp::GTE:
-            return val >= target;
-    }
-    return false;
-}
-
-__device__ uint8_t apply_merge(uint8_t result, uint8_t existing, MergeOp op) {
-    if (MergeOp::And == op) {
-        return existing & result;
-    }
-    return existing | result;
-}
-
-template <typename T>
-__global__ void scan_cmp_kernel(
-        char const* base,
-        size_t offset_bytes,
-        size_t length,
-        T target,
-        GpuFilterOp op,
-        MergeOp merge_op,
-        uint8_t* bitmap
-) {
-    size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (idx >= length) {
-        return;
-    }
-    auto const* values = reinterpret_cast<T const*>(base + offset_bytes);
-    uint8_t result = compare(values[idx], target, op) ? 1 : 0;
-    bitmap[idx] = apply_merge(result, bitmap[idx], merge_op);
-}
-
-__global__ void scan_in_list_kernel(
-        char const* base,
-        size_t offset_bytes,
-        size_t length,
-        uint64_t const* target_ids,
-        size_t num_targets,
-        bool negate,
-        MergeOp merge_op,
-        uint8_t* bitmap
-) {
-    size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (idx >= length) {
-        return;
-    }
-    auto const* values = reinterpret_cast<uint64_t const*>(base + offset_bytes);
-    uint64_t val = values[idx];
-    bool found = false;
-    for (size_t t = 0; t < num_targets; ++t) {
-        if (val == target_ids[t]) {
-            found = true;
-            break;
-        }
-    }
-    uint8_t result = (found != negate) ? 1 : 0;
-    bitmap[idx] = apply_merge(result, bitmap[idx], merge_op);
-}
-}  // namespace
-
-cudaError_t copy_predicate_var_dict_ids_to_device(
+cudaError_t copy_id_list_to_device(
         ColumnPredicate const& pred,
         DeviceBufferGuard& guard,
-        uint64_t const*& out_d_predicate_var_dict_ids
+        uint64_t const*& out_d_id_list
 ) {
-    out_d_predicate_var_dict_ids = nullptr;
+    out_d_id_list = nullptr;
     if ((pred.column_type != ColumnType::VarString && pred.column_type != ColumnType::Int64InList)
-        || pred.var_dict_ids.empty())
+        || pred.id_list.empty())
     {
         return cudaSuccess;
     }
-    size_t const bytes = pred.var_dict_ids.size() * sizeof(uint64_t);
+    size_t const bytes = pred.id_list.size() * sizeof(uint64_t);
     cudaError_t status = cudaMalloc(&guard.buf.ptr, bytes);
     if (cudaSuccess != status) {
         return status;
@@ -129,14 +36,14 @@ cudaError_t copy_predicate_var_dict_ids_to_device(
     guard.buf.size = bytes;
     status = cudaMemcpy(
             guard.buf.ptr,
-            pred.var_dict_ids.data(),
+            pred.id_list.data(),
             bytes,
             cudaMemcpyHostToDevice
     );
     if (cudaSuccess != status) {
         return status;
     }
-    out_d_predicate_var_dict_ids = static_cast<uint64_t const*>(guard.buf.ptr);
+    out_d_id_list = static_cast<uint64_t const*>(guard.buf.ptr);
     return cudaSuccess;
 }
 
@@ -157,8 +64,8 @@ cudaError_t scan_predicate_into_bitmap(
         char const* device_ert_base,
         ColumnDesc const& col,
         ColumnPredicate const& pred,
-        uint64_t const* d_predicate_var_dict_ids,
-        size_t num_predicate_var_dict_ids,
+        uint64_t const* d_id_list,
+        size_t num_ids,
         MergeOp merge_op,
         uint8_t* device_bitmap
 ) {
@@ -214,8 +121,8 @@ cudaError_t scan_predicate_into_bitmap(
                     device_ert_base,
                     col.primary_offset_bytes,
                     col.length,
-                    d_predicate_var_dict_ids,
-                    num_predicate_var_dict_ids,
+                    d_id_list,
+                    num_ids,
                     negate,
                     merge_op,
                     device_bitmap
@@ -282,14 +189,13 @@ cudaError_t scan_sclp_to_device_bitmap(
     }
 
     // Allocate temp bitmap for per-subquery AND scan
-    DeviceBuffer temp_buf{};
-    status = cudaMalloc(&temp_buf.ptr, num_rows);
+    DeviceBufferGuard temp_guard;
+    status = cudaMalloc(&temp_guard.buf.ptr, num_rows);
     if (cudaSuccess != status) {
         return status;
     }
-    DeviceBufferGuard temp_guard;
-    temp_guard.buf = temp_buf;
-    auto* temp_bitmap = static_cast<uint8_t*>(temp_buf.ptr);
+    temp_guard.buf.size = num_rows;
+    auto* temp_bitmap = static_cast<uint8_t*>(temp_guard.buf.ptr);
 
     for (auto const& sq : info.subqueries) {
         // Initialize temp to all-1s (AND identity)
@@ -298,28 +204,58 @@ cudaError_t scan_sclp_to_device_bitmap(
             return status;
         }
 
-        // Copy logtype IDs to device
+        // --- Copy phase: transfer all data to device before launching any kernels ---
+
+        // Copy logtype IDs
         DeviceBufferGuard logtype_ids_guard;
         if (false == sq.possible_logtype_ids.empty()) {
             size_t const bytes = sq.possible_logtype_ids.size() * sizeof(int64_t);
-            status = cudaMalloc(&logtype_ids_guard.buf.ptr, bytes);
+            status = copy_to_device(sq.possible_logtype_ids.data(), bytes, logtype_ids_guard.buf);
             if (cudaSuccess != status) {
                 return status;
             }
-            logtype_ids_guard.buf.size = bytes;
-            status = cudaMemcpy(
-                    logtype_ids_guard.buf.ptr,
-                    sq.possible_logtype_ids.data(),
-                    bytes,
-                    cudaMemcpyHostToDevice
-            );
-            if (cudaSuccess != status) {
-                return status;
-            }
+        }
 
-            auto logtype_pred = make_sclp_logtype_predicate(
-                    info.logtype_column_id, sq.possible_logtype_ids
-            );
+        // Copy per-var data; indexed by var position for use in the launch phase.
+        // Wildcard vars: d_var_ptrs[i] points to the pattern bytes (char const*).
+        // Int64InList vars: d_var_ptrs[i] points to the encoded-value list (uint64_t const*).
+        // Int64 (precise single value) vars: no copy needed; d_var_ptrs[i] stays nullptr.
+        std::vector<DeviceBufferGuard> var_guards(sq.vars.size());
+        std::vector<void*> d_var_ptrs(sq.vars.size(), nullptr);
+        for (size_t i = 0; i < sq.vars.size(); ++i) {
+            auto const& var_predicate = sq.vars[i];
+            if (false == var_predicate.wildcard_pattern.empty()) {
+                size_t const bytes = var_predicate.wildcard_pattern.size();
+                status = copy_to_device(
+                        var_predicate.wildcard_pattern.data(),
+                        bytes,
+                        var_guards[i].buf
+                );
+                if (cudaSuccess != status) {
+                    return status;
+                }
+                d_var_ptrs[i] = var_guards[i].buf.ptr;
+            } else if (var_predicate.possible_encoded_values.size() > 1) {
+                size_t const bytes = var_predicate.possible_encoded_values.size() * sizeof(int64_t);
+                status = copy_to_device(
+                        var_predicate.possible_encoded_values.data(),
+                        bytes,
+                        var_guards[i].buf
+                );
+                if (cudaSuccess != status) {
+                    return status;
+                }
+                d_var_ptrs[i] = var_guards[i].buf.ptr;
+            }
+            // Int64 case (single precise value): no copy; d_var_ptrs[i] remains nullptr.
+        }
+
+        // --- Launch phase: issue all kernels after all data is on device ---
+
+        // Launch logtype kernel
+        if (false == sq.possible_logtype_ids.empty()) {
+            auto logtype_pred
+                    = make_sclp_predicate(info.logtype_column_id, sq.possible_logtype_ids);
             status = scan_predicate_into_bitmap(
                     device_ert_base,
                     *logtype_col,
@@ -334,50 +270,53 @@ cudaError_t scan_sclp_to_device_bitmap(
             }
         }
 
-        // Variable predicates
-        for (size_t v = 0; v < sq.vars.size(); ++v) {
-            auto const& var_info = sq.vars[v];
-            int32_t const var_col_id = info.var_column_ids[v];
+        // Launch variable predicate kernels
+        for (size_t i = 0; i < sq.vars.size(); ++i) {
+            auto const& var_predicate = sq.vars[i];
+
+            // Use pinned column index to look up the correct var column
+            if (var_predicate.var_column_index >= info.var_column_ids.size()) {
+                return cudaErrorInvalidValue;
+            }
+            int32_t const var_col_id = info.var_column_ids[var_predicate.var_column_index];
             auto const* var_col = find_column_by_id(columns, var_col_id);
             if (nullptr == var_col) {
                 return cudaErrorInvalidValue;
             }
 
-            auto var_pred = make_sclp_var_predicate(var_col_id, var_info);
-
-            // Copy IN-list to device if needed (Int64InList has multiple values)
-            DeviceBufferGuard var_ids_guard;
-            uint64_t const* d_var_ids = nullptr;
-            size_t var_count = 0;
-            if (var_pred.column_type == ColumnType::Int64InList) {
-                var_count = var_info.possible_encoded_values.size();
-                size_t const bytes = var_count * sizeof(int64_t);
-                status = cudaMalloc(&var_ids_guard.buf.ptr, bytes);
-                if (cudaSuccess != status) {
-                    return status;
-                }
-                var_ids_guard.buf.size = bytes;
-                status = cudaMemcpy(
-                        var_ids_guard.buf.ptr,
-                        var_info.possible_encoded_values.data(),
-                        bytes,
-                        cudaMemcpyHostToDevice
+            if (false == var_predicate.wildcard_pattern.empty()) {
+                // Wildcard pattern matching: convert encoded var to string on GPU
+                // and match against the pattern
+                constexpr int threads_per_block = 256;
+                int blocks = static_cast<int>(
+                        (var_col->length + threads_per_block - 1) / threads_per_block
                 );
-                if (cudaSuccess != status) {
-                    return status;
-                }
-                d_var_ids = static_cast<uint64_t const*>(var_ids_guard.buf.ptr);
+                scan_encoded_var_wildcard_kernel<<<blocks, threads_per_block>>>(
+                        device_ert_base,
+                        var_col->primary_offset_bytes,
+                        var_col->length,
+                        static_cast<char const*>(d_var_ptrs[i]),
+                        static_cast<int>(var_predicate.wildcard_pattern.size()),
+                        var_predicate.var_type,
+                        MergeOp::And,
+                        temp_bitmap
+                );
+                status = cudaGetLastError();
+            } else {
+                // Precise/imprecise encoded value matching
+                auto var_pred
+                        = make_sclp_predicate(var_col_id, var_predicate.possible_encoded_values);
+                size_t const var_count = var_predicate.possible_encoded_values.size();
+                status = scan_predicate_into_bitmap(
+                        device_ert_base,
+                        *var_col,
+                        var_pred,
+                        static_cast<uint64_t const*>(d_var_ptrs[i]),
+                        var_count,
+                        MergeOp::And,
+                        temp_bitmap
+                );
             }
-
-            status = scan_predicate_into_bitmap(
-                    device_ert_base,
-                    *var_col,
-                    var_pred,
-                    d_var_ids,
-                    var_count,
-                    MergeOp::And,
-                    temp_bitmap
-            );
             if (cudaSuccess != status) {
                 return status;
             }

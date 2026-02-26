@@ -770,6 +770,7 @@ set(SOURCE_FILES_unitTest
         tests/test-query_methods.cpp
         tests/test-regex_utils.cpp
         tests/test-SchemaSearcher.cpp
+        tests/test-SubQueryPositions.cpp
         tests/test-Segment.cpp
         tests/test-SQLiteDB.cpp
         tests/test-Stopwatch.cpp

@@ -4,6 +4,7 @@
 // Scan request types for GPU scan operations.
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "ErtInfoTypes.hpp"
@@ -39,6 +40,7 @@ enum class ScanCompatError {
     UnsupportedColumnTypeForGpu,
     InvertedCompoundExpression,
     VarStringNotInDictionary,
+    StructuredClpStringNoPinnedPositions,
     StructuredClpStringWildcardRequired,
     PredicateAlwaysTrue,
     PredicateAlwaysFalse
@@ -59,7 +61,7 @@ struct ColumnPredicate {
     int64_t int_value{0};              // Int64, DateString epoch
     double double_value{0.0};          // Double
     uint8_t bool_value{0};             // Boolean
-    std::vector<int64_t> var_dict_ids;  // VarString: resolved dictionary IDs (IN-list)
+    std::vector<int64_t> id_list;  // IN-list of int64 values (VarString dict IDs or encoded ints)
 };
 
 /**
@@ -81,12 +83,24 @@ struct SclpColumns {
 };
 
 /**
- * Encoded values a variable position can match. A single element means the variable
- * encodes to exactly one value (precise match -> Int64 EQ). Multiple elements mean
- * the variable could encode to several values (imprecise -> IN-list).
+ * Encoding of a mask-encoded wildcard variable: determines how to decode the
+ * stored int64 value back to a string for pattern matching.
+ */
+enum class MaskVarEncoding : uint8_t {
+    Int = 0,
+    Float = 1,
+};
+
+/**
+ * Encoded values a variable position can match. If `wildcard_pattern` is non-empty,
+ * the GPU kernel matches the encoded value's string representation against the pattern
+ * instead of using `possible_encoded_values`.
  */
 struct SclpVarPredicate {
-    std::vector<int64_t> possible_encoded_values;  // single element for precise, multiple for imprecise
+    size_t var_column_index{0};
+    std::vector<int64_t> possible_encoded_values;
+    std::string wildcard_pattern;
+    MaskVarEncoding var_type{MaskVarEncoding::Int};
 };
 
 /**

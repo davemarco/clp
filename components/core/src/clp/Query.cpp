@@ -5,7 +5,10 @@
 #include <string>
 #include <unordered_set>
 
+#include <string_utils/string_utils.hpp>
+
 #include "Defs.h"
+#include "EncodedVariableInterpreter.hpp"
 
 using std::set;
 using std::string;
@@ -63,9 +66,27 @@ QueryVar::QueryVar(
     }
 }
 
+QueryVar::QueryVar(string wildcard_pattern, bool is_float_var)
+        : m_is_wildcard_pattern_var{true},
+          m_wildcard_pattern{std::move(wildcard_pattern)},
+          m_is_float_var{is_float_var} {}
+
 bool QueryVar::matches(encoded_variable_t var) const {
+    if (m_is_wildcard_pattern_var) {
+        return matches_wildcard_pattern(var);
+    }
     return (m_is_precise_var && m_precise_var == var)
            || (!m_is_precise_var && m_possible_dict_vars.count(var) > 0);
+}
+
+bool QueryVar::matches_wildcard_pattern(encoded_variable_t var) const {
+    string var_str;
+    if (m_is_float_var) {
+        EncodedVariableInterpreter::convert_encoded_float_to_string(var, var_str);
+    } else {
+        var_str = std::to_string(var);
+    }
+    return string_utils::wildcard_match_unsafe_case_sensitive(var_str, m_wildcard_pattern);
 }
 
 void QueryVar::remove_segments_that_dont_contain_dict_var(
@@ -111,12 +132,20 @@ void SubQuery::add_imprecise_dict_var(
     m_vars.emplace_back(possible_dict_vars, possible_var_dict_ids);
 }
 
+void SubQuery::add_wildcard_pattern_var(string const& wildcard_pattern, bool is_float_var) {
+    m_vars.emplace_back(wildcard_pattern, is_float_var);
+}
+
 void SubQuery::set_possible_logtypes(unordered_set<logtype_dictionary_id_t> const& logtype_ids) {
     m_possible_logtypes = logtype_ids;
 }
 
 void SubQuery::mark_wildcard_match_required() {
     m_wildcard_match_required = true;
+}
+
+void SubQuery::set_var_logtype_positions(std::vector<size_t> const& positions) {
+    m_var_logtype_positions = positions;
 }
 
 void SubQuery::calculate_ids_of_matching_segments(
@@ -147,6 +176,7 @@ void SubQuery::calculate_ids_of_matching_segments(
 
 void SubQuery::clear() {
     m_vars.clear();
+    m_var_logtype_positions.clear();
     m_possible_logtypes.clear();
     m_wildcard_match_required = false;
 }

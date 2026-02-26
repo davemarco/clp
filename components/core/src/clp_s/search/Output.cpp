@@ -123,6 +123,13 @@ bool Output::filter() {
             SearchTiming::Clock::now() - string_query_plan_start
     );
 
+    if (m_scan_mode != ScanMode::None && m_query_runner.is_using_heuristic()) {
+        SPDLOG_ERROR(
+                "GPU/bitmap scan modes require --schema-path to use the non-heuristic parser."
+        );
+        return false;
+    }
+
     //I believe this is similiar to open segment
     // I think this just opens the reader for the tables. It dosent do anything
     m_archive_reader->open_packed_streams();
@@ -140,6 +147,10 @@ bool Output::filter() {
     std::shared_ptr<char[]> compressed_buf;
     size_t compressed_buf_size{0};
 
+    // TODO: Pre-filter matched_schemas by SCLP var column count before this loop. Store
+    // logtype var counts in each SubQuery (entry->get_num_variables()), then remove schemas
+    // whose StructuredClpString group length (Schema::get_unordered_object_length - 1) doesn't
+    // match any subquery. This skips whole streams with no matching schemas at no I/O cost.
     for (int32_t schema_id : matched_schemas) {
         if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
             continue;
