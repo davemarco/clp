@@ -1291,10 +1291,21 @@ void JsonParser::parse_kv_log_event_subtree(
                                             .to_string()
                                             .value();
                 }
-                // node_id is the StructuredClpString node created by get_archive_node_id.
-                encode_structurized_clp_string_children(decoded_value, node_id);
-                continue;
-            }
+                if (false == matches_timestamp) {
+                    // node_id is the StructuredClpString node created by get_archive_node_id.
+                    encode_structurized_clp_string_children(decoded_value, node_id);
+                    continue;
+                }
+                m_current_parsed_message.add_value(
+                        node_id,
+                        m_archive_writer->ingest_string_timestamp(
+                                m_timestamp_key,
+                                node_id,
+                                decoded_value,
+                                false
+                        )
+                );
+            } break;
             case NodeType::ClpString: {
                 bool const is_eight_byte_encoding{
                         pair.second.value().is<clp::ffi::EightByteEncodedTextAst>()
