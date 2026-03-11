@@ -13,6 +13,8 @@
 #include "../../clp/type_utils.hpp"
 #include "../SchemaTree.hpp"
 #include "../Utils.hpp"
+#include "../SingleFileArchiveDefs.hpp"
+#include "../gpu/common/cuda/CudaWarmup.hpp"
 #include "../gpu/common/host/ErtInfo.hpp"
 #include "../gpu/encoded_buffer/host/Scan.hpp"
 #include "../gpu/bitmap/host/Output.hpp"
@@ -48,6 +50,11 @@ using ScanMode = CommandLineArguments::ScanMode;
 bool Output::filter() {
     auto& timing = SearchTiming::instance();
     SearchTiming::Scope timing_guard{timing, m_archive_reader->get_archive_id()};
+
+    // Share thread pool with archive reader for parallel decompression
+    if (m_thread_pool) {
+        m_archive_reader->set_thread_pool(m_thread_pool.get());
+    }
 
     std::vector<int32_t> matched_schemas;
     bool has_array = false;
@@ -140,6 +147,10 @@ bool Output::filter() {
     std::string message;
     auto const archive_id = m_archive_reader->get_archive_id();
 
+    // Wait for background CUDA context initialization (launched from main before
+    // archive open / AST passes to maximize overlap with the ~300-500ms driver init).
+    clp_s::gpu::wait_for_cuda_warmup();
+
     // State for stream-batched GPU decompression
     clp_s::gpu::NvcompDecompressContext decompress_ctx;
     clp_s::gpu::DeviceBuffer device_stream{};
@@ -210,6 +221,9 @@ bool Output::filter() {
 
                     auto const decompress_start = SearchTiming::Clock::now();
                     std::string decompress_error;
+                    auto const archive_codec = static_cast<ArchiveCompressionType>(
+                            m_archive_reader->get_header().compression_type
+                    );
                     if (0
                         != clp_s::gpu::decompress_stream_to_device(
                                 decompress_ctx,
@@ -219,7 +233,8 @@ bool Output::filter() {
                                 packed_meta.chunk_size,
                                 packed_meta.uncompressed_size,
                                 device_stream,
-                                decompress_error
+                                decompress_error,
+                                archive_codec
                         ))
                     {
                         SPDLOG_ERROR(
@@ -338,6 +353,9 @@ bool Output::filter() {
                 );
                 auto matches = static_cast<size_t>(encoded_buffer.num_rows);
                 if (0 != matches) {
+                    // Ensure the async DtoH copy has completed before accessing
+                    // the encoded buffer on the host.
+                    clp_s::gpu::sync_default_stream();
                     auto const serialize_start = SearchTiming::Clock::now();
                     reader.reset_read_state(encoded_buffer.num_rows);
                     try {
@@ -375,7 +393,8 @@ bool Output::filter() {
                 switch (m_scan_mode) {
                     case ScanMode::CpuBitmap:
                         scan_err = clp_s::gpu::run_cpu_scan_to_bitmap_clauses(
-                                reader, clauses, column_descs, bitmap
+                                reader, clauses, column_descs, bitmap,
+                                m_num_threads, m_thread_pool.get()
                         );
                         break;
                     case ScanMode::GpuBitmap:

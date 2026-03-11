@@ -7,6 +7,7 @@
 
 #include <cuda_runtime.h>
 
+#include "../../../archive_constants.hpp"
 #include "Transfer.hpp"
 
 namespace clp_s::gpu {
@@ -16,12 +17,14 @@ namespace clp_s::gpu {
  */
 struct ChunkedCompressedData {
     void const* host_compressed_buf{nullptr};
+    bool host_buf_is_pinned{false};  // if true, host_compressed_buf is cudaMallocHost'd
     size_t total_compressed_size{0};
     std::vector<uint32_t> const* chunk_compressed_sizes{nullptr};
     uint32_t chunk_size{0};  // uncompressed chunk size (e.g. 65536)
     size_t total_uncompressed_size{0};
     size_t stream_offset{0};  // offset of the schema table within the decompressed stream
     size_t table_uncompressed_size{0};  // size of just the schema table's portion
+    ArchiveCompressionType codec{ArchiveCompressionType::Zstd};
 };
 
 /**
@@ -73,10 +76,16 @@ private:
     void* m_d_temp{nullptr};
     size_t m_d_temp_cap{0};
 
+    // Pinned host staging buffer for DMA transfers
+    void* m_h_pinned{nullptr};
+    size_t m_h_pinned_cap{0};
+
     // Grows a single device buffer if needed; no-op if cap >= needed.
     cudaError_t ensure_device(void*& ptr, size_t& cap, size_t needed);
     // Grows the single allocation backing all 6 nvcomp metadata arrays.
     cudaError_t ensure_arrays(size_t num_chunks);
+    // Grows the pinned host staging buffer if needed.
+    cudaError_t ensure_pinned(size_t needed);
 };
 
 }  // namespace clp_s::gpu

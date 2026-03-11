@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "archive_constants.hpp"
 #include "ArchiveReaderAdaptor.hpp"
 #include "DictionaryReader.hpp"
 #include "InputConfig.hpp"
@@ -188,6 +189,10 @@ public:
         m_projection = projection;
     }
 
+    void set_num_threads(size_t num_threads) { m_num_threads = num_threads; }
+
+    void set_thread_pool(ThreadPool* pool) { m_thread_pool = pool; }
+
     /**
      * @return true if this archive has log ordering information, and false otherwise.
      */
@@ -273,6 +278,8 @@ private:
     size_t m_stream_buffer_size{0ULL};
     size_t m_cur_stream_id{0ULL};
     int32_t m_log_event_idx_column_id{-1};
+    size_t m_num_threads{1};
+    ThreadPool* m_thread_pool{nullptr};
 };
 }  // namespace clp_s
 

@@ -20,6 +20,7 @@ void ArchiveWriter::open(ArchiveWriterOption const& option) {
     m_single_file_archive = option.single_file_archive;
     m_min_table_size = option.min_table_size;
     m_chunk_size = option.chunk_size;
+    m_compression_codec = option.compression_codec;
     m_archives_dir = option.archives_dir;
     m_authoritative_timestamp = option.authoritative_timestamp;
     m_authoritative_timestamp_namespace = option.authoritative_timestamp_namespace;
@@ -244,7 +245,7 @@ void ArchiveWriter::write_archive_header(FileWriter& archive_writer, size_t meta
             m_uncompressed_size,
             m_compressed_size,
             static_cast<uint32_t>(metadata_section_size),
-            static_cast<uint16_t>(ArchiveCompressionType::Zstd)
+            static_cast<uint16_t>(m_compression_codec)
     };
     archive_writer.seek_from_begin(0);
     archive_writer.write(reinterpret_cast<char const*>(&header), sizeof(header));
@@ -423,12 +424,21 @@ std::pair<size_t, size_t> ArchiveWriter::store_tables() {
     };
     std::sort(schemas.begin(), schemas.end(), comp);
 
+    // Initialize the codec-appropriate wrapper once, then use it uniformly below.
+    if (ArchiveCompressionType::Gdeflate == m_compression_codec) {
+        m_tables_compressor.emplace(m_tables_compressor_gdeflate);
+    } else {
+        m_tables_compressor.emplace(m_tables_compressor_zstd);
+    }
+    auto& compressor = *m_tables_compressor;
+
     uint64_t current_stream_offset = 0;
     uint64_t current_stream_id = 0;
     uint64_t current_table_file_offset = 0;
-    m_tables_compressor.open(m_tables_file_writer, m_compression_level, m_chunk_size);
+
+    compressor.open(m_tables_file_writer, m_compression_level, m_chunk_size);
     for (auto it : schemas) {
-        it->second->store(m_tables_compressor);
+        it->second->store(compressor);
         schema_metadata.emplace_back(
                 current_stream_id,
                 current_stream_offset,
@@ -438,18 +448,18 @@ std::pair<size_t, size_t> ArchiveWriter::store_tables() {
         current_stream_offset += it->second->get_total_uncompressed_size();
 
         if (current_stream_offset > m_min_table_size || schemas.size() == schema_metadata.size()) {
-            m_tables_compressor.close();
+            compressor.close();
             stream_metadata.emplace_back(current_table_file_offset, current_stream_offset);
             auto& sm = stream_metadata.back();
-            sm.chunk_size = static_cast<uint32_t>(m_tables_compressor.get_chunk_size());
-            sm.chunk_compressed_sizes = m_tables_compressor.get_chunk_compressed_sizes();
+            sm.chunk_size = static_cast<uint32_t>(compressor.get_chunk_size());
+            sm.chunk_compressed_sizes = compressor.get_chunk_compressed_sizes();
 
             current_stream_offset = 0;
             ++current_stream_id;
             current_table_file_offset = m_tables_file_writer.get_pos();
 
             if (schemas.size() != schema_metadata.size()) {
-                m_tables_compressor.open(m_tables_file_writer, m_compression_level, m_chunk_size);
+                compressor.open(m_tables_file_writer, m_compression_level, m_chunk_size);
             }
         }
     }

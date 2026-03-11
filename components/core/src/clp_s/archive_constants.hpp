@@ -60,4 +60,12 @@ constexpr char cMessage[]{"message"};
 constexpr char cArchiveId[]{"archive_id"};
 }  // namespace results_cache::search
 }  // namespace clp_s::constants
+
+namespace clp_s {
+enum class ArchiveCompressionType : uint16_t {
+    Zstd = 0,
+    Gdeflate = 3,
+};
+}  // namespace clp_s
+
 #endif  // CLP_S_ARCHIVE_CONSTANTS_HPP

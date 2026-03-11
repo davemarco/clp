@@ -1,10 +1,97 @@
 #include "PackedStreamReader.hpp"
 
+#include <algorithm>
+#include <vector>
+
+#include <nvcomp/native/gdeflate_cpu.h>
+#include <zstd.h>
+
 #include "../clp/BoundedReader.hpp"
 #include "archive_constants.hpp"
 #include "ArchiveReaderAdaptor.hpp"
 
 namespace clp_s {
+namespace {
+struct ChunkDecompressArgs {
+    char const* compressed_data;
+    char* output_data;
+    size_t const* chunk_compressed_offsets;
+    uint32_t const* chunk_compressed_sizes;
+    size_t const* chunk_output_offsets;
+    size_t chunk_size;
+    size_t uncompressed_size;
+    size_t num_chunks;
+    bool is_gdeflate;
+};
+
+/**
+ * Decompresses a contiguous range of chunks [start_chunk, start_chunk + count).
+ * Pre-faults output pages to parallelize page fault cost across cores.
+ */
+ErrorCode decompress_chunk_range(
+        ChunkDecompressArgs const& args,
+        size_t start_chunk,
+        size_t count
+) {
+    ZSTD_DCtx* dctx = nullptr;
+    if (false == args.is_gdeflate) {
+        dctx = ZSTD_createDCtx();
+        if (nullptr == dctx) {
+            return ErrorCodeFailure;
+        }
+    }
+
+    // Pre-fault output pages for this range to parallelize page fault cost.
+    {
+        char* region_start = args.output_data + args.chunk_output_offsets[start_chunk];
+        size_t last = start_chunk + count - 1;
+        size_t region_end_offset = (last + 1 < args.num_chunks)
+                                           ? args.chunk_output_offsets[last] + args.chunk_size
+                                           : args.uncompressed_size;
+        size_t region_size = region_end_offset - args.chunk_output_offsets[start_chunk];
+        constexpr size_t cPageSize = 4096;
+        for (size_t off = 0; off < region_size; off += cPageSize) {
+            region_start[off] = 0;
+        }
+    }
+
+    ErrorCode err = ErrorCodeSuccess;
+    for (size_t i = start_chunk; i < start_chunk + count; ++i) {
+        char const* src = args.compressed_data + args.chunk_compressed_offsets[i];
+        size_t const src_size = args.chunk_compressed_sizes[i];
+        char* dst = args.output_data + args.chunk_output_offsets[i];
+        size_t const dst_capacity
+                = (i + 1 < args.num_chunks)
+                          ? args.chunk_size
+                          : (args.uncompressed_size - args.chunk_output_offsets[i]);
+
+        if (args.is_gdeflate) {
+            void const* in_ptr = src;
+            size_t in_bytes = src_size;
+            void* out_ptr = dst;
+            size_t out_buffer_bytes = dst_capacity;
+            size_t out_bytes = 0;
+            gdeflate::decompressCPU(&in_ptr, &in_bytes, 1, &out_ptr, &out_buffer_bytes, &out_bytes);
+            if (0 == out_bytes) {
+                err = ErrorCodeFailure;
+                break;
+            }
+        } else {
+            size_t const result = ZSTD_decompressDCtx(dctx, dst, dst_capacity, src, src_size);
+            if (ZSTD_isError(result)) {
+                err = ErrorCodeFailure;
+                break;
+            }
+        }
+    }
+
+    if (nullptr != dctx) {
+        ZSTD_freeDCtx(dctx);
+    }
+    return err;
+}
+}  // namespace
+
 void PackedStreamReader::read_metadata(ZstdDecompressor& decompressor) {
     switch (m_state) {
         case PackedStreamReaderState::Uninitialized:
@@ -130,6 +217,81 @@ PackedStreamReader::read_stream(size_t stream_id, std::shared_ptr<char[]>& buf, 
     m_packed_stream_decompressor.close_for_reuse();
 }
 
+void PackedStreamReader::read_stream_parallel(
+        size_t stream_id,
+        std::shared_ptr<char[]>& buf,
+        size_t& buf_size,
+        size_t num_threads,
+        ThreadPool* thread_pool
+) {
+    bool const is_gdeflate = ArchiveCompressionType::Gdeflate == m_compression_codec;
+    auto const& meta = m_stream_metadata.at(stream_id);
+    auto const& chunk_compressed_sizes = meta.chunk_compressed_sizes;
+    size_t const num_chunks = chunk_compressed_sizes.size();
+
+    // Step 1: Read all compressed data into memory with a single I/O operation
+    std::shared_ptr<char[]> compressed_buf;
+    size_t compressed_buf_size{0};
+    read_stream_compressed(stream_id, compressed_buf, compressed_buf_size);
+
+    // Step 2: Allocate output buffer.
+    if (buf_size < meta.uncompressed_size) {
+        buf = std::shared_ptr<char[]>(new char[meta.uncompressed_size]);
+        buf_size = meta.uncompressed_size;
+    }
+
+    // Step 3: Compute chunk byte offsets (prefix sum of compressed sizes) and output offsets
+    std::vector<size_t> chunk_compressed_offsets(num_chunks);
+    std::vector<size_t> chunk_output_offsets(num_chunks);
+    chunk_compressed_offsets[0] = 0;
+    chunk_output_offsets[0] = 0;
+    for (size_t i = 1; i < num_chunks; ++i) {
+        chunk_compressed_offsets[i]
+                = chunk_compressed_offsets[i - 1] + chunk_compressed_sizes[i - 1];
+        chunk_output_offsets[i] = chunk_output_offsets[i - 1] + meta.chunk_size;
+    }
+
+    // Step 4: Distribute chunks across threads in contiguous blocks
+    size_t const actual_threads = std::min(num_threads, num_chunks);
+    size_t const chunks_per_thread = num_chunks / actual_threads;
+    size_t const remainder = num_chunks % actual_threads;
+
+    ChunkDecompressArgs const args{
+            compressed_buf.get(),
+            buf.get(),
+            chunk_compressed_offsets.data(),
+            chunk_compressed_sizes.data(),
+            chunk_output_offsets.data(),
+            meta.chunk_size,
+            meta.uncompressed_size,
+            num_chunks,
+            is_gdeflate
+    };
+
+    std::vector<ErrorCode> errors(actual_threads, ErrorCodeSuccess);
+
+    for (size_t t = 0; t < actual_threads; ++t) {
+        size_t const start_chunk = t * chunks_per_thread + std::min(t, remainder);
+        size_t const count = chunks_per_thread + (t < remainder ? 1 : 0);
+        if (nullptr != thread_pool && actual_threads > 1) {
+            thread_pool->submit([&args, &errors, t, start_chunk, count]() {
+                errors[t] = decompress_chunk_range(args, start_chunk, count);
+            });
+        } else {
+            errors[t] = decompress_chunk_range(args, start_chunk, count);
+        }
+    }
+    if (nullptr != thread_pool && actual_threads > 1) {
+        thread_pool->wait_all();
+    }
+
+    for (size_t t = 0; t < actual_threads; ++t) {
+        if (ErrorCodeSuccess != errors[t]) {
+            throw OperationFailed(errors[t], __FILE__, __LINE__);
+        }
+    }
+}
+
 void PackedStreamReader::read_chunk_metadata(ZstdDecompressor& decompressor) {
     bool first_read{true};
     for (auto& stream : m_stream_metadata) {
@@ -203,7 +365,7 @@ void PackedStreamReader::read_stream_compressed(
     }
 
     if (buf_size < total_compressed) {
-        buf = std::make_unique<char[]>(total_compressed);
+        buf = std::shared_ptr<char[]>(new char[total_compressed]);
         buf_size = total_compressed;
     }
 

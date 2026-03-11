@@ -18,6 +18,8 @@
 #include "Schema.hpp"
 #include "SchemaMap.hpp"
 #include "SchemaTree.hpp"
+#include "ChunkedCompressorWrapper.hpp"
+#include "ChunkedGdeflateCompressor.hpp"
 #include "ChunkedZstdCompressor.hpp"
 #include "SchemaWriter.hpp"
 #include "SingleFileArchiveDefs.hpp"
@@ -34,6 +36,7 @@ struct ArchiveWriterOption {
     std::vector<std::string> authoritative_timestamp;
     std::string authoritative_timestamp_namespace;
     size_t chunk_size{ChunkedZstdCompressor::cDefaultChunkSize};
+    ArchiveCompressionType compression_codec{ArchiveCompressionType::Zstd};
 };
 
 class ArchiveStats {
@@ -382,7 +385,10 @@ private:
 
     FileWriter m_tables_file_writer;
     FileWriter m_table_metadata_file_writer;
-    ChunkedZstdCompressor m_tables_compressor;
+    ChunkedZstdCompressor m_tables_compressor_zstd;
+    ChunkedGdeflateCompressor m_tables_compressor_gdeflate;
+    std::optional<ChunkedCompressorWrapper> m_tables_compressor;
+    ArchiveCompressionType m_compression_codec{ArchiveCompressionType::Zstd};
     ZstdCompressor m_table_metadata_compressor;
 
     RangeIndexWriter m_range_index_writer;

@@ -12,6 +12,7 @@
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/scan.h>
+#include "../../common/cuda/StreamOrderedAllocator.hpp"
 #include "../../common/cuda/Transfer.hpp"
 #include "../../common/host/ScanRequestTypeUtils.hpp"
 
@@ -29,16 +30,17 @@ cudaError_t copy_id_list_to_device(
         return cudaSuccess;
     }
     size_t const bytes = pred.id_list.size() * sizeof(uint64_t);
-    cudaError_t status = cudaMalloc(&guard.buf.ptr, bytes);
+    cudaError_t status = cudaMallocAsync(&guard.buf.ptr, bytes, 0);
     if (cudaSuccess != status) {
         return status;
     }
     guard.buf.size = bytes;
-    status = cudaMemcpy(
+    status = cudaMemcpyAsync(
             guard.buf.ptr,
             pred.id_list.data(),
             bytes,
-            cudaMemcpyHostToDevice
+            cudaMemcpyHostToDevice,
+            0
     );
     if (cudaSuccess != status) {
         return status;
@@ -48,16 +50,16 @@ cudaError_t copy_id_list_to_device(
 }
 
 cudaError_t alloc_initialized_bitmap(size_t num_rows, MergeOp merge_op, DeviceBuffer& out_bitmap) {
-    out_bitmap = {};
     size_t const bytes = num_rows * sizeof(uint8_t);
-    cudaError_t status = cudaMalloc(&out_bitmap.ptr, bytes);
+    out_bitmap = {};
+    cudaError_t status = cudaMallocAsync(&out_bitmap.ptr, bytes, 0);
     if (cudaSuccess != status) {
         return status;
     }
     out_bitmap.size = bytes;
     // AND identity = all 1s, OR identity = all 0s
     uint8_t const fill = (MergeOp::And == merge_op) ? 1 : 0;
-    return cudaMemset(out_bitmap.ptr, fill, bytes);
+    return cudaMemsetAsync(out_bitmap.ptr, fill, bytes, 0);
 }
 
 cudaError_t scan_predicate_into_bitmap(
@@ -174,11 +176,11 @@ cudaError_t scan_sclp_to_device_bitmap(
     // No subqueries means no work — just set the answer directly.
     if (info.subqueries.empty()) {
         uint8_t const fill = info.is_negated ? 1 : 0;
-        return cudaMemset(device_out_bitmap, fill, num_rows);
+        return cudaMemsetAsync(device_out_bitmap, fill, num_rows, 0);
     }
 
     // Initialize output to all 0s (OR identity for subquery merging)
-    cudaError_t status = cudaMemset(device_out_bitmap, 0, num_rows);
+    cudaError_t status = cudaMemsetAsync(device_out_bitmap, 0, num_rows, 0);
     if (cudaSuccess != status) {
         return status;
     }
@@ -190,7 +192,7 @@ cudaError_t scan_sclp_to_device_bitmap(
 
     // Allocate temp bitmap for per-subquery AND scan
     DeviceBufferGuard temp_guard;
-    status = cudaMalloc(&temp_guard.buf.ptr, num_rows);
+    status = cudaMallocAsync(&temp_guard.buf.ptr, num_rows, 0);
     if (cudaSuccess != status) {
         return status;
     }
@@ -199,7 +201,7 @@ cudaError_t scan_sclp_to_device_bitmap(
 
     for (auto const& sq : info.subqueries) {
         // Initialize temp to all-1s (AND identity)
-        status = cudaMemset(temp_bitmap, 1, num_rows);
+        status = cudaMemsetAsync(temp_bitmap, 1, num_rows, 0);
         if (cudaSuccess != status) {
             return status;
         }
@@ -350,7 +352,10 @@ cudaError_t prefix_sum_column_in_place(
     }
     auto* values = reinterpret_cast<int64_t*>(device_ert_base + offset_bytes);
     auto d_ptr = thrust::device_pointer_cast(values);
-    thrust::inclusive_scan(thrust::device, d_ptr, d_ptr + num_rows, d_ptr);
+    StreamOrderedAllocator<char> alloc{0};
+    thrust::inclusive_scan(
+            thrust::cuda::par_nosync(alloc).on(0), d_ptr, d_ptr + num_rows, d_ptr
+    );
     return cudaGetLastError();
 }
 }  // namespace clp_s::gpu

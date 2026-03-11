@@ -23,6 +23,7 @@ public:
 
     enum class CompressorType : uint8_t {
         ZSTD = 0x10,
+        Gdeflate = 0x11,
         Passthrough = 0xFF,
     };
 

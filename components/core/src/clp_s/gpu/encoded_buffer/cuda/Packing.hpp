@@ -26,12 +26,15 @@ void compute_column_offsets(
         std::vector<size_t>& column_offsets,
         size_t& total_size
 );
+
 /**
  * Compacts a 1-byte-per-row bitmap into an array of matching row indices.
  *
  * @param device_bitmap Device array of num_rows bytes (nonzero = match).
  * @param num_rows Number of rows in the bitmap.
- * @param[out] out_row_ids Newly allocated device buffer of matching row indices (uint32_t).
+ * @param out_row_ids Device buffer for matching row indices (uint32_t).
+ *                    If out_row_ids.ptr is non-null and out_row_ids.size >= needed,
+ *                    the existing buffer is reused; otherwise a new one is allocated.
  * @param[out] out_num_matches Number of matching rows written to out_row_ids.
  * @return cudaSuccess on success, otherwise the CUDA error code.
  */

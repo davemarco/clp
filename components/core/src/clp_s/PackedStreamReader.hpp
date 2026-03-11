@@ -8,6 +8,9 @@
 
 #include "../clp/ReaderInterface.hpp"
 #include "ArchiveReaderAdaptor.hpp"
+#include "SingleFileArchiveDefs.hpp"
+#include "ThreadPool.hpp"
+#include "TraceableException.hpp"
 #include "ZstdDecompressor.hpp"
 
 namespace clp_s {
@@ -75,6 +78,26 @@ public:
      */
     void read_stream(size_t stream_id, std::shared_ptr<char[]>& buf, size_t& buf_size);
 
+    /**
+     * Reads and decompresses a stream using multiple threads. Falls back to read_stream() when
+     * chunk metadata is unavailable or num_threads <= 1.
+     *
+     * First reads all compressed bytes into memory with a single I/O operation, then distributes
+     * independent zstd chunks across worker threads for parallel decompression.
+     *
+     * @param stream_id
+     * @param buf output buffer (resized if needed)
+     * @param buf_size size of the underlying buffer
+     * @param num_threads number of decompression threads
+     */
+    void read_stream_parallel(
+            size_t stream_id,
+            std::shared_ptr<char[]>& buf,
+            size_t& buf_size,
+            size_t num_threads,
+            ThreadPool* thread_pool = nullptr
+    );
+
     [[nodiscard]] size_t get_uncompressed_stream_size(size_t stream_id) const {
         return m_stream_metadata.at(stream_id).uncompressed_size;
     }
@@ -109,6 +132,8 @@ public:
 
     [[nodiscard]] bool has_chunk_metadata() const { return m_has_chunk_metadata; }
 
+    void set_compression_codec(ArchiveCompressionType codec) { m_compression_codec = codec; }
+
 private:
     enum PackedStreamReaderState {
         Uninitialized,
@@ -125,6 +150,7 @@ private:
     size_t m_begin_offset{};
     size_t m_prev_stream_id{0ULL};
     bool m_has_chunk_metadata{false};
+    ArchiveCompressionType m_compression_codec{ArchiveCompressionType::Zstd};
 };
 }  // namespace clp_s
 

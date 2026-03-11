@@ -128,6 +128,11 @@ void ArchiveReader::read_metadata() {
     // Section 3: Chunk metadata for GPU decompression
     m_stream_reader.read_chunk_metadata(m_table_metadata_decompressor);
 
+    // Set the compression codec from the archive header
+    m_stream_reader.set_compression_codec(
+            static_cast<ArchiveCompressionType>(get_header().compression_type)
+    );
+
     m_table_metadata_decompressor.close();
 
     m_archive_reader_adaptor->checkin_reader_for_section(constants::cArchiveTableMetadataFile);
@@ -341,7 +346,7 @@ void ArchiveReader::append_unordered_reader_columns(
         );
     }
 
-    if (should_marshal_records) {
+    if (should_marshal_records && mst_subtree_root_node_id >= 0) {
         reader.mark_unordered_object(object_begin_pos, mst_subtree_root_node_id, schema_ids);
     }
 }
@@ -480,7 +485,20 @@ std::shared_ptr<char[]> ArchiveReader::read_stream(size_t stream_id, bool reuse_
         m_stream_buffer_size = 0;
     }
 
-    m_stream_reader.read_stream(stream_id, m_stream_buffer, m_stream_buffer_size);
+    if (m_num_threads > 1
+        || ArchiveCompressionType::Gdeflate
+                   == static_cast<ArchiveCompressionType>(get_header().compression_type))
+    {
+        m_stream_reader.read_stream_parallel(
+                stream_id,
+                m_stream_buffer,
+                m_stream_buffer_size,
+                std::max(m_num_threads, static_cast<size_t>(1)),
+                m_thread_pool
+        );
+    } else {
+        m_stream_reader.read_stream(stream_id, m_stream_buffer, m_stream_buffer_size);
+    }
     m_cur_stream_id = stream_id;
     return m_stream_buffer;
 }

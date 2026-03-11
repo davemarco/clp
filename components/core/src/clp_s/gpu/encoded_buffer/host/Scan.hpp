@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "../../../SchemaReader.hpp"
+#include "../../../archive_constants.hpp"
 #include "../../common/cuda/NvcompDecompress.hpp"
 #include "../../common/cuda/Transfer.hpp"
 #include "../../common/host/ScanRequest.hpp"
@@ -38,7 +39,9 @@ int decompress_stream_to_device(
         uint32_t chunk_size,
         size_t total_uncompressed_size,
         DeviceBuffer& out,
-        std::string& error
+        std::string& error,
+        ArchiveCompressionType codec = ArchiveCompressionType::Zstd,
+        bool host_pinned = false
 );
 
 /**

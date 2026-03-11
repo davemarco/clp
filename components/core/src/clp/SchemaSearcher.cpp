@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -20,9 +22,113 @@ using log_surgeon::wildcard_query_parser::QueryInterpretation;
 using log_surgeon::wildcard_query_parser::StaticQueryToken;
 using log_surgeon::wildcard_query_parser::VariableQueryToken;
 using std::holds_alternative;
+using std::optional;
 using std::set;
 using std::string;
 using std::vector;
+
+auto SchemaSearcher::fast_tokenize_query(
+        string const& search_string
+) -> optional<set<QueryInterpretation>> {
+    // Single pass: strip escape sequences, allow leading/trailing '*', bail on interior
+    // wildcards.
+    string literal;
+    literal.reserve(search_string.size());
+    bool has_leading_wildcard{false};
+    bool has_trailing_wildcard{false};
+    for (size_t i{0}; i < search_string.size(); ++i) {
+        if ('\\' == search_string[i] && i + 1 < search_string.size()) {
+            ++i;
+            literal += search_string[i];
+        } else if ('?' == search_string[i]) {
+            // Single-char wildcards require log-surgeon's full DFA to resolve.
+            return std::nullopt;
+        } else if ('*' == search_string[i]) {
+            if (literal.empty() && false == has_leading_wildcard) {
+                has_leading_wildcard = true;
+            } else if (i == search_string.size() - 1) {
+                has_trailing_wildcard = true;
+            } else {
+                // Wildcard in the interior — bail to log-surgeon's slow path.
+                return std::nullopt;
+            }
+        } else {
+            literal += search_string[i];
+        }
+    }
+
+    // Boundary wildcards are only safe when separated from the interior by a delimiter.
+    // If '*' is directly adjacent to a non-delimiter character (e.g. "*21177*"), the wildcard
+    // could merge with the adjacent token and change its classification (int vs dict var vs
+    // static). Bail to log-surgeon in that case.
+    if (has_leading_wildcard && false == literal.empty()
+        && false == ir::is_delim(static_cast<signed char>(literal.front())))
+    {
+        return std::nullopt;
+    }
+    if (has_trailing_wildcard && false == literal.empty()
+        && false == ir::is_delim(static_cast<signed char>(literal.back())))
+    {
+        return std::nullopt;
+    }
+
+    // Use ir::get_bounds_of_next_var to find variables — same logic used at compression time.
+    QueryInterpretation interp;
+
+    if (has_leading_wildcard) {
+        interp.append_static_token("*");
+    }
+
+    size_t prev_end{0};
+    size_t begin_pos{0};
+    size_t end_pos{0};
+    while (ir::get_bounds_of_next_var(literal, begin_pos, end_pos)) {
+        // Everything before this variable is static text.
+        if (begin_pos > prev_end) {
+            interp.append_static_token(literal.substr(prev_end, begin_pos - prev_end));
+        }
+
+        // Classify the variable: try int, then float, else dict var.
+        string const var_str{literal.substr(begin_pos, end_pos - begin_pos)};
+        encoded_variable_t encoded_var{};
+        if (EncodedVariableInterpreter::convert_string_to_representable_integer_var(
+                    var_str,
+                    encoded_var
+            ))
+        {
+            interp.append_variable_token(static_cast<uint32_t>(TokenInt), var_str, false);
+        } else if (EncodedVariableInterpreter::convert_string_to_representable_float_var(
+                           var_str,
+                           encoded_var
+                   ))
+        {
+            interp.append_variable_token(static_cast<uint32_t>(TokenFloat), var_str, false);
+        } else {
+            // Dictionary variable: any type ID that isn't TokenInt or TokenFloat causes
+            // generate_schema_sub_queries to treat this as a dict var lookup.
+            interp.append_variable_token(
+                    static_cast<uint32_t>(log_surgeon::SymbolId::TokenUncaughtString),
+                    var_str,
+                    false
+            );
+        }
+
+        prev_end = end_pos;
+    }
+
+    // Trailing static text.
+    if (prev_end < literal.size()) {
+        interp.append_static_token(literal.substr(prev_end));
+    }
+
+    if (has_trailing_wildcard) {
+        interp.append_static_token("*");
+    }
+
+    set<QueryInterpretation> result;
+    result.insert(std::move(interp));
+    return result;
+}
 
 auto SchemaSearcher::normalize_interpretations(set<QueryInterpretation> const& interpretations)
         -> set<QueryInterpretation> {

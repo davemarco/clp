@@ -8,6 +8,7 @@
 #include <tuple>
 #include <vector>
 
+#include "archive_constants.hpp"
 #include "msgpack.hpp"
 
 namespace clp_s {
@@ -93,10 +94,6 @@ struct ArchiveHeader {
     uint32_t metadata_section_size{};
     uint16_t compression_type{};
     uint16_t padding{};
-};
-
-enum class ArchiveCompressionType : uint16_t {
-    Zstd = 0,
 };
 
 enum struct ArchiveMetadataPacketType : uint8_t {

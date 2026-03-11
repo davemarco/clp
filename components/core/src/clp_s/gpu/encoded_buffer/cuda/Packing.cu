@@ -5,12 +5,15 @@
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 
+#include "../../common/cuda/StreamOrderedAllocator.hpp"
+
 namespace clp_s::gpu {
 namespace {
 // Predicate for thrust::copy_if in bitmap_to_row_ids.
 struct IsNonZero {
     __host__ __device__ bool operator()(uint8_t value) const { return value != 0; }
 };
+
 }  // namespace
 
 cudaError_t bitmap_to_row_ids(
@@ -21,23 +24,37 @@ cudaError_t bitmap_to_row_ids(
 ) {
     out_num_matches = 0;
     if (0 == num_rows) {
-        out_row_ids = {};
         return cudaSuccess;
     }
 
-    void* row_ids_ptr = nullptr;
-    auto status = cudaMalloc(&row_ids_ptr, num_rows * sizeof(uint32_t));
+    size_t const needed = num_rows * sizeof(uint32_t);
+    void* ptr = nullptr;
+    auto status = cudaMallocAsync(&ptr, needed, 0);
     if (cudaSuccess != status) {
+        out_row_ids = {};
         return status;
     }
-    out_row_ids.ptr = row_ids_ptr;
-    out_row_ids.size = num_rows * sizeof(uint32_t);
+    out_row_ids.ptr = ptr;
+    out_row_ids.size = needed;
 
     auto d_bitmap = thrust::device_pointer_cast(device_bitmap);
     auto d_row_ids = thrust::device_pointer_cast(static_cast<uint32_t*>(out_row_ids.ptr));
     auto begin = thrust::counting_iterator<uint32_t>(0);
     auto end = begin + num_rows;
-    auto out_end = thrust::copy_if(thrust::device, begin, end, d_bitmap, d_row_ids, IsNonZero{});
+    StreamOrderedAllocator<char> alloc{0};
+    auto out_end = thrust::copy_if(
+            thrust::cuda::par_nosync(alloc).on(0),
+            begin,
+            end,
+            d_bitmap,
+            d_row_ids,
+            IsNonZero{}
+    );
+    // Sync to ensure the match count from copy_if is available on the host.
+    status = cudaStreamSynchronize(0);
+    if (cudaSuccess != status) {
+        return status;
+    }
     out_num_matches = static_cast<uint64_t>(out_end - d_row_ids);
     return cudaSuccess;
 }

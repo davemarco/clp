@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "../../../archive_constants.hpp"
 #include "../../bitmap/cuda/Scan.hpp"
 #include "../../common/cuda/NvcompDecompress.hpp"
 #include "../../common/cuda/Transfer.hpp"
@@ -94,7 +95,7 @@ int bitmap_to_encoded_buffer(
     size_t total_size = 0;
     compute_column_offsets(adjusted_columns, num_matches, column_offsets, total_size);
 
-    status = cudaMalloc(&device_ctx.encoded_buffer.buf.ptr, total_size);
+    status = cudaMallocAsync(&device_ctx.encoded_buffer.buf.ptr, total_size, 0);
     if (cudaSuccess != status) {
         error = std::string("output alloc failed: ") + cudaGetErrorString(status);
         return 1;
@@ -131,14 +132,18 @@ int decompress_stream_to_device(
         uint32_t chunk_size,
         size_t total_uncompressed_size,
         DeviceBuffer& out,
-        std::string& error
+        std::string& error,
+        ArchiveCompressionType codec,
+        bool host_pinned
 ) {
     ChunkedCompressedData data{};
     data.host_compressed_buf = compressed_data;
+    data.host_buf_is_pinned = host_pinned;
     data.total_compressed_size = compressed_size;
     data.chunk_compressed_sizes = &chunk_compressed_sizes;
     data.chunk_size = chunk_size;
     data.total_uncompressed_size = total_uncompressed_size;
+    data.codec = codec;
 
     auto status = ctx.decompress(data, out);
     if (cudaSuccess != status) {
@@ -174,7 +179,6 @@ int run_scan_to_encoded_buffer_clauses(
     ErtBufferView view{static_cast<char*>(d_ert), d_ert_size};
     size_t const num_rows = reader.get_num_messages();
 
-    // Scan first clause directly into the combined bitmap
     DeviceBufferGuard combined_bitmap;
     if (0
         != scan_clause_to_device_bitmap(
@@ -220,7 +224,8 @@ int run_scan_to_encoded_buffer_clauses(
     }
 
     return bitmap_to_encoded_buffer(
-            d_ert, d_ert_size, combined_bitmap, adjusted_columns, num_rows, out_buffer, error
+            d_ert, d_ert_size, combined_bitmap, adjusted_columns, num_rows,
+            out_buffer, error
     );
 }
 }  // namespace clp_s::gpu

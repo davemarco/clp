@@ -146,6 +146,7 @@ if(CLP_BUILD_EXECUTABLES)
                 MariaDBClient::MariaDBClient
                 msgpack-cxx
                 nlohmann_json::nlohmann_json
+                nvcomp::nvcomp_cpu_static
                 OpenSSL::Crypto
                 simdjson::simdjson
                 spdlog::spdlog

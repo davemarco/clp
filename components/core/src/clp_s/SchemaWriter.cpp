@@ -26,7 +26,7 @@ size_t SchemaWriter::append_message(ParsedMessage& message) {
     return total_size;
 }
 
-void SchemaWriter::store(ChunkedZstdCompressor& compressor) {
+void SchemaWriter::store(ChunkedCompressorWrapper& compressor) {
     for (auto& writer : m_columns) {
         writer->store(compressor);
         m_total_uncompressed_size += writer->get_store_padding();

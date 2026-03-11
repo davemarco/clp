@@ -5,10 +5,13 @@ set(GPU_BASE ${CMAKE_CURRENT_LIST_DIR}/..)
 find_package(nvcomp REQUIRED PATHS "${NVCOMP_DIR}/lib/cmake/nvcomp")
 
 add_library(clp_s_gpu
+        ${GPU_BASE}/common/cuda/CudaWarmup.cpp
+        ${GPU_BASE}/common/cuda/CudaWarmup.hpp
         ${GPU_BASE}/common/cuda/Transfer.cpp
         ${GPU_BASE}/common/cuda/Transfer.hpp
         ${GPU_BASE}/common/cuda/NvcompDecompress.cpp
         ${GPU_BASE}/common/cuda/NvcompDecompress.hpp
+        ${GPU_BASE}/common/cuda/StreamOrderedAllocator.hpp
         ${GPU_BASE}/bitmap/cuda/Scan.cu
         ${GPU_BASE}/bitmap/cuda/Scan.hpp
         ${GPU_BASE}/encoded_buffer/cuda/Scan.cpp
@@ -27,6 +30,5 @@ target_include_directories(
         ${GPU_BASE}/bitmap/cuda
         ${GPU_BASE}/encoded_buffer/cuda
         ${GPU_BASE}
-        ${NVCOMP_DIR}/include
 )
 set_target_properties(clp_s_gpu PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)

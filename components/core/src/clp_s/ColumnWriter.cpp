@@ -23,7 +23,7 @@ size_t Int64ColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(int64_t);
 }
 
-void Int64ColumnWriter::store(ChunkedZstdCompressor& compressor) {
+void Int64ColumnWriter::store(ChunkedCompressorWrapper& compressor) {
     size_t size = m_values.size() * sizeof(int64_t);
     compressor.write(reinterpret_cast<char const*>(m_values.data()), size);
 }
@@ -38,7 +38,7 @@ size_t DeltaEncodedInt64ColumnWriter::add_value(ParsedMessage::variable_t& value
     return add_value(std::get<int64_t>(value));
 }
 
-void DeltaEncodedInt64ColumnWriter::store(ChunkedZstdCompressor& compressor) {
+void DeltaEncodedInt64ColumnWriter::store(ChunkedCompressorWrapper& compressor) {
     size_t size = m_values.size() * sizeof(int64_t);
     compressor.write(reinterpret_cast<char const*>(m_values.data()), size);
 }
@@ -48,7 +48,7 @@ size_t FloatColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(double);
 }
 
-void FloatColumnWriter::store(ChunkedZstdCompressor& compressor) {
+void FloatColumnWriter::store(ChunkedCompressorWrapper& compressor) {
     size_t size = m_values.size() * sizeof(double);
     compressor.write(reinterpret_cast<char const*>(m_values.data()), size);
 }
@@ -60,7 +60,7 @@ size_t FormattedFloatColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(double) + sizeof(float_format_t);
 }
 
-void FormattedFloatColumnWriter::store(ChunkedZstdCompressor& compressor) {
+void FormattedFloatColumnWriter::store(ChunkedCompressorWrapper& compressor) {
     assert(m_formats.size() == m_values.size());
     auto const values_size = m_values.size() * sizeof(double);
     auto const format_size = m_formats.size() * sizeof(float_format_t);
@@ -75,7 +75,7 @@ size_t DictionaryFloatColumnWriter::add_value(ParsedMessage::variable_t& value) 
     return sizeof(clp::variable_dictionary_id_t);
 }
 
-void DictionaryFloatColumnWriter::store(ChunkedZstdCompressor& compressor) {
+void DictionaryFloatColumnWriter::store(ChunkedCompressorWrapper& compressor) {
     auto size{m_var_dict_ids.size() * sizeof(clp::variable_dictionary_id_t)};
     compressor.write(reinterpret_cast<char const*>(m_var_dict_ids.data()), size);
 }
@@ -85,7 +85,7 @@ size_t BooleanColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(uint8_t);
 }
 
-void BooleanColumnWriter::store(ChunkedZstdCompressor& compressor) {
+void BooleanColumnWriter::store(ChunkedCompressorWrapper& compressor) {
     size_t size = m_values.size() * sizeof(uint8_t);
     compressor.write(reinterpret_cast<char const*>(m_values.data()), size);
 
@@ -153,7 +153,7 @@ size_t ClpStringColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(int64_t) + sizeof(int64_t) * (m_encoded_vars.size() - offset);
 }
 
-void ClpStringColumnWriter::store(ChunkedZstdCompressor& compressor) {
+void ClpStringColumnWriter::store(ChunkedCompressorWrapper& compressor) {
     size_t logtypes_size = m_logtypes.size() * sizeof(int64_t);
     compressor.write(reinterpret_cast<char const*>(m_logtypes.data()), logtypes_size);
     size_t encoded_vars_size = m_encoded_vars.size() * sizeof(int64_t);
@@ -169,7 +169,7 @@ size_t VariableStringColumnWriter::add_value(ParsedMessage::variable_t& value) {
     return sizeof(clp::variable_dictionary_id_t);
 }
 
-void VariableStringColumnWriter::store(ChunkedZstdCompressor& compressor) {
+void VariableStringColumnWriter::store(ChunkedCompressorWrapper& compressor) {
     auto size{m_var_dict_ids.size() * sizeof(clp::variable_dictionary_id_t)};
     compressor.write(reinterpret_cast<char const*>(m_var_dict_ids.data()), size);
 }
@@ -181,7 +181,7 @@ auto TimestampColumnWriter::add_value(ParsedMessage::variable_t& value) -> size_
     return encoded_timestamp_size + sizeof(uint64_t);
 }
 
-void TimestampColumnWriter::store(ChunkedZstdCompressor& compressor) {
+void TimestampColumnWriter::store(ChunkedCompressorWrapper& compressor) {
     m_timestamps.store(compressor);
     size_t const encodings_size{m_timestamp_encodings.size() * sizeof(uint64_t)};
     compressor.write(reinterpret_cast<char const*>(m_timestamp_encodings.data()), encodings_size);

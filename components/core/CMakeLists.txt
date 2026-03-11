@@ -366,6 +366,8 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/ArchiveReaderAdaptor.hpp
     src/clp_s/ArchiveWriter.cpp
     src/clp_s/ArchiveWriter.hpp
+    src/clp_s/ChunkedGdeflateCompressor.cpp
+    src/clp_s/ChunkedGdeflateCompressor.hpp
     src/clp_s/ChunkedZstdCompressor.cpp
     src/clp_s/ChunkedZstdCompressor.hpp
     src/clp_s/ColumnReader.cpp
@@ -782,6 +784,8 @@ set(SOURCE_FILES_unitTest
         tests/test-Utils.cpp
         )
 
+find_package(nvcomp REQUIRED PATHS "${NVCOMP_DIR}/lib/cmake/nvcomp")
+
 if(CLP_ENABLE_TESTS)
     add_executable(unitTest
             ${SOURCE_FILES_unitTest}
@@ -826,6 +830,7 @@ if(CLP_ENABLE_TESTS)
             clp::string_utils
             ystdlib::containers
             ystdlib::error_handling
+            nvcomp::nvcomp_cpu_static
             ${zstd_TARGET}
             )
     target_compile_features(unitTest

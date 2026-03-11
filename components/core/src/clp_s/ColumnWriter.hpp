@@ -11,7 +11,7 @@
 #include "ParsedMessage.hpp"
 #include "TimestampDictionaryWriter.hpp"
 #include "../clp/EncodedVariableInterpreter.hpp"
-#include "ChunkedZstdCompressor.hpp"
+#include "ChunkedCompressorWrapper.hpp"
 #include "ZstdCompressor.hpp"
 
 namespace clp_s {
@@ -34,7 +34,7 @@ public:
      * Stores the column to a compressed file.
      * @param compressor
      */
-    virtual void store(ChunkedZstdCompressor& compressor) = 0;
+    virtual void store(ChunkedCompressorWrapper& compressor) = 0;
 
     /**
      * Returns the total size of the header data that will be written to the compressor. This header
@@ -67,7 +67,7 @@ public:
     // Methods inherited from BaseColumnWriter
     size_t add_value(ParsedMessage::variable_t& value) override;
 
-    void store(ChunkedZstdCompressor& compressor) override;
+    void store(ChunkedCompressorWrapper& compressor) override;
 
 private:
     std::vector<int64_t> m_values;
@@ -87,7 +87,7 @@ public:
     // Methods inherited from BaseColumnWriter
     size_t add_value(ParsedMessage::variable_t& value) override;
 
-    void store(ChunkedZstdCompressor& compressor) override;
+    void store(ChunkedCompressorWrapper& compressor) override;
 
 private:
     std::vector<int64_t> m_values;
@@ -105,7 +105,7 @@ public:
     // Methods inherited from BaseColumnWriter
     size_t add_value(ParsedMessage::variable_t& value) override;
 
-    void store(ChunkedZstdCompressor& compressor) override;
+    void store(ChunkedCompressorWrapper& compressor) override;
 
 private:
     std::vector<double> m_values;
@@ -122,7 +122,7 @@ public:
     // Methods inherited from BaseColumnWriter
     size_t add_value(ParsedMessage::variable_t& value) override;
 
-    void store(ChunkedZstdCompressor& compressor) override;
+    void store(ChunkedCompressorWrapper& compressor) override;
 
 private:
     std::vector<double> m_values;
@@ -142,7 +142,7 @@ public:
     // Methods inherited from BaseColumnWriter
     size_t add_value(ParsedMessage::variable_t& value) override;
 
-    void store(ChunkedZstdCompressor& compressor) override;
+    void store(ChunkedCompressorWrapper& compressor) override;
 
 private:
     std::shared_ptr<VariableDictionaryWriter> m_var_dict;
@@ -160,7 +160,7 @@ public:
     // Methods inherited from BaseColumnWriter
     size_t add_value(ParsedMessage::variable_t& value) override;
 
-    void store(ChunkedZstdCompressor& compressor) override;
+    void store(ChunkedCompressorWrapper& compressor) override;
 
 private:
     std::vector<uint8_t> m_values;
@@ -187,7 +187,7 @@ public:
     // Methods inherited from BaseColumnWriter
     size_t add_value(ParsedMessage::variable_t& value) override;
 
-    void store(ChunkedZstdCompressor& compressor) override;
+    void store(ChunkedCompressorWrapper& compressor) override;
 
     size_t get_total_header_size() const override { return sizeof(size_t); }
 
@@ -244,7 +244,7 @@ public:
     // Methods inherited from BaseColumnWriter
     size_t add_value(ParsedMessage::variable_t& value) override;
 
-    void store(ChunkedZstdCompressor& compressor) override;
+    void store(ChunkedCompressorWrapper& compressor) override;
 
 private:
     std::shared_ptr<VariableDictionaryWriter> m_var_dict;
@@ -262,7 +262,7 @@ public:
     // Methods inherited from BaseColumnWriter
     auto add_value(ParsedMessage::variable_t& value) -> size_t override;
 
-    void store(ChunkedZstdCompressor& compressor) override;
+    void store(ChunkedCompressorWrapper& compressor) override;
 
 private:
     DeltaEncodedInt64ColumnWriter m_timestamps;

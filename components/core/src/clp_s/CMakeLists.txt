@@ -1,3 +1,5 @@
+find_package(nvcomp REQUIRED PATHS "${NVCOMP_DIR}/lib/cmake/nvcomp")
+
 add_subdirectory(indexer)
 add_subdirectory(log_converter)
 add_subdirectory(search)
@@ -236,6 +238,9 @@ set(
         archive_constants.hpp
         ArchiveWriter.cpp
         ArchiveWriter.hpp
+        ChunkedCompressorWrapper.hpp
+        ChunkedGdeflateCompressor.cpp
+        ChunkedGdeflateCompressor.hpp
         ChunkedZstdCompressor.cpp
         ChunkedZstdCompressor.hpp
         ColumnWriter.cpp
@@ -292,6 +297,7 @@ if(CLP_BUILD_CLP_S_ARCHIVEWRITER)
                 clp_s::timestamp_pattern
                 msgpack-cxx
                 nlohmann_json::nlohmann_json
+                nvcomp::nvcomp_cpu_static
                 simdjson::simdjson
                 ystdlib::error_handling
                 PRIVATE
@@ -357,6 +363,7 @@ if(CLP_BUILD_CLP_S_ARCHIVEREADER)
                 clp_s::timestamp_pattern
                 msgpack-cxx
                 nlohmann_json::nlohmann_json
+                nvcomp::nvcomp_cpu_static
                 ystdlib::error_handling
                 PRIVATE
                 Boost::url

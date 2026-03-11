@@ -8,14 +8,14 @@ cudaError_t copy_to_device(void const* src, size_t size, DeviceBuffer& out) {
     }
 
     void* device_ptr = nullptr;
-    cudaError_t status = cudaMalloc(&device_ptr, size);
+    cudaError_t status = cudaMallocAsync(&device_ptr, size, 0);
     if (cudaSuccess != status) {
         return status;
     }
 
-    status = cudaMemcpy(device_ptr, src, size, cudaMemcpyHostToDevice);
+    status = cudaMemcpyAsync(device_ptr, src, size, cudaMemcpyHostToDevice, 0);
     if (cudaSuccess != status) {
-        (void)cudaFree(device_ptr);
+        (void)cudaFreeAsync(device_ptr, 0);
         return status;
     }
 
@@ -27,7 +27,7 @@ cudaError_t copy_to_device(void const* src, size_t size, DeviceBuffer& out) {
 cudaError_t free_device_buffer(DeviceBuffer& buf) {
     cudaError_t status = cudaSuccess;
     if (nullptr != buf.ptr) {
-        status = cudaFree(buf.ptr);
+        status = cudaFreeAsync(buf.ptr, 0);
     }
     buf = {};
     return status;
@@ -39,10 +39,14 @@ cudaError_t copy_to_host(DeviceBuffer const& src, void** out_host_ptr) {
         return cudaSuccess;
     }
 
-    auto* host_data = new char[src.size];
-    auto status = cudaMemcpy(host_data, src.ptr, src.size, cudaMemcpyDeviceToHost);
+    void* host_data = nullptr;
+    auto status = cudaMallocHost(&host_data, src.size);
     if (cudaSuccess != status) {
-        delete[] host_data;
+        return status;
+    }
+    status = cudaMemcpyAsync(host_data, src.ptr, src.size, cudaMemcpyDeviceToHost, 0);
+    if (cudaSuccess != status) {
+        cudaFreeHost(host_data);
         return status;
     }
 
@@ -50,5 +54,7 @@ cudaError_t copy_to_host(DeviceBuffer const& src, void** out_host_ptr) {
     return cudaSuccess;
 }
 
-void free_host_buffer(char* buffer) { delete[] buffer; }
+void free_host_buffer(char* buffer) { cudaFreeHost(buffer); }
+
+void sync_default_stream() { cudaStreamSynchronize(0); }
 }  // namespace clp_s::gpu

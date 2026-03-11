@@ -207,6 +207,7 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
             po::options_description compression_options("Compression options");
             std::string input_path_list_file_path;
             std::string auth{cNoAuth};
+            std::string compression_codec_str;
             // clang-format off
             compression_options.add_options()(
                     "compression-level",
@@ -265,6 +266,12 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                     "structurize-clp-strings",
                     po::bool_switch(&m_structurize_clp_strings),
                     "Decompose ClpString columns into fixed-width Integer sub-columns."
+            )(
+                    "compression-codec",
+                    po::value<std::string>(&compression_codec_str)
+                        ->value_name("CODEC")
+                        ->default_value("zstd"),
+                    "Compression codec for table data: zstd (default) or gdeflate."
             )(
                     "disable-log-order",
                     po::bool_switch(&m_disable_log_order),
@@ -338,6 +345,17 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
             }
 
             validate_network_auth(auth, m_network_auth);
+
+            if ("zstd" == compression_codec_str) {
+                m_compression_codec = ArchiveCompressionType::Zstd;
+            } else if ("gdeflate" == compression_codec_str) {
+                m_compression_codec = ArchiveCompressionType::Gdeflate;
+            } else {
+                throw std::invalid_argument(
+                        "Invalid --compression-codec '" + compression_codec_str
+                        + "'. Valid options: zstd, gdeflate"
+                );
+            }
         } else if ((char)Command::Extract == command_input) {
             po::options_description extraction_options;
             std::string archive_path;
@@ -553,6 +571,12 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                     ->default_value(m_schema_path)
                     ->value_name("PATH"),
                 "Path to log-surgeon schema used to enable DFA query planning"
+            )(
+                "threads",
+                po::value<size_t>(&m_num_threads)
+                    ->default_value(m_num_threads)
+                    ->value_name("N"),
+                "Number of threads for parallel decompression and scanning (default: 1)"
             );
             // clang-format on
             search_options.add(match_options);

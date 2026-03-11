@@ -13,6 +13,7 @@
 #include "ChunkedZstdCompressor.hpp"
 #include "Defs.hpp"
 #include "InputConfig.hpp"
+#include "SingleFileArchiveDefs.hpp"
 
 namespace clp_s {
 class CommandLineArguments {
@@ -138,6 +139,10 @@ public:
 
     size_t get_chunk_size() const { return m_chunk_size; }
 
+    size_t get_num_threads() const { return m_num_threads; }
+
+    ArchiveCompressionType get_compression_codec() const { return m_compression_codec; }
+
     std::vector<std::string> const& get_projection_columns() const { return m_projection_columns; }
 
     bool get_record_log_order() const { return false == m_disable_log_order; }
@@ -228,6 +233,8 @@ private:
     size_t m_minimum_table_size{1ULL * 1024 * 1024};  // 1 MiB
     size_t m_chunk_size{ChunkedZstdCompressor::cDefaultChunkSize};
     bool m_disable_log_order{false};
+    size_t m_num_threads{1};
+    ArchiveCompressionType m_compression_codec{ArchiveCompressionType::Zstd};
 
     // MongoDB configuration variables
     std::string m_mongodb_uri;

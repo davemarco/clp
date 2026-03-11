@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "../../../SchemaReader.hpp"
+#include "../../../ThreadPool.hpp"
 #include "../../common/host/ScanRequest.hpp"
 
 namespace clp_s::gpu {
@@ -20,7 +21,9 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
         SchemaReader& reader,
         std::vector<ScanClause> const& clauses,
         std::span<ColumnDesc const> columns,
-        std::vector<uint8_t>& out_bitmap
+        std::vector<uint8_t>& out_bitmap,
+        size_t num_threads = 1,
+        clp_s::ThreadPool* thread_pool = nullptr
 );
 }  // namespace clp_s::gpu
 

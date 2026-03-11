@@ -47,6 +47,13 @@ cudaError_t copy_to_host(DeviceBuffer const& src, void** out_host_ptr);
 void free_host_buffer(char* buffer);
 
 /**
+ * Synchronizes the default CUDA stream (stream 0), ensuring all previously
+ * queued GPU work — including async copies — has completed.
+ * Call before accessing host buffers filled by copy_to_host.
+ */
+void sync_default_stream();
+
+/**
  * RAII wrapper around DeviceBuffer that calls cudaFree on destruction.
  * Move-only; the moved-from guard's pointer is set to nullptr.
  */

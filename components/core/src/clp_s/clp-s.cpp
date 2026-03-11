@@ -35,6 +35,7 @@
 #include "search/EvaluateRangeIndexFilters.hpp"
 #include "search/EvaluateTimestampIndex.hpp"
 #include "search/kql/kql.hpp"
+#include "gpu/common/cuda/CudaWarmup.hpp"
 #include "search/Output.hpp"
 #include "SearchTiming.hpp"
 #include "search/OutputHandler.hpp"
@@ -102,6 +103,7 @@ bool compress(CommandLineArguments const& command_line_arguments) {
     option.max_document_size = command_line_arguments.get_max_document_size();
     option.min_table_size = command_line_arguments.get_minimum_table_size();
     option.chunk_size = command_line_arguments.get_chunk_size();
+    option.compression_codec = command_line_arguments.get_compression_codec();
     option.compression_level = command_line_arguments.get_compression_level();
     option.timestamp_key = command_line_arguments.get_timestamp_key();
     option.print_archive_stats = command_line_arguments.print_archive_stats();
@@ -293,7 +295,8 @@ bool search_archive(
             std::move(output_handler),
             command_line_arguments.get_ignore_case(),
             command_line_arguments.get_scan_mode(),
-            command_line_arguments.get_schema_path()
+            command_line_arguments.get_schema_path(),
+            command_line_arguments.get_num_threads()
     );
     return output.filter();
 }
@@ -357,6 +360,17 @@ int main(int argc, char const* argv[]) {
             return 1;
         }
     } else {
+        /*** GPU integration start ***/
+        // Launch CUDA context init as early as possible so the ~300-500ms
+        // driver init overlaps with query parsing, archive open, AST passes,
+        // schema matching, and dictionary loading.
+        if (command_line_arguments.get_scan_mode()
+            == CommandLineArguments::ScanMode::Gpu)
+        {
+            clp_s::gpu::launch_cuda_warmup();
+        }
+        /*** GPU integration end ***/
+
         auto const& query = command_line_arguments.get_query();
         auto query_stream = std::istringstream(query);
         auto expr = kql::parse_kql_expression(query_stream);
@@ -385,6 +399,7 @@ int main(int argc, char const* argv[]) {
         }
 
         auto archive_reader = std::make_shared<clp_s::ArchiveReader>();
+        archive_reader->set_num_threads(command_line_arguments.get_num_threads());
         for (auto const& input_path : command_line_arguments.get_input_paths()) {
             if (std::string::npos != input_path.path.find(clp::ir::cIrFileExtension)) {
                 auto const result{clp_s::search_kv_ir_stream(

@@ -7,6 +7,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -112,15 +113,18 @@ public:
            LogTypeDictionaryReaderType const& logtype_dict,
            VariableDictionaryReaderType const& var_dict,
            bool ignore_case) -> std::vector<SubQuery> {
+        // Try the fast O(n) tokenizer first (succeeds for queries without interior wildcards).
+        auto fast_result = fast_tokenize_query(search_string);
+        if (fast_result.has_value()) {
+            return generate_schema_sub_queries(
+                    *fast_result, logtype_dict, var_dict, ignore_case
+            );
+        }
+        // Fast path declined — fall back to log-surgeon's slow path.
         log_surgeon::wildcard_query_parser::Query const query{search_string};
-        auto const interpretations{query.get_all_multi_token_interpretations(lexer)};
-        auto const normalized_interpretations{normalize_interpretations(interpretations)};
-        return generate_schema_sub_queries(
-                normalized_interpretations,
-                logtype_dict,
-                var_dict,
-                ignore_case
-        );
+        auto const raw_interpretations{query.get_all_multi_token_interpretations(lexer)};
+        auto const interpretations = normalize_interpretations(raw_interpretations);
+        return generate_schema_sub_queries(interpretations, logtype_dict, var_dict, ignore_case);
     }
 
 private:
@@ -172,6 +176,23 @@ private:
             bool ignore_case,
             size_t max_encodable_wildcard_variables = 16
     ) -> std::vector<SubQuery>;
+
+    /**
+     * Fast O(n) tokenizer for queries without interior wildcards. Uses
+     * ir::get_bounds_of_next_var (the same heuristic used at compression time) to find
+     * variables and classifies each deterministically as int/float/dict-var.
+     *
+     * Handles optional leading/trailing wildcards as long as they are separated from the
+     * literal body by a delimiter. Bails to nullopt for interior wildcards or boundary
+     * wildcards adjacent to non-delimiters.
+     *
+     * @param search_string The raw query string (may contain escape sequences and wildcards).
+     * @return A set containing the single deterministic interpretation, or std::nullopt if the
+     *         query cannot be handled by the fast path (caller should fall back to log-surgeon).
+     */
+    static auto fast_tokenize_query(
+            std::string const& search_string
+    ) -> std::optional<std::set<log_surgeon::wildcard_query_parser::QueryInterpretation>>;
 
     /**
      * Scans the interpretation and returns the indices of all encodable wildcard variables.

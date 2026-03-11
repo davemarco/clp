@@ -35,6 +35,7 @@ struct JsonParserOption {
     size_t max_document_size{};
     size_t min_table_size{};
     size_t chunk_size{ChunkedZstdCompressor::cDefaultChunkSize};
+    ArchiveCompressionType compression_codec{ArchiveCompressionType::Zstd};
     int compression_level{};
     bool print_archive_stats{};
     bool structurize_arrays{};
