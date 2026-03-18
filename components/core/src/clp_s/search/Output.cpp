@@ -5,6 +5,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -44,6 +45,81 @@ using clp_s::search::ast::OrExpr;
 
 #define eval(op, a, b) (((op) == FilterOperation::EQ) ? ((a) == (b)) : ((a) != (b)))
 
+namespace {
+/**
+ * Collects unique stream IDs from matched schemas, reads their compressed data,
+ * and decompresses all of them in a single GPU batch call.
+ *
+ * @return Map from stream_id to byte offset in device_buffer, or empty on failure.
+ */
+std::unordered_map<size_t, size_t> decompress_matched_streams_gpu(
+        clp_s::ArchiveReader& archive_reader,
+        std::vector<int32_t> const& matched_schemas,
+        clp_s::ArchiveCompressionType archive_codec,
+        clp_s::gpu::NvcompDecompressContext& decompress_ctx,
+        clp_s::gpu::DeviceBuffer& device_buffer,
+        clp_s::SearchTiming& timing
+) {
+    // Collect unique stream IDs in order from matched schemas
+    std::vector<size_t> all_stream_ids;
+    {
+        std::unordered_set<size_t> seen;
+        for (int32_t sid : matched_schemas) {
+            size_t stream_id = archive_reader.get_schema_metadata(sid).stream_id;
+            if (seen.insert(stream_id).second) {
+                all_stream_ids.push_back(stream_id);
+            }
+        }
+    }
+
+    // Read all compressed streams from disk
+    auto const io_start = clp_s::SearchTiming::Clock::now();
+    std::vector<std::shared_ptr<char[]>> compressed_bufs(all_stream_ids.size());
+    std::vector<size_t> compressed_sizes(all_stream_ids.size());
+    for (size_t i = 0; i < all_stream_ids.size(); ++i) {
+        archive_reader.read_stream_compressed(
+                all_stream_ids[i], compressed_bufs[i], compressed_sizes[i]
+        );
+    }
+    timing.add_compressed_io(clp_s::SearchTiming::Clock::now() - io_start);
+
+    // Build batch input descriptors
+    std::vector<clp_s::gpu::NvcompDecompressContext::StreamInput> batch_inputs;
+    batch_inputs.reserve(all_stream_ids.size());
+    for (size_t i = 0; i < all_stream_ids.size(); ++i) {
+        auto const& packed_meta = archive_reader.get_packed_stream_metadata(all_stream_ids[i]);
+        batch_inputs.push_back({
+                compressed_bufs[i].get(),
+                compressed_sizes[i],
+                &packed_meta.chunk_compressed_sizes,
+                packed_meta.chunk_size,
+                packed_meta.uncompressed_size,
+        });
+    }
+
+    // Decompress all streams in one batch
+    auto const decompress_start = clp_s::SearchTiming::Clock::now();
+    std::vector<size_t> offsets;
+    auto status = decompress_ctx.decompress_batch(
+            batch_inputs, archive_codec, device_buffer, offsets
+    );
+    compressed_bufs.clear();
+
+    if (cudaSuccess != status) {
+        SPDLOG_ERROR("Batched GPU decompression failed: {}", cudaGetErrorString(status));
+        return {};
+    }
+    timing.add_schema_table_load(clp_s::SearchTiming::Clock::now() - decompress_start);
+
+    // Build stream_id -> byte offset map
+    std::unordered_map<size_t, size_t> stream_batch_offsets;
+    for (size_t i = 0; i < all_stream_ids.size(); ++i) {
+        stream_batch_offsets[all_stream_ids[i]] = offsets[i];
+    }
+    return stream_batch_offsets;
+}
+}  // namespace
+
 namespace clp_s::search {
 using ScanMode = CommandLineArguments::ScanMode;
 
@@ -63,6 +139,7 @@ bool Output::filter() {
     auto const table_metadata_start = SearchTiming::Clock::now();
     m_archive_reader->read_metadata();
     timing.add_table_metadata_load(SearchTiming::Clock::now() - table_metadata_start);
+
     for (auto schema_id : m_archive_reader->get_schema_ids()) {
         if (m_match->schema_matched(schema_id)) {
             matched_schemas.push_back(schema_id);
@@ -151,18 +228,26 @@ bool Output::filter() {
     // archive open / AST passes to maximize overlap with the ~300-500ms driver init).
     clp_s::gpu::wait_for_cuda_warmup();
 
-    // State for stream-batched GPU decompression
     clp_s::gpu::NvcompDecompressContext decompress_ctx;
-    clp_s::gpu::DeviceBuffer device_stream{};
-    size_t current_gpu_stream_id = SIZE_MAX;
-    std::shared_ptr<char[]> compressed_buf;
-    size_t compressed_buf_size{0};
+    clp_s::gpu::DeviceBuffer device_buffer{};
 
-    // TODO: Pre-filter matched_schemas by SCLP var column count before this loop. Store
-    // logtype var counts in each SubQuery (entry->get_num_variables()), then remove schemas
-    // whose StructuredClpString group length (Schema::get_unordered_object_length - 1) doesn't
-    // match any subquery. This skips whole streams with no matching schemas at no I/O cost.
-    for (int32_t schema_id : matched_schemas) {
+    auto const archive_codec = static_cast<ArchiveCompressionType>(
+            m_archive_reader->get_header().compression_type
+    );
+
+    // For GPU mode: decompress all matched streams in one batch before the schema loop.
+    std::unordered_map<size_t, size_t> stream_batch_offsets;
+    if (m_scan_mode == ScanMode::Gpu && false == matched_schemas.empty()) {
+        stream_batch_offsets = decompress_matched_streams_gpu(
+                *m_archive_reader, matched_schemas, archive_codec,
+                decompress_ctx, device_buffer, timing
+        );
+        if (stream_batch_offsets.empty()) {
+            return false;
+        }
+    }
+
+    for (int32_t const schema_id : matched_schemas) {
         if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
             continue;
         }
@@ -203,51 +288,6 @@ bool Output::filter() {
             // initialize_filter → QueryRunner::init → populate_sclp_columns
             // sees the current schema's StructuredClpStringReaders.
             if (m_scan_mode == ScanMode::Gpu) {
-                size_t const stream_id = schema_meta.stream_id;
-                if (stream_id != current_gpu_stream_id) {
-                    device_stream = {};
-                    current_gpu_stream_id = stream_id;
-
-                    auto const& packed_meta
-                            = m_archive_reader->get_packed_stream_metadata(stream_id);
-
-                    auto const io_start = SearchTiming::Clock::now();
-                    m_archive_reader->read_stream_compressed(
-                            stream_id,
-                            compressed_buf,
-                            compressed_buf_size
-                    );
-                    timing.add_compressed_io(SearchTiming::Clock::now() - io_start);
-
-                    auto const decompress_start = SearchTiming::Clock::now();
-                    std::string decompress_error;
-                    auto const archive_codec = static_cast<ArchiveCompressionType>(
-                            m_archive_reader->get_header().compression_type
-                    );
-                    if (0
-                        != clp_s::gpu::decompress_stream_to_device(
-                                decompress_ctx,
-                                compressed_buf.get(),
-                                compressed_buf_size,
-                                packed_meta.chunk_compressed_sizes,
-                                packed_meta.chunk_size,
-                                packed_meta.uncompressed_size,
-                                device_stream,
-                                decompress_error,
-                                archive_codec
-                        ))
-                    {
-                        SPDLOG_ERROR(
-                                "GPU stream decompression failed: {}",
-                                decompress_error
-                        );
-                        return false;
-                    }
-                    timing.add_schema_table_load(
-                            SearchTiming::Clock::now() - decompress_start
-                    );
-                }
-
                 scan_reader_ptr = &m_archive_reader->init_schema_table(
                         schema_id,
                         m_output_handler->should_output_metadata(),
@@ -329,6 +369,13 @@ bool Output::filter() {
             case ScanMode::Gpu: {
                 auto& reader = *scan_reader_ptr;
 
+                // Compute this schema's offset in the batched decompressed buffer:
+                // batch offset (where this stream starts) + stream_offset (where this
+                // schema's table starts within the stream).
+                size_t const batch_offset
+                        = stream_batch_offsets.at(schema_meta.stream_id)
+                          + schema_meta.stream_offset;
+
                 auto const scan_start = SearchTiming::Clock::now();
                 clp_s::gpu::EncodedBuffer encoded_buffer;
                 std::string error_message;
@@ -338,10 +385,10 @@ bool Output::filter() {
                             clauses,
                             encoded_buffer,
                             error_message,
-                            device_stream.ptr,
-                            device_stream.size,
+                            device_buffer.ptr,
+                            device_buffer.size,
                             column_descs,
-                            schema_meta.stream_offset
+                            batch_offset
                     ))
                 {
                     SPDLOG_ERROR("GPU encoded buffer scan failed: {}", error_message);
@@ -451,7 +498,7 @@ bool Output::filter() {
             );
             return false;
         }
-    }
+    }  // end schema loop
     auto ecode = m_output_handler->finish();
     if (ErrorCode::ErrorCodeSuccess != ecode) {
         SPDLOG_ERROR(

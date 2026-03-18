@@ -325,4 +325,175 @@ cudaError_t NvcompDecompressContext::decompress(
     return cudaSuccess;
 }
 
+cudaError_t NvcompDecompressContext::decompress_batch(
+        std::vector<StreamInput> const& streams,
+        ArchiveCompressionType codec,
+        DeviceBuffer& out_view,
+        std::vector<size_t>& stream_offsets
+) {
+    if (streams.empty()) {
+        return cudaErrorInvalidValue;
+    }
+
+    bool const use_gdeflate = ArchiveCompressionType::Gdeflate == codec;
+    cudaStream_t const cuda_stream = 0;
+
+    // Compute totals across all streams
+    size_t total_compressed = 0;
+    size_t total_uncompressed = 0;
+    size_t total_chunks = 0;
+    stream_offsets.resize(streams.size());
+    for (size_t s = 0; s < streams.size(); ++s) {
+        stream_offsets[s] = total_uncompressed;
+        total_compressed += streams[s].compressed_size;
+        total_uncompressed += streams[s].uncompressed_size;
+        total_chunks += streams[s].chunk_compressed_sizes->size();
+    }
+
+    // 1. Ensure device buffers
+    auto status = ensure_device(m_d_decompressed, m_d_decompressed_cap, total_uncompressed);
+    if (cudaSuccess != status) {
+        fprintf(stderr, "[gpu] batch alloc decompressed err=%s\n", cudaGetErrorString(status));
+        return status;
+    }
+    status = ensure_arrays(total_chunks);
+    if (cudaSuccess != status) {
+        fprintf(stderr, "[gpu] batch alloc arrays err=%s\n", cudaGetErrorString(status));
+        return status;
+    }
+    status = ensure_device(m_d_compressed, m_d_compressed_cap, total_compressed);
+    if (cudaSuccess != status) {
+        fprintf(stderr, "[gpu] batch alloc compressed err=%s\n", cudaGetErrorString(status));
+        return status;
+    }
+
+    // 2. Copy compressed data to device
+    {
+        size_t dev_offset = 0;
+        for (auto const& s : streams) {
+            status = cudaMemcpy(
+                    static_cast<char*>(m_d_compressed) + dev_offset,
+                    s.host_compressed_buf, s.compressed_size,
+                    cudaMemcpyHostToDevice
+            );
+            if (cudaSuccess != status) break;
+            dev_offset += s.compressed_size;
+        }
+        if (cudaSuccess != status) {
+            fprintf(stderr, "[gpu] batch copy compressed err=%s\n", cudaGetErrorString(status));
+            return status;
+        }
+    }
+
+    // 3. Build chunk metadata arrays spanning all streams
+    std::vector<void const*> h_comp_ptrs(total_chunks);
+    std::vector<size_t> h_comp_sizes(total_chunks);
+    std::vector<void*> h_decomp_ptrs(total_chunks);
+    std::vector<size_t> h_decomp_sizes(total_chunks);
+
+    size_t chunk_idx = 0;
+    size_t comp_offset = 0;
+    size_t decomp_offset = 0;
+    for (auto const& s : streams) {
+        auto const& chunk_sizes = *s.chunk_compressed_sizes;
+        size_t stream_decomp_remaining = s.uncompressed_size;
+        for (size_t c = 0; c < chunk_sizes.size(); ++c) {
+            h_comp_ptrs[chunk_idx] = static_cast<char*>(m_d_compressed) + comp_offset;
+            h_comp_sizes[chunk_idx] = chunk_sizes[c];
+            comp_offset += chunk_sizes[c];
+
+            h_decomp_ptrs[chunk_idx] = static_cast<char*>(m_d_decompressed) + decomp_offset;
+            size_t const decomp_chunk = (stream_decomp_remaining < s.chunk_size)
+                                                ? stream_decomp_remaining
+                                                : s.chunk_size;
+            h_decomp_sizes[chunk_idx] = decomp_chunk;
+            decomp_offset += decomp_chunk;
+            stream_decomp_remaining -= decomp_chunk;
+            ++chunk_idx;
+        }
+    }
+
+    size_t const ptr_bytes = total_chunks * sizeof(void*);
+    size_t const size_bytes = total_chunks * sizeof(size_t);
+
+    status = cudaMemcpyAsync(
+            m_d_comp_ptrs, h_comp_ptrs.data(), ptr_bytes, cudaMemcpyHostToDevice, cuda_stream
+    );
+    if (cudaSuccess != status) return status;
+    status = cudaMemcpyAsync(
+            m_d_comp_sizes, h_comp_sizes.data(), size_bytes, cudaMemcpyHostToDevice, cuda_stream
+    );
+    if (cudaSuccess != status) return status;
+    status = cudaMemcpyAsync(
+            m_d_decomp_ptrs, h_decomp_ptrs.data(), ptr_bytes, cudaMemcpyHostToDevice, cuda_stream
+    );
+    if (cudaSuccess != status) return status;
+    status = cudaMemcpyAsync(
+            m_d_decomp_sizes, h_decomp_sizes.data(), size_bytes, cudaMemcpyHostToDevice, cuda_stream
+    );
+    if (cudaSuccess != status) return status;
+
+    // 4. Get temp workspace size
+    // Use the first stream's chunk_size — all streams in an archive share the same chunk size.
+    uint32_t const chunk_size = streams[0].chunk_size;
+    size_t temp_bytes = 0;
+    nvcompStatus_t nvcomp_status;
+    if (use_gdeflate) {
+        nvcomp_status = nvcompBatchedGdeflateDecompressGetTempSizeAsync(
+                total_chunks, chunk_size, nvcompBatchedGdeflateDecompressDefaultOpts,
+                &temp_bytes, total_uncompressed
+        );
+    } else {
+        nvcomp_status = nvcompBatchedZstdDecompressGetTempSizeAsync(
+                total_chunks, chunk_size, nvcompBatchedZstdDecompressDefaultOpts,
+                &temp_bytes, total_uncompressed
+        );
+    }
+    if (nvcompSuccess != nvcomp_status) {
+        fprintf(stderr, "[gpu] batch get_temp_size err=%d\n", static_cast<int>(nvcomp_status));
+        return cudaErrorUnknown;
+    }
+
+    status = ensure_device(m_d_temp, m_d_temp_cap, temp_bytes);
+    if (cudaSuccess != status) {
+        fprintf(stderr, "[gpu] batch alloc temp err=%s\n", cudaGetErrorString(status));
+        return status;
+    }
+
+    // 5. Launch decompression — one kernel for all chunks from all streams
+    if (use_gdeflate) {
+        nvcomp_status = nvcompBatchedGdeflateDecompressAsync(
+                reinterpret_cast<void const* const*>(m_d_comp_ptrs),
+                m_d_comp_sizes, m_d_decomp_sizes, m_d_actual_sizes,
+                total_chunks, m_d_temp, temp_bytes,
+                reinterpret_cast<void* const*>(m_d_decomp_ptrs),
+                nvcompBatchedGdeflateDecompressDefaultOpts,
+                static_cast<nvcompStatus_t*>(m_d_statuses), cuda_stream
+        );
+    } else {
+        nvcomp_status = nvcompBatchedZstdDecompressAsync(
+                reinterpret_cast<void const* const*>(m_d_comp_ptrs),
+                m_d_comp_sizes, m_d_decomp_sizes, m_d_actual_sizes,
+                total_chunks, m_d_temp, temp_bytes,
+                reinterpret_cast<void* const*>(m_d_decomp_ptrs),
+                nvcompBatchedZstdDecompressDefaultOpts,
+                static_cast<nvcompStatus_t*>(m_d_statuses), cuda_stream
+        );
+    }
+    if (nvcompSuccess != nvcomp_status) {
+        fprintf(stderr, "[gpu] batch decompress err=%d\n", static_cast<int>(nvcomp_status));
+        return cudaErrorUnknown;
+    }
+
+    // 6. One sync for the entire batch
+    status = cudaStreamSynchronize(cuda_stream);
+    if (cudaSuccess != status) {
+        fprintf(stderr, "[gpu] batch sync err=%s\n", cudaGetErrorString(status));
+        return status;
+    }
+    out_view.ptr = m_d_decompressed;
+    out_view.size = total_uncompressed;
+    return cudaSuccess;
+}
+
 }  // namespace clp_s::gpu

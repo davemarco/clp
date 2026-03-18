@@ -54,6 +54,35 @@ public:
      */
     cudaError_t decompress(ChunkedCompressedData const& data, DeviceBuffer& out_view);
 
+    /**
+     * Input descriptor for one stream in a batched decompression.
+     */
+    struct StreamInput {
+        void const* host_compressed_buf;
+        size_t compressed_size;
+        std::vector<uint32_t> const* chunk_compressed_sizes;
+        uint32_t chunk_size;
+        size_t uncompressed_size;
+    };
+
+    /**
+     * Decompresses multiple streams in a single nvcomp batch call.
+     * All chunks from all streams are submitted as one batch, requiring only
+     * one HtoD copy, one kernel launch, and one sync.
+     *
+     * @param streams Per-stream compressed data descriptors.
+     * @param codec Compression codec (Zstd or Gdeflate).
+     * @param[out] out_view Borrowed view into the decompressed buffer.
+     * @param[out] stream_offsets Byte offset where each stream starts in out_view.
+     * @return cudaSuccess on success.
+     */
+    cudaError_t decompress_batch(
+            std::vector<StreamInput> const& streams,
+            ArchiveCompressionType codec,
+            DeviceBuffer& out_view,
+            std::vector<size_t>& stream_offsets
+    );
+
 private:
     // Device buffers — grow-only
     void* m_d_compressed{nullptr};
