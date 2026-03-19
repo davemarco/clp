@@ -32,7 +32,7 @@ public:
     // Methods
     DictionaryIdType get_id() const { return m_id; }
 
-    std::string const& get_value() const { return m_value; }
+    std::string_view get_value() const { return m_value; }
 
 protected:
     // Variables
@@ -55,6 +55,10 @@ public:
 
     // Constructors
     LogTypeDictionaryEntry() : m_init(false) {}
+
+    LogTypeDictionaryEntry(std::string value, clp::logtype_dictionary_id_t id)
+            : DictionaryEntry(std::move(value), id),
+              m_init(false) {}
 
     // Use default copy constructor
     LogTypeDictionaryEntry(LogTypeDictionaryEntry const&) = default;
@@ -155,7 +159,11 @@ public:
      * Writes an entry to a compressed file
      * @param compressor
      */
-    void write_to_file(ZstdCompressor& compressor) const;
+    template <typename CompressorType>
+    void write_to_file(CompressorType& compressor) const {
+        compressor.template write_numeric_value<uint64_t>(m_value.length());
+        compressor.write_string(m_value);
+    }
 
     /**
      * Tries to read an entry from the given decompressor
@@ -198,7 +206,7 @@ private:
     bool m_init{false};
 };
 
-class VariableDictionaryEntry : public DictionaryEntry<clp::variable_dictionary_id_t> {
+class VariableDictionaryEntry {
 public:
     // Types
     class OperationFailed : public TraceableException {
@@ -212,16 +220,14 @@ public:
     VariableDictionaryEntry() = default;
 
     VariableDictionaryEntry(std::string value, clp::variable_dictionary_id_t id)
-            : DictionaryEntry<clp::variable_dictionary_id_t>(std::move(value), id) {}
-
-    // Use default copy constructor
-    VariableDictionaryEntry(VariableDictionaryEntry const&) = default;
-
-    // Assignment operators
-    // Use default
-    VariableDictionaryEntry& operator=(VariableDictionaryEntry const&) = default;
+            : m_value(std::move(value)),
+              m_id(id) {}
 
     // Methods
+    clp::variable_dictionary_id_t get_id() const { return m_id; }
+
+    std::string_view get_value() const { return m_value; }
+
     /**
      * Gets the size (in-memory) of the data contained in this entry
      * @return Size of the data contained in this entry
@@ -237,7 +243,11 @@ public:
      * Writes an entry to a compressed file
      * @param compressor
      */
-    void write_to_file(ZstdCompressor& compressor) const;
+    template <typename CompressorType>
+    void write_to_file(CompressorType& compressor) const {
+        compressor.template write_numeric_value<uint64_t>(m_value.length());
+        compressor.write(m_value.data(), m_value.length());
+    }
 
     /**
      * Tries to read an entry from the given decompressor
@@ -256,6 +266,10 @@ public:
      */
     void
     read_from_file(ZstdDecompressor& decompressor, clp::variable_dictionary_id_t id, bool lazy);
+
+private:
+    std::string m_value;
+    clp::variable_dictionary_id_t m_id{};
 };
 }  // namespace clp_s
 

@@ -512,7 +512,7 @@ bool EncodedVariableInterpreter::decode_variables_into_message(
         SPDLOG_ERROR(
                 "EncodedVariableInterpreter: Logtype '{}' contains {} variables, but {} were given "
                 "for decoding.",
-                logtype_value.c_str(),
+                logtype_value,
                 num_vars,
                 encoded_vars.size()
         );

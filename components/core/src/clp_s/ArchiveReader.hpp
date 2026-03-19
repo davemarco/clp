@@ -29,6 +29,12 @@ public:
                 : TraceableException(error_code, filename, line_number) {}
     };
 
+    struct DictChunkMetadata {
+        uint32_t chunk_size{0};
+        std::vector<uint32_t> chunk_compressed_sizes;
+        bool has_chunks{false};
+    };
+
     // Constructor
     ArchiveReader() : m_is_open(false) {}
 
@@ -55,7 +61,7 @@ public:
      * @return the variable dictionary reader
      */
     std::shared_ptr<VariableDictionaryReader> read_variable_dictionary(bool lazy = false) {
-        m_var_dict->read_entries(lazy);
+        read_dictionary(*m_var_dict, m_var_dict_chunk_meta, lazy);
         return m_var_dict;
     }
 
@@ -65,7 +71,7 @@ public:
      * @return the log type dictionary reader
      */
     std::shared_ptr<LogTypeDictionaryReader> read_log_type_dictionary(bool lazy = false) {
-        m_log_dict->read_entries(lazy);
+        read_dictionary(*m_log_dict, m_log_dict_chunk_meta, lazy);
         return m_log_dict;
     }
 
@@ -75,7 +81,7 @@ public:
      * @return the array dictionary reader
      */
     std::shared_ptr<LogTypeDictionaryReader> read_array_dictionary(bool lazy = false) {
-        m_array_dict->read_entries(lazy);
+        read_dictionary(*m_array_dict, m_array_dict_chunk_meta, lazy);
         return m_array_dict;
     }
 
@@ -89,12 +95,15 @@ public:
      * @param schema_id
      * @param should_extract_timestamp
      * @param should_marshal_records
+     * @param use_absolute_readers When true, delta-encoded and timestamp column readers use
+     * absolute mode.
      * @return the schema reader
      */
     SchemaReader& read_schema_table(
             int32_t schema_id,
             bool should_extract_timestamp,
-            bool should_marshal_records
+            bool should_marshal_records,
+            bool use_absolute_readers = false
     );
 
     /**
@@ -163,12 +172,15 @@ public:
      * @param schema_id
      * @param should_extract_timestamp
      * @param should_marshal_records
+     * @param use_absolute_readers When true, delta-encoded and timestamp column readers use
+     * absolute mode (values are already prefix-summed).
      * @return the schema reader
      */
     SchemaReader& init_schema_table(
             int32_t schema_id,
             bool should_extract_timestamp,
-            bool should_marshal_records
+            bool should_marshal_records,
+            bool use_absolute_readers = false
     );
 
     /**
@@ -208,27 +220,49 @@ public:
 
 private:
     /**
+     * Reads a dictionary, using parallel chunk decompression when metadata is available.
+     */
+    template <typename DictReader>
+    void read_dictionary(DictReader& dict, DictChunkMetadata const& meta, bool lazy) {
+        if (meta.has_chunks && m_num_threads > 1 && false == lazy) {
+            dict.read_entries_parallel(
+                    meta.chunk_size,
+                    meta.chunk_compressed_sizes,
+                    m_num_threads,
+                    m_thread_pool
+            );
+        } else {
+            dict.read_entries(lazy);
+        }
+    }
+
+    /**
      * Initializes a schema reader passed by reference to become a reader for a given schema.
      * @param reader
      * @param schema_id
      * @param should_extract_timestamp
      * @param should_marshal_records
+     * @param use_absolute_readers When true, delta-encoded and timestamp column readers use
+     * absolute mode (values are already prefix-summed).
      */
     void initialize_schema_reader(
             SchemaReader& reader,
             int32_t schema_id,
             bool should_extract_timestamp,
-            bool should_marshal_records
+            bool should_marshal_records,
+            bool use_absolute_readers = false
     );
 
     /**
      * Appends a column to the schema reader.
      * @param reader
      * @param column_id
+     * @param use_absolute_readers
      * @return a pointer to the newly appended column reader or nullptr if no column reader was
      * created
      */
-    BaseColumnReader* append_reader_column(SchemaReader& reader, int32_t column_id);
+    BaseColumnReader*
+    append_reader_column(SchemaReader& reader, int32_t column_id, bool use_absolute_readers = false);
 
     /**
      * Appends columns for the entire schema of an unordered object.
@@ -236,12 +270,14 @@ private:
      * @param mst_subtree_root_node_id
      * @param schema_ids
      * @param should_marshal_records
+     * @param use_absolute_readers
      */
     void append_unordered_reader_columns(
             SchemaReader& reader,
             int32_t mst_subtree_root_node_id,
             std::span<int32_t> schema_ids,
-            bool should_marshal_records
+            bool should_marshal_records,
+            bool use_absolute_readers = false
     );
 
     /**
@@ -261,6 +297,9 @@ private:
     std::shared_ptr<VariableDictionaryReader> m_var_dict;
     std::shared_ptr<LogTypeDictionaryReader> m_log_dict;
     std::shared_ptr<LogTypeDictionaryReader> m_array_dict;
+    DictChunkMetadata m_var_dict_chunk_meta;
+    DictChunkMetadata m_log_dict_chunk_meta;
+    DictChunkMetadata m_array_dict_chunk_meta;
     std::shared_ptr<ArchiveReaderAdaptor> m_archive_reader_adaptor;
 
     std::shared_ptr<SchemaTree> m_schema_tree;

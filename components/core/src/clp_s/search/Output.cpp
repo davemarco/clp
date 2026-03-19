@@ -171,7 +171,7 @@ bool Output::filter() {
     timing.add_dict_load(
             DictionaryType::Variable,
             SearchTiming::Clock::now() - var_dict_start,
-            m_archive_reader->get_variable_dictionary()->get_entries().size()
+            m_archive_reader->get_variable_dictionary()->get_num_entries()
     );
 
     auto const log_dict_start = SearchTiming::Clock::now();
@@ -291,14 +291,16 @@ bool Output::filter() {
                 scan_reader_ptr = &m_archive_reader->init_schema_table(
                         schema_id,
                         m_output_handler->should_output_metadata(),
-                        m_should_marshal_records
+                        m_should_marshal_records,
+                        /*use_absolute_readers=*/true
                 );
             } else {
                 auto const schema_table_start = SearchTiming::Clock::now();
                 scan_reader_ptr = &m_archive_reader->read_schema_table(
                         schema_id,
                         m_output_handler->should_output_metadata(),
-                        m_should_marshal_records
+                        m_should_marshal_records,
+                        /*use_absolute_readers=*/true
                 );
                 timing.add_schema_table_load(
                         SearchTiming::Clock::now() - schema_table_start
@@ -419,9 +421,21 @@ bool Output::filter() {
                         );
                         return false;
                     }
-                    std::string msg;
-                    while (reader.get_next_message(msg)) {
-                        m_output_handler->write(msg);
+                    if (m_num_threads > 1 && m_thread_pool) {
+                        std::vector<std::string> outputs;
+                        reader.serialize_range_parallel(
+                                m_num_threads,
+                                m_thread_pool.get(),
+                                outputs
+                        );
+                        for (auto& chunk : outputs) {
+                            m_output_handler->write(chunk);
+                        }
+                    } else {
+                        std::string msg;
+                        while (reader.get_next_message(msg)) {
+                            m_output_handler->write(msg);
+                        }
                     }
                     timing.add_serialization(
                             SearchTiming::Clock::now() - serialize_start

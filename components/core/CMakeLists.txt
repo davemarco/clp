@@ -370,6 +370,8 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/ChunkedGdeflateCompressor.hpp
     src/clp_s/ChunkedZstdCompressor.cpp
     src/clp_s/ChunkedZstdCompressor.hpp
+    src/clp_s/ChunkDecompressUtils.cpp
+    src/clp_s/ChunkDecompressUtils.hpp
     src/clp_s/ColumnReader.cpp
     src/clp_s/ColumnReader.hpp
     src/clp_s/ColumnWriter.cpp

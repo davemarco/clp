@@ -15,6 +15,7 @@
 #include "JsonSerializer.hpp"
 #include "SchemaTree.hpp"
 #include "StructuredClpStringReader.hpp"
+#include "ThreadPool.hpp"
 #include "search/Projection.hpp"
 #include "ZstdDecompressor.hpp"
 
@@ -216,6 +217,21 @@ public:
      * @return The serialized JSON string.
      */
     [[nodiscard]] auto serialize_message_at(uint64_t message_index) -> std::string;
+
+    /**
+     * Serializes all messages in parallel across multiple threads. Each thread gets its own
+     * copies of the JsonSerializer and StructuredClpStringReader map to avoid shared state.
+     * Requires absolute-mode column readers (no cursor state) for thread safety.
+     * @param num_threads
+     * @param thread_pool
+     * @param per_thread_output Output vector, one string per thread containing all serialized
+     * messages for that thread's partition.
+     */
+    void serialize_range_parallel(
+            size_t num_threads,
+            ThreadPool* thread_pool,
+            std::vector<std::string>& per_thread_output
+    );
     /*** GPU integration end ***/
 
     /**
@@ -319,6 +335,21 @@ public:
     );
 
 private:
+    /**
+     * Serializes a single message using the provided serializer and SCLP reader map.
+     * Shared implementation for both generate_json_string() and serialize_range_parallel().
+     * @param serializer The JsonSerializer to use (may be thread-local copy).
+     * @param sclp_map The StructuredClpStringReader map to use (may be thread-local copy).
+     * @param sclp_index Mutable index into m_structured_clp_string_reader_ids.
+     * @param message_index The row index to serialize.
+     */
+    void generate_json_message(
+            JsonSerializer& serializer,
+            std::unordered_map<int32_t, StructuredClpStringReader>& sclp_map,
+            size_t& sclp_index,
+            uint64_t message_index
+    );
+
     /**
      * Merges the current local schema tree with the section of the global schema tree corresponding
      * to the path from the root of the global schema tree to the node matching the global MPT node

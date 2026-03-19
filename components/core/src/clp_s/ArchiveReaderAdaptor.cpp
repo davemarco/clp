@@ -1,5 +1,6 @@
 #include "ArchiveReaderAdaptor.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -320,6 +321,17 @@ std::unique_ptr<clp::ReaderInterface> ArchiveReaderAdaptor::checkout_reader_for_
     }
 
     return std::make_unique<clp::BoundedReader>(m_reader.get(), next_file_offset);
+}
+
+bool ArchiveReaderAdaptor::has_section(std::string_view section) const {
+    if (m_single_file_archive) {
+        return std::any_of(
+                m_archive_file_info.files.begin(),
+                m_archive_file_info.files.end(),
+                [&](ArchiveFileInfo const& info) { return info.n == section; }
+        );
+    }
+    return std::filesystem::exists(m_archive_path.path + std::string{section});
 }
 
 void ArchiveReaderAdaptor::checkin_reader_for_section(std::string_view section) {

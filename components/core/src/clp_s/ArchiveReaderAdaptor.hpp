@@ -89,6 +89,15 @@ public:
 
     std::vector<RangeIndexEntry> const& get_range_index() const { return m_range_index; }
 
+    /**
+     * Checks whether the archive contains a given section.
+     * For single-file archives, checks the file info list.
+     * For multi-file archives, checks if the file exists on disk.
+     * @param section
+     * @return true if the section exists.
+     */
+    [[nodiscard]] bool has_section(std::string_view section) const;
+
 private:
     /**
      * Tries to read an ArchiveFileInfo packet from the archive metadata.

@@ -319,6 +319,12 @@ private:
     [[nodiscard]] std::pair<size_t, size_t> store_tables();
 
     /**
+     * Writes per-dictionary chunk metadata for parallel decompression.
+     * @return The compressed size of the metadata file, or 0 if no chunks exist.
+     */
+    [[nodiscard]] size_t store_dict_chunk_metadata();
+
+    /**
      * Writes the archive to a single file
      * @param files
      * @return The archive range index as a JSON object.

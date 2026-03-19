@@ -322,6 +322,8 @@ set(
         DictionaryEntry.cpp
         DictionaryEntry.hpp
         DictionaryReader.hpp
+        ChunkDecompressUtils.cpp
+        ChunkDecompressUtils.hpp
         ErrorCode.hpp
         FloatFormatEncoding.cpp
         FloatFormatEncoding.hpp

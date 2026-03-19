@@ -6,6 +6,7 @@
 #include <absl/container/flat_hash_map.h>
 
 #include "../clp/Defs.h"
+#include "ChunkedZstdCompressor.hpp"
 #include "DictionaryEntry.hpp"
 
 namespace clp_s {
@@ -34,14 +35,34 @@ public:
      * @param dictionary_path
      * @param compression_level
      * @param max_id
+     * @param chunk_size Uncompressed chunk size for chunked compression (0 = default)
      */
-    void open(std::string const& dictionary_path, int compression_level, DictionaryIdType max_id);
+    void open(
+            std::string const& dictionary_path,
+            int compression_level,
+            DictionaryIdType max_id,
+            size_t chunk_size = 0
+    );
 
     /**
      * Closes the dictionary
      * @return the compressed size of the dictionary in bytes
      */
     [[nodiscard]] size_t close();
+
+    /**
+     * @return Per-chunk compressed sizes from the chunked compressor.
+     */
+    [[nodiscard]] std::vector<uint32_t> const& get_chunk_compressed_sizes() const {
+        return m_dictionary_compressor.get_chunk_compressed_sizes();
+    }
+
+    /**
+     * @return The uncompressed chunk size used by the compressor.
+     */
+    [[nodiscard]] size_t get_chunk_size() const {
+        return m_dictionary_compressor.get_chunk_size();
+    }
 
     /**
      * Writes the dictionary's header and flushes unwritten content to disk
@@ -63,7 +84,7 @@ protected:
 
     // Variables related to on-disk storage
     FileWriter m_dictionary_file_writer;
-    ZstdCompressor m_dictionary_compressor;
+    ChunkedZstdCompressor m_dictionary_compressor;
 
     value_to_id_t m_value_to_id;
     uint64_t m_next_id{};
@@ -113,7 +134,8 @@ template <typename DictionaryIdType, typename EntryType>
 void DictionaryWriter<DictionaryIdType, EntryType>::open(
         std::string const& dictionary_path,
         int compression_level,
-        DictionaryIdType max_id
+        DictionaryIdType max_id,
+        size_t chunk_size
 ) {
     if (m_is_open) {
         throw OperationFailed(ErrorCodeNotReady, __FILENAME__, __LINE__);
@@ -123,7 +145,11 @@ void DictionaryWriter<DictionaryIdType, EntryType>::open(
     // Write header
     m_dictionary_file_writer.write_numeric_value<uint64_t>(0);
     // Open compressor
-    m_dictionary_compressor.open(m_dictionary_file_writer, compression_level);
+    if (0 == chunk_size) {
+        m_dictionary_compressor.open(m_dictionary_file_writer, compression_level);
+    } else {
+        m_dictionary_compressor.open(m_dictionary_file_writer, compression_level, chunk_size);
+    }
 
     m_next_id = 0;
     m_max_id = max_id;

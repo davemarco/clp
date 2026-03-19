@@ -29,7 +29,7 @@ concept VariableDictionaryReaderReq = requires(
      * @param id
      * @return The value of the dictionary entry with the given Id.
      */
-    { reader.get_value(id) } -> std::same_as<std::string const&>;
+    { reader.get_value(id) } -> std::convertible_to<std::string_view>;
 
     /**
      * Gets entries matching a given variable value.

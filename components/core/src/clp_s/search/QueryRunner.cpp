@@ -1021,23 +1021,22 @@ void QueryRunner::populate_string_queries(std::shared_ptr<Expression> const& exp
             std::unordered_set<int64_t>& matching_vars = m_string_var_match_map[query_string];
             if (false == ast::has_unescaped_wildcards(query_string)) {
                 auto const unescaped_query_string{clp::string_utils::unescape_string(query_string)};
-                auto const entries = m_var_dict->get_entry_matching_value(
+                auto const ids = m_var_dict->get_ids_matching_value(
                         unescaped_query_string,
                         m_ignore_case
                 );
-
-                for (auto const& entry : entries) {
-                    matching_vars.insert(entry->get_id());
+                for (auto const id : ids) {
+                    matching_vars.insert(static_cast<int64_t>(id));
                 }
             } else {
-                std::unordered_set<VariableDictionaryEntry const*> matching_entries;
-                m_var_dict->get_entries_matching_wildcard_string(
+                std::unordered_set<clp::variable_dictionary_id_t> matching_ids;
+                m_var_dict->get_ids_matching_wildcard_string(
                         query_string,
                         m_ignore_case,
-                        matching_entries
+                        matching_ids
                 );
-                for (auto const& entry : matching_entries) {
-                    matching_vars.emplace(entry->get_id());
+                for (auto const id : matching_ids) {
+                    matching_vars.emplace(static_cast<int64_t>(id));
                 }
             }
         }

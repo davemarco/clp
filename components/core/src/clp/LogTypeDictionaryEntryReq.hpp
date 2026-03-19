@@ -88,7 +88,7 @@ concept LogTypeDictionaryEntryReq = requires(
     /**
      * @return The constant part of the logtype.
      */
-    { entry.get_value() } -> std::same_as<std::string const&>;
+    { entry.get_value() } -> std::convertible_to<std::string_view>;
 
     /**
      * @return The number of variables in the constant part of the logtype.

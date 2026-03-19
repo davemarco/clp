@@ -99,7 +99,9 @@ private:
 class DeltaEncodedInt64ColumnReader : public BaseColumnReader {
 public:
     // Constructor
-    explicit DeltaEncodedInt64ColumnReader(int32_t id) : BaseColumnReader(id) {}
+    explicit DeltaEncodedInt64ColumnReader(int32_t id, bool absolute_mode = false)
+            : BaseColumnReader(id),
+              m_absolute_mode(absolute_mode) {}
 
     // Destructor
     ~DeltaEncodedInt64ColumnReader() override = default;
@@ -127,6 +129,7 @@ private:
     UnalignedMemSpan<int64_t> m_values;
     int64_t m_cur_value{};
     size_t m_cur_idx{};
+    bool m_absolute_mode{false};
 };
 
 class FloatColumnReader : public BaseColumnReader {
@@ -387,10 +390,14 @@ private:
 class TimestampColumnReader : public BaseColumnReader {
 public:
     // Constructor
-    TimestampColumnReader(int32_t id, std::shared_ptr<TimestampDictionaryReader> timestamp_dict)
+    TimestampColumnReader(
+            int32_t id,
+            std::shared_ptr<TimestampDictionaryReader> timestamp_dict,
+            bool absolute_mode = false
+    )
             : BaseColumnReader{id},
               m_timestamp_dict{std::move(timestamp_dict)},
-              m_timestamps{id} {}
+              m_timestamps{id, absolute_mode} {}
 
     // Destructor
     ~TimestampColumnReader() override = default;

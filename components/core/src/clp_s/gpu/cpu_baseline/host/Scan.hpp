@@ -14,8 +14,8 @@
 namespace clp_s::gpu {
 /**
  * Runs a CPU bitmap scan over multiple OR-clauses.
- * Prefix-sums delta columns once, scans all clauses, OR-merges, and restores
- * delta encoding.
+ * Prefix-sums all delta columns once, scans all clauses, OR-merges.
+ * Delta columns are left prefix-summed (absolute values) after return.
  */
 ScanCompatError run_cpu_scan_to_bitmap_clauses(
         SchemaReader& reader,

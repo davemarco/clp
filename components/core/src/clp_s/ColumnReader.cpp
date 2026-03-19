@@ -31,6 +31,9 @@ void DeltaEncodedInt64ColumnReader::load(BufferViewReader& reader, uint64_t num_
 }
 
 auto DeltaEncodedInt64ColumnReader::get_value_at_idx(size_t idx) -> int64_t {
+    if (m_absolute_mode) {
+        return m_values[idx];
+    }
     if (m_cur_idx == idx) {
         return m_cur_value;
     }
@@ -121,7 +124,7 @@ void DictionaryFloatColumnReader::load(BufferViewReader& reader, uint64_t num_me
 std::variant<int64_t, double, std::string, uint8_t> DictionaryFloatColumnReader::extract_value(
         uint64_t cur_message
 ) {
-    return std::stod(m_var_dict->get_value(m_var_dict_ids[cur_message]));
+    return std::stod(std::string(m_var_dict->get_value(m_var_dict_ids[cur_message])));
 }
 
 void DictionaryFloatColumnReader::extract_string_value_into_buffer(
@@ -212,7 +215,7 @@ void VariableStringColumnReader::load(BufferViewReader& reader, uint64_t num_mes
 std::variant<int64_t, double, std::string, uint8_t> VariableStringColumnReader::extract_value(
         uint64_t cur_message
 ) {
-    return m_var_dict->get_value(m_variables[cur_message]);
+    return std::string(m_var_dict->get_value(m_variables[cur_message]));
 }
 
 void VariableStringColumnReader::extract_string_value_into_buffer(

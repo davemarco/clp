@@ -48,7 +48,7 @@ bool LogTypeDictionaryWriter::add_entry(
 ) {
     bool is_new_entry = false;
 
-    std::string const& value = logtype_entry.get_value();
+    auto const value = logtype_entry.get_value();
     auto const ix = m_value_to_id.find(value);
     if (m_value_to_id.end() != ix) {
         // Entry exists so get its ID

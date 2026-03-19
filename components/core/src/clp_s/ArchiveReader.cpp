@@ -136,6 +136,51 @@ void ArchiveReader::read_metadata() {
     m_table_metadata_decompressor.close();
 
     m_archive_reader_adaptor->checkin_reader_for_section(constants::cArchiveTableMetadataFile);
+
+    // Read dictionary chunk metadata for parallel decompression (if present).
+    // Only attempt if the archive has this section — old archives won't.
+    if (m_archive_reader_adaptor->has_section(constants::cArchiveDictMetadataFile)) {
+        auto dict_meta_reader = m_archive_reader_adaptor->checkout_reader_for_section(
+                constants::cArchiveDictMetadataFile
+        );
+        ZstdDecompressor dict_meta_decompressor;
+        dict_meta_decompressor.open(*dict_meta_reader, 64 * 1024);
+
+        auto read_dict_chunk_meta = [&dict_meta_decompressor](DictChunkMetadata& meta) {
+            uint32_t chunk_size;
+            if (auto err = dict_meta_decompressor.try_read_numeric_value(chunk_size);
+                ErrorCodeSuccess != err)
+            {
+                return;
+            }
+            meta.chunk_size = chunk_size;
+
+            uint32_t num_chunks;
+            if (auto err = dict_meta_decompressor.try_read_numeric_value(num_chunks);
+                ErrorCodeSuccess != err)
+            {
+                return;
+            }
+            meta.chunk_compressed_sizes.resize(num_chunks);
+            for (uint32_t i = 0; i < num_chunks; ++i) {
+                if (auto err = dict_meta_decompressor.try_read_numeric_value(
+                            meta.chunk_compressed_sizes[i]
+                    );
+                    ErrorCodeSuccess != err)
+                {
+                    return;
+                }
+            }
+            meta.has_chunks = (num_chunks > 0);
+        };
+
+        read_dict_chunk_meta(m_var_dict_chunk_meta);
+        read_dict_chunk_meta(m_log_dict_chunk_meta);
+        read_dict_chunk_meta(m_array_dict_chunk_meta);
+
+        dict_meta_decompressor.close();
+        m_archive_reader_adaptor->checkin_reader_for_section(constants::cArchiveDictMetadataFile);
+    }
 }
 
 void ArchiveReader::read_dictionaries_and_metadata() {
@@ -152,7 +197,8 @@ void ArchiveReader::open_packed_streams() {
 SchemaReader& ArchiveReader::read_schema_table(
         int32_t schema_id,
         bool should_extract_timestamp,
-        bool should_marshal_records
+        bool should_marshal_records,
+        bool use_absolute_readers
 ) {
     if (m_id_to_schema_metadata.count(schema_id) == 0) {
         throw OperationFailed(ErrorCodeFileNotFound, __FILENAME__, __LINE__);
@@ -162,7 +208,8 @@ SchemaReader& ArchiveReader::read_schema_table(
             m_schema_reader,
             schema_id,
             should_extract_timestamp,
-            should_marshal_records
+            should_marshal_records,
+            use_absolute_readers
     );
 
     auto& schema_metadata = m_id_to_schema_metadata[schema_id];
@@ -190,7 +237,8 @@ std::vector<std::shared_ptr<SchemaReader>> ArchiveReader::read_all_tables() {
     return readers;
 }
 
-BaseColumnReader* ArchiveReader::append_reader_column(SchemaReader& reader, int32_t column_id) {
+BaseColumnReader*
+ArchiveReader::append_reader_column(SchemaReader& reader, int32_t column_id, bool use_absolute_readers) {
     BaseColumnReader* column_reader = nullptr;
     auto const& node = m_schema_tree->get_node(column_id);
     switch (node.get_type()) {
@@ -198,7 +246,7 @@ BaseColumnReader* ArchiveReader::append_reader_column(SchemaReader& reader, int3
             column_reader = new Int64ColumnReader(column_id);
             break;
         case NodeType::DeltaInteger:
-            column_reader = new DeltaEncodedInt64ColumnReader(column_id);
+            column_reader = new DeltaEncodedInt64ColumnReader(column_id, use_absolute_readers);
             break;
         case NodeType::Float:
             column_reader = new FloatColumnReader(column_id);
@@ -226,7 +274,11 @@ BaseColumnReader* ArchiveReader::append_reader_column(SchemaReader& reader, int3
                     = new DeprecatedDateStringColumnReader(column_id, get_timestamp_dictionary());
             break;
         case NodeType::Timestamp:
-            column_reader = new TimestampColumnReader(column_id, get_timestamp_dictionary());
+            column_reader = new TimestampColumnReader(
+                    column_id,
+                    get_timestamp_dictionary(),
+                    use_absolute_readers
+            );
             break;
         // No need to push columns without associated object readers into the SchemaReader.
         case NodeType::Metadata:
@@ -248,7 +300,8 @@ void ArchiveReader::append_unordered_reader_columns(
         SchemaReader& reader,
         int32_t mst_subtree_root_node_id,
         std::span<int32_t> schema_ids,
-        bool should_marshal_records
+        bool should_marshal_records,
+        bool use_absolute_readers
 ) {
     size_t object_begin_pos = reader.get_column_size();
 
@@ -274,7 +327,7 @@ void ArchiveReader::append_unordered_reader_columns(
                     SchemaReader::get_first_column_in_span(nested_span),
                     nested_type
             );
-            append_unordered_reader_columns(reader, nested_root, nested_span, false);
+            append_unordered_reader_columns(reader, nested_root, nested_span, false, use_absolute_readers);
             i += nested_length;
             continue;
         }
@@ -286,7 +339,7 @@ void ArchiveReader::append_unordered_reader_columns(
                 column_reader = new Int64ColumnReader(entry);
                 break;
             case NodeType::DeltaInteger:
-                column_reader = new DeltaEncodedInt64ColumnReader(entry);
+                column_reader = new DeltaEncodedInt64ColumnReader(entry, use_absolute_readers);
                 break;
             case NodeType::Float:
                 column_reader = new FloatColumnReader(entry);
@@ -355,7 +408,8 @@ void ArchiveReader::initialize_schema_reader(
         SchemaReader& reader,
         int32_t schema_id,
         bool should_extract_timestamp,
-        bool should_marshal_records
+        bool should_marshal_records,
+        bool use_absolute_readers
 ) {
     auto& schema = (*m_schema_map)[schema_id];
     reader.reset(
@@ -386,7 +440,8 @@ void ArchiveReader::initialize_schema_reader(
                     reader,
                     mst_subtree_root_node_id,
                     sub_schema,
-                    should_marshal_records
+                    should_marshal_records,
+                    use_absolute_readers
             );
 
             i += length;
@@ -400,11 +455,12 @@ void ArchiveReader::initialize_schema_reader(
                     reader,
                     column_id,
                     std::span<int32_t>(),
-                    should_marshal_records
+                    should_marshal_records,
+                    use_absolute_readers
             );
             continue;
         }
-        BaseColumnReader* column_reader = append_reader_column(reader, column_id);
+        BaseColumnReader* column_reader = append_reader_column(reader, column_id, use_absolute_readers);
 
         if (column_id == m_log_event_idx_column_id) {
             reader.mark_column_as_log_event_idx(column_reader);
@@ -428,7 +484,8 @@ void ArchiveReader::read_stream_compressed(
 SchemaReader& ArchiveReader::init_schema_table(
         int32_t schema_id,
         bool should_extract_timestamp,
-        bool should_marshal_records
+        bool should_marshal_records,
+        bool use_absolute_readers
 ) {
     if (m_id_to_schema_metadata.count(schema_id) == 0) {
         throw OperationFailed(ErrorCodeFileNotFound, __FILENAME__, __LINE__);
@@ -438,7 +495,8 @@ SchemaReader& ArchiveReader::init_schema_table(
             m_schema_reader,
             schema_id,
             should_extract_timestamp,
-            should_marshal_records
+            should_marshal_records,
+            use_absolute_readers
     );
 
     return m_schema_reader;
@@ -473,6 +531,9 @@ void ArchiveReader::close() {
     m_stream_buffer.reset();
     m_stream_buffer_size = 0ULL;
     m_log_event_idx_column_id = -1;
+    m_var_dict_chunk_meta = {};
+    m_log_dict_chunk_meta = {};
+    m_array_dict_chunk_meta = {};
 }
 
 std::shared_ptr<char[]> ArchiveReader::read_stream(size_t stream_id, bool reuse_buffer) {

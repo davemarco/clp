@@ -116,11 +116,6 @@ void LogTypeDictionaryEntry::clear() {
     m_init = false;
 }
 
-void LogTypeDictionaryEntry::write_to_file(ZstdCompressor& compressor) const {
-    compressor.write_numeric_value<uint64_t>(m_value.length());
-    compressor.write_string(m_value);
-}
-
 ErrorCode LogTypeDictionaryEntry::try_read_from_file(
         ZstdDecompressor& decompressor,
         clp::logtype_dictionary_id_t id,
@@ -205,12 +200,7 @@ void LogTypeDictionaryEntry::decode_log_type() {
 }
 
 size_t VariableDictionaryEntry::get_data_size() const {
-    return sizeof(m_id) + m_value.length();
-}
-
-void VariableDictionaryEntry::write_to_file(ZstdCompressor& compressor) const {
-    compressor.write_numeric_value<uint64_t>(m_value.length());
-    compressor.write_string(m_value);
+    return sizeof(m_id) + get_value().length();
 }
 
 ErrorCode VariableDictionaryEntry::try_read_from_file(

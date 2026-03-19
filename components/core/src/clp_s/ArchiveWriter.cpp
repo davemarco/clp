@@ -49,15 +49,15 @@ void ArchiveWriter::open(ArchiveWriterOption const& option) {
 
     std::string var_dict_path = m_archive_path + constants::cArchiveVarDictFile;
     m_var_dict = std::make_shared<VariableDictionaryWriter>();
-    m_var_dict->open(var_dict_path, m_compression_level, UINT64_MAX);
+    m_var_dict->open(var_dict_path, m_compression_level, UINT64_MAX, m_chunk_size);
 
     std::string log_dict_path = m_archive_path + constants::cArchiveLogDictFile;
     m_log_dict = std::make_shared<LogTypeDictionaryWriter>();
-    m_log_dict->open(log_dict_path, m_compression_level, UINT64_MAX);
+    m_log_dict->open(log_dict_path, m_compression_level, UINT64_MAX, m_chunk_size);
 
     std::string array_dict_path = m_archive_path + constants::cArchiveArrayDictFile;
     m_array_dict = std::make_shared<LogTypeDictionaryWriter>();
-    m_array_dict->open(array_dict_path, m_compression_level, UINT64_MAX);
+    m_array_dict->open(array_dict_path, m_compression_level, UINT64_MAX, m_chunk_size);
 }
 
 auto ArchiveWriter::close(bool is_split) -> ArchiveStats {
@@ -73,6 +73,8 @@ auto ArchiveWriter::close(bool is_split) -> ArchiveStats {
     auto schema_map_compressed_size = m_schema_map.store(m_archive_path, m_compression_level);
     auto [table_metadata_compressed_size, table_compressed_size] = store_tables();
 
+    auto dict_metadata_compressed_size = store_dict_chunk_metadata();
+
     std::vector<ArchiveFileInfo> files{
             {constants::cArchiveSchemaTreeFile, schema_tree_compressed_size},
             {constants::cArchiveSchemaMapFile, schema_map_compressed_size},
@@ -82,6 +84,9 @@ auto ArchiveWriter::close(bool is_split) -> ArchiveStats {
             {constants::cArchiveArrayDictFile, array_dict_compressed_size},
             {constants::cArchiveTablesFile, table_compressed_size}
     };
+    if (dict_metadata_compressed_size > 0) {
+        files.push_back({constants::cArchiveDictMetadataFile, dict_metadata_compressed_size});
+    }
     uint64_t offset = 0;
     for (auto& file : files) {
         uint64_t original_size = file.o;
@@ -501,5 +506,43 @@ std::pair<size_t, size_t> ArchiveWriter::store_tables() {
     m_tables_file_writer.close();
 
     return {table_metadata_compressed_size, table_compressed_size};
+}
+
+size_t ArchiveWriter::store_dict_chunk_metadata() {
+    auto const& var_chunks = m_var_dict->get_chunk_compressed_sizes();
+    auto const& log_chunks = m_log_dict->get_chunk_compressed_sizes();
+    auto const& array_chunks = m_array_dict->get_chunk_compressed_sizes();
+
+    if (var_chunks.empty() && log_chunks.empty() && array_chunks.empty()) {
+        return 0;
+    }
+
+    FileWriter dict_meta_writer;
+    dict_meta_writer.open(
+            m_archive_path + constants::cArchiveDictMetadataFile,
+            FileWriter::OpenMode::CreateForWriting
+    );
+    ZstdCompressor dict_meta_compressor;
+    dict_meta_compressor.open(dict_meta_writer, m_compression_level);
+
+    auto write_dict_chunk_meta = [&dict_meta_compressor](
+                                         size_t chunk_size,
+                                         std::vector<uint32_t> const& chunks
+                                 ) {
+        dict_meta_compressor.write_numeric_value(static_cast<uint32_t>(chunk_size));
+        dict_meta_compressor.write_numeric_value(static_cast<uint32_t>(chunks.size()));
+        for (uint32_t cs : chunks) {
+            dict_meta_compressor.write_numeric_value(cs);
+        }
+    };
+
+    write_dict_chunk_meta(m_var_dict->get_chunk_size(), var_chunks);
+    write_dict_chunk_meta(m_log_dict->get_chunk_size(), log_chunks);
+    write_dict_chunk_meta(m_array_dict->get_chunk_size(), array_chunks);
+
+    dict_meta_compressor.close();
+    size_t compressed_size = dict_meta_writer.get_pos();
+    dict_meta_writer.close();
+    return compressed_size;
 }
 }  // namespace clp_s

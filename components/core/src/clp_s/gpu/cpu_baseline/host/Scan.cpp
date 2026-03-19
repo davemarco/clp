@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <numeric>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 #include <spdlog/spdlog.h>
@@ -338,26 +337,6 @@ ScanCompatError scan_all_clauses_for_range(
     return ScanCompatError::None;
 }
 
-/**
- * Helper to restore delta-encoded columns after prefix-sum.
- */
-static void restore_delta_columns(
-        ErtBufferView const& buffer_view,
-        std::span<ColumnDesc const> columns,
-        std::unordered_set<int32_t> const& prefix_summed_columns
-) {
-    for (int32_t col_id : prefix_summed_columns) {
-        ScanCompatError restore_err;
-        auto const* col = find_column(buffer_view, columns, col_id, restore_err);
-        if (nullptr != col) {
-            auto* values = reinterpret_cast<int64_t*>(
-                    buffer_view.data + col->primary_offset_bytes
-            );
-            std::adjacent_difference(values, values + col->length, values);
-        }
-    }
-}
-
 ScanCompatError run_cpu_scan_to_bitmap_clauses(
         SchemaReader& reader,
         std::vector<ScanClause> const& clauses,
@@ -373,27 +352,10 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
     auto const buffer_view = get_ert_buffer_view(reader);
     size_t const num_rows = reader.get_num_messages();
 
-    // Collect column IDs actually referenced by the query predicates
-    std::unordered_set<int32_t> referenced_col_ids;
-    for (auto const& clause : clauses) {
-        for (auto const& pred : clause.column_predicates.predicates) {
-            referenced_col_ids.insert(pred.column_id);
-        }
-        for (auto const& sclp : clause.sclp_filters) {
-            referenced_col_ids.insert(sclp.logtype_column_id);
-            for (int32_t var_id : sclp.var_column_ids) {
-                referenced_col_ids.insert(var_id);
-            }
-        }
-    }
-
-    // Prefix-sum only delta columns that are actually used by the query
-    std::unordered_set<int32_t> prefix_summed_columns;
+    // Prefix-sum all delta columns so both the scan and subsequent absolute-mode
+    // readers see absolute values.
     for (auto const& col : columns) {
-        if ((col.type == ColumnType::DeltaInt64 || col.type == ColumnType::Timestamp)
-            && referenced_col_ids.count(col.column_id) > 0
-            && prefix_summed_columns.insert(col.column_id).second)
-        {
+        if (col.type == ColumnType::DeltaInt64 || col.type == ColumnType::Timestamp) {
             auto* values = reinterpret_cast<int64_t*>(
                     buffer_view.data + col.primary_offset_bytes
             );
@@ -416,7 +378,6 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
                 buffer_view, clauses, columns, 0, num_rows, out_bitmap.data()
         );
         if (ScanCompatError::None != scan_err) {
-            restore_delta_columns(buffer_view, columns, prefix_summed_columns);
             return scan_err;
         }
     } else {
@@ -445,15 +406,10 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
 
         for (size_t t = 0; t < actual_threads; ++t) {
             if (ScanCompatError::None != errors[t]) {
-                restore_delta_columns(buffer_view, columns, prefix_summed_columns);
                 return errors[t];
             }
         }
     }
-
-    // Restore delta encoding so the reader's DeltaEncodedInt64ColumnReader sees
-    // original deltas.
-    restore_delta_columns(buffer_view, columns, prefix_summed_columns);
 
     auto matches = std::count(out_bitmap.begin(), out_bitmap.end(), static_cast<uint8_t>(1));
     SPDLOG_DEBUG(
