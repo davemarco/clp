@@ -193,7 +193,7 @@ TEST_CASE("process_raw_query", "[dfa_search]") {
             cNoBeginTimestamp,
             cNoEndTimestamp,
             cIgnoreCase,
-            lexer,
+            [&]() -> log_surgeon::lexers::ByteLexer& { return lexer; },
             cUseHeuristic
     )};
 

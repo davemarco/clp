@@ -1,5 +1,6 @@
 #include "SchemaReader.hpp"
 
+#include <numeric>
 #include <stack>
 #include <string>
 
@@ -329,26 +330,28 @@ void SchemaReader::reset_read_state(uint64_t num_messages) {
     m_serializer_initialized = false;
 }
 
-void SchemaReader::serialize_range_parallel(
+void SchemaReader::serialize_indices_parallel(
+        std::span<size_t const> indices,
         size_t num_threads,
         ThreadPool* thread_pool,
         std::vector<std::string>& per_thread_output
 ) {
-    if (0 == m_num_messages) {
-        return;
-    }
-
     if (false == m_serializer_initialized) {
         initialize_serializer();
     }
 
-    size_t const actual_threads = std::min(num_threads, static_cast<size_t>(m_num_messages));
+    size_t const num_items = indices.size();
+    if (0 == num_items) {
+        return;
+    }
+
+    size_t const actual_threads = std::min(num_threads, num_items);
     per_thread_output.resize(actual_threads);
 
     if (actual_threads <= 1) {
         auto& output = per_thread_output[0];
-        for (uint64_t i = 0; i < m_num_messages; ++i) {
-            auto msg = generate_json_string(i);
+        for (auto idx : indices) {
+            auto msg = generate_json_string(idx);
             if (msg.empty() || msg.back() != '\n') {
                 msg += '\n';
             }
@@ -357,8 +360,7 @@ void SchemaReader::serialize_range_parallel(
         return;
     }
 
-    // Each thread needs its own JsonSerializer (for m_json_string buffer) and
-    // StructuredClpStringReader map (for per-reader scratch buffers).
+    // Each thread needs its own JsonSerializer and StructuredClpStringReader map.
     std::vector<JsonSerializer> thread_serializers(actual_threads, m_json_serializer);
     std::vector<std::unordered_map<int32_t, StructuredClpStringReader>> thread_sclp_maps;
     thread_sclp_maps.reserve(actual_threads);
@@ -366,14 +368,14 @@ void SchemaReader::serialize_range_parallel(
         thread_sclp_maps.emplace_back(m_structured_clp_string_reader_map);
     }
 
-    size_t const rows_per_thread = m_num_messages / actual_threads;
-    size_t const remainder = m_num_messages % actual_threads;
+    size_t const items_per_thread = num_items / actual_threads;
+    size_t const remainder = num_items % actual_threads;
 
     for (size_t t = 0; t < actual_threads; ++t) {
-        size_t const start = t * rows_per_thread + std::min(t, remainder);
-        size_t const count = rows_per_thread + (t < remainder ? 1 : 0);
+        size_t const start = t * items_per_thread + std::min(t, remainder);
+        size_t const count = items_per_thread + (t < remainder ? 1 : 0);
 
-        thread_pool->submit([this, t, start, count, &per_thread_output,
+        thread_pool->submit([this, t, start, count, &indices, &per_thread_output,
                              &thread_serializers, &thread_sclp_maps]() {
             auto& serializer = thread_serializers[t];
             auto& sclp_map = thread_sclp_maps[t];
@@ -382,7 +384,7 @@ void SchemaReader::serialize_range_parallel(
 
             for (size_t i = start; i < start + count; ++i) {
                 size_t sclp_index = 0;
-                generate_json_message(serializer, sclp_map, sclp_index, i);
+                generate_json_message(serializer, sclp_map, sclp_index, indices[i]);
                 output += serializer.get_serialized_string();
                 if (output.empty() || output.back() != '\n') {
                     output += '\n';
@@ -391,6 +393,16 @@ void SchemaReader::serialize_range_parallel(
         });
     }
     thread_pool->wait_all();
+}
+
+void SchemaReader::serialize_range_parallel(
+        size_t num_threads,
+        ThreadPool* thread_pool,
+        std::vector<std::string>& per_thread_output
+) {
+    std::vector<size_t> indices(m_num_messages);
+    std::iota(indices.begin(), indices.end(), 0);
+    serialize_indices_parallel(indices, num_threads, thread_pool, per_thread_output);
 }
 
 auto SchemaReader::serialize_message_at(uint64_t message_index) -> std::string {
@@ -403,6 +415,22 @@ auto SchemaReader::serialize_message_at(uint64_t message_index) -> std::string {
         message += '\n';
     }
     return message;
+}
+
+void SchemaReader::serialize_bitmap_parallel(
+        std::vector<uint8_t> const& bitmap,
+        size_t num_threads,
+        ThreadPool* thread_pool,
+        std::vector<std::string>& per_thread_output
+) {
+    std::vector<size_t> match_indices;
+    match_indices.reserve(bitmap.size() / 10);
+    for (size_t i = 0; i < bitmap.size(); ++i) {
+        if (bitmap[i]) {
+            match_indices.push_back(i);
+        }
+    }
+    serialize_indices_parallel(match_indices, num_threads, thread_pool, per_thread_output);
 }
 /*** GPU integration end ***/
 

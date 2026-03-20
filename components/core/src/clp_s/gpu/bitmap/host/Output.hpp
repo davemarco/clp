@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "../../../SchemaReader.hpp"
+#include "../../../ThreadPool.hpp"
 #include "../../../search/OutputHandler.hpp"
 
 namespace clp_s::gpu {
@@ -19,13 +20,17 @@ namespace clp_s::gpu {
  * @param bitmap One byte per row (1=match, 0=non-match).
  * @param output_handler Output handler to write results.
  * @param error Error message on failure.
+ * @param num_threads Number of threads for parallel serialization.
+ * @param thread_pool Thread pool (may be nullptr for single-threaded).
  * @return 0 on success, non-zero on failure.
  */
 int emit_bitmap_matches(
         SchemaReader& reader,
         std::vector<uint8_t> const& bitmap,
         search::OutputHandler& output_handler,
-        std::string& error
+        std::string& error,
+        size_t num_threads = 1,
+        clp_s::ThreadPool* thread_pool = nullptr
 );
 }  // namespace clp_s::gpu
 

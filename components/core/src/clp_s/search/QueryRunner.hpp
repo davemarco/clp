@@ -169,8 +169,8 @@ private:
     std::shared_ptr<ReaderUtils::SchemaMap> m_schemas;
 
     std::string m_schema_path;
-    log_surgeon::lexers::ByteLexer m_lexer;
     bool m_use_heuristic{true};
+    std::optional<log_surgeon::lexers::ByteLexer> m_lexer;
 
     // Maps each CLP search string (e.g. "*rollback*") to its pre-computed clp::Query
     // containing SubQueries (logtype IDs + encoded variable values). Used by both the

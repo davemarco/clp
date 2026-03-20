@@ -509,7 +509,7 @@ static bool search_archive(
             search_begin_ts,
             search_end_ts,
             command_line_args.ignore_case(),
-            lexer,
+            [&]() -> log_surgeon::lexers::ByteLexer& { return lexer; },
             use_heuristic
     );
     if (false == query_processing_result.has_value()) {

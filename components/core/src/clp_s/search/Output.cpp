@@ -396,15 +396,17 @@ bool Output::filter() {
                     SPDLOG_ERROR("GPU encoded buffer scan failed: {}", error_message);
                     return false;
                 }
-                timing.add_scan(
-                        SearchTiming::Clock::now() - scan_start,
-                        reader.get_num_messages()
-                );
                 auto matches = static_cast<size_t>(encoded_buffer.num_rows);
                 if (0 != matches) {
                     // Ensure the async DtoH copy has completed before accessing
                     // the encoded buffer on the host.
                     clp_s::gpu::sync_default_stream();
+                }
+                timing.add_scan(
+                        SearchTiming::Clock::now() - scan_start,
+                        reader.get_num_messages()
+                );
+                if (0 != matches) {
                     auto const serialize_start = SearchTiming::Clock::now();
                     reader.reset_read_state(encoded_buffer.num_rows);
                     try {
@@ -489,7 +491,9 @@ bool Output::filter() {
                                 reader,
                                 bitmap,
                                 *m_output_handler,
-                                error_message
+                                error_message,
+                                m_num_threads,
+                                m_thread_pool.get()
                         ))
                     {
                         SPDLOG_ERROR("Bitmap scan output failed: {}", error_message);

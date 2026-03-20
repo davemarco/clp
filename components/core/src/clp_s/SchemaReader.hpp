@@ -232,6 +232,20 @@ public:
             ThreadPool* thread_pool,
             std::vector<std::string>& per_thread_output
     );
+
+    /**
+     * Serializes only the rows flagged in the bitmap, in parallel across threads.
+     * @param bitmap One byte per row (1=match, 0=non-match).
+     * @param num_threads Number of threads to use.
+     * @param thread_pool Thread pool for parallel execution.
+     * @param per_thread_output Output vector, one string per thread.
+     */
+    void serialize_bitmap_parallel(
+            std::vector<uint8_t> const& bitmap,
+            size_t num_threads,
+            ThreadPool* thread_pool,
+            std::vector<std::string>& per_thread_output
+    );
     /*** GPU integration end ***/
 
     /**
@@ -348,6 +362,21 @@ private:
             std::unordered_map<int32_t, StructuredClpStringReader>& sclp_map,
             size_t& sclp_index,
             uint64_t message_index
+    );
+
+    /**
+     * Shared implementation for serialize_range_parallel and serialize_bitmap_parallel.
+     * Partitions the given row indices across threads and serializes in parallel.
+     * @param indices Row indices to serialize.
+     * @param num_threads Number of threads to use.
+     * @param thread_pool Thread pool for parallel execution.
+     * @param per_thread_output Output vector, one string per thread.
+     */
+    void serialize_indices_parallel(
+            std::span<size_t const> indices,
+            size_t num_threads,
+            ThreadPool* thread_pool,
+            std::vector<std::string>& per_thread_output
     );
 
     /**

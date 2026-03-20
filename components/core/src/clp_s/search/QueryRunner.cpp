@@ -43,7 +43,6 @@ void QueryRunner::global_init() {
     populate_internal_columns();
 
     if (false == m_schema_path.empty()) {
-        clp::load_lexer_from_file(m_schema_path, m_lexer);
         m_use_heuristic = false;
     }
 
@@ -1005,7 +1004,13 @@ void QueryRunner::populate_string_queries(std::shared_ptr<Expression> const& exp
                             placeholder_timestamp,
                             placeholder_timestamp,
                             m_ignore_case,
-                            m_lexer,
+                            [this]() -> log_surgeon::lexers::ByteLexer& {
+                                if (false == m_lexer.has_value()) {
+                                    m_lexer.emplace();
+                                    clp::load_lexer_from_file(m_schema_path, *m_lexer);
+                                }
+                                return *m_lexer;
+                            },
                             m_use_heuristic
                     )
             );

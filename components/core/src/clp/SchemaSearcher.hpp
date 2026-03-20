@@ -95,8 +95,10 @@ public:
      *
      * @tparam LogTypeDictionaryReaderType The type of object accessing the logtype dictionary.
      * @tparam VariableDictionaryReaderType The type of object accessing the variable dictionary.
+     * @tparam LexerProvider A callable returning log_surgeon::lexers::ByteLexer&.
+     *         Only invoked when the fast tokenizer cannot handle the query,
+     *         allowing callers to defer expensive lexer construction.
      * @param search_string The input query string to search for in the log message.
-     * @param lexer The lexer containing the schema used to determine variable types and delimiters.
      * @param logtype_dict A reference to the logtype dictionary.
      * @param var_dict A reference to the variable dictionary.
      * @param ignore_case If true, the search will be case-insensitive.
@@ -105,11 +107,12 @@ public:
      */
     template <
             LogTypeDictionaryReaderReq LogTypeDictionaryReaderType,
-            VariableDictionaryReaderReq VariableDictionaryReaderType
+            VariableDictionaryReaderReq VariableDictionaryReaderType,
+            typename LexerProvider
     >
     static auto
     search(std::string const& search_string,
-           log_surgeon::lexers::ByteLexer& lexer,
+           LexerProvider&& get_lexer,
            LogTypeDictionaryReaderType const& logtype_dict,
            VariableDictionaryReaderType const& var_dict,
            bool ignore_case) -> std::vector<SubQuery> {
@@ -121,6 +124,7 @@ public:
             );
         }
         // Fast path declined — fall back to log-surgeon's slow path.
+        auto& lexer = get_lexer();
         log_surgeon::wildcard_query_parser::Query const query{search_string};
         auto const raw_interpretations{query.get_all_multi_token_interpretations(lexer)};
         auto const interpretations = normalize_interpretations(raw_interpretations);

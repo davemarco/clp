@@ -35,19 +35,22 @@ public:
      *
      * @tparam LogTypeDictionaryReaderType
      * @tparam VariableDictionaryReaderType
+     * @tparam LexerProvider A callable returning log_surgeon::lexers::ByteLexer&.
+     *         Only invoked when use_heuristic is false AND the fast tokenizer
+     *         cannot handle the query, allowing callers to defer lexer loading.
      * @param logtype_dict
      * @param var_dict
      * @param search_string
      * @param search_begin_ts
      * @param search_end_ts
      * @param ignore_case
-     * @param lexer DFA for determining if input is in the schema
      * @param use_heuristic
      * @return Query if it may match a message, std::nullopt otherwise
      */
     template <
             LogTypeDictionaryReaderReq LogTypeDictionaryReaderType,
-            VariableDictionaryReaderReq VariableDictionaryReaderType
+            VariableDictionaryReaderReq VariableDictionaryReaderType,
+            typename LexerProvider
     >
     static std::optional<Query> process_raw_query(
             LogTypeDictionaryReaderType const& logtype_dict,
@@ -56,7 +59,7 @@ public:
             epochtime_t search_begin_ts,
             epochtime_t search_end_ts,
             bool ignore_case,
-            log_surgeon::lexers::ByteLexer& lexer,
+            LexerProvider&& get_lexer,
             bool use_heuristic
     );
 
@@ -134,7 +137,8 @@ private:
 
 template <
         LogTypeDictionaryReaderReq LogTypeDictionaryReaderType,
-        VariableDictionaryReaderReq VariableDictionaryReaderType
+        VariableDictionaryReaderReq VariableDictionaryReaderType,
+        typename LexerProvider
 >
 std::optional<Query> GrepCore::process_raw_query(
         LogTypeDictionaryReaderType const& logtype_dict,
@@ -143,13 +147,18 @@ std::optional<Query> GrepCore::process_raw_query(
         epochtime_t search_begin_ts,
         epochtime_t search_end_ts,
         bool ignore_case,
-        log_surgeon::lexers::ByteLexer& lexer,
+        LexerProvider&& get_lexer,
         bool use_heuristic
 ) {
     std::vector<SubQuery> sub_queries;
     if (false == use_heuristic) {
-        sub_queries
-                = SchemaSearcher::search(search_string, lexer, logtype_dict, var_dict, ignore_case);
+        sub_queries = SchemaSearcher::search(
+                search_string,
+                std::forward<LexerProvider>(get_lexer),
+                logtype_dict,
+                var_dict,
+                ignore_case
+        );
     } else {
         // Split search_string into tokens with wildcards
         std::vector<QueryToken> query_tokens;
