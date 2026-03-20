@@ -5,11 +5,33 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace clp_s {
 enum class DictionaryType : uint8_t { Variable, LogType, Array, Unknown };
+
+struct SearchDictStats {
+    std::chrono::nanoseconds decompress{};
+    uint64_t entries{0};
+};
+
+struct SearchRunData {
+    size_t run_index{0};
+    std::array<SearchDictStats, 3> dict_stats{};
+    std::chrono::nanoseconds table_metadata_load{};
+    std::chrono::nanoseconds string_query_plan{};
+    std::chrono::nanoseconds compressed_io{};
+    std::chrono::nanoseconds h2d_transfer{};
+    std::chrono::nanoseconds schema_table_load{};
+    std::chrono::nanoseconds total_search{};
+    std::chrono::nanoseconds scan{};
+    std::chrono::nanoseconds serialization{};
+    uint64_t scanned_messages{0};
+    std::chrono::nanoseconds wall_clock{};
+};
 
 // When CLP_S_SEARCH_TIMING_ENABLED is defined we compile the real timing logic;
 // otherwise we provide a no-op stub so callers don't need #ifdefs at each call site.
@@ -18,6 +40,8 @@ class SearchTiming {
 public:
     using Clock = std::chrono::steady_clock;
     class Scope;
+    using DictStats = SearchDictStats;
+    using RunData = SearchRunData;
 
     /**
      * Returns the process-wide timing instance.
@@ -64,6 +88,12 @@ public:
      */
     void add_compressed_io(std::chrono::nanoseconds duration);
     /**
+     * Adds elapsed time spent copying compressed data from host to device.
+     *
+     * @param duration Time spent in H2D transfers (0 for GPUDirect Storage).
+     */
+    void add_h2d_transfer(std::chrono::nanoseconds duration);
+    /**
      * Adds elapsed time spent reading and loading a schema table.
      *
      * @param duration Time spent reading and loading a schema table.
@@ -100,24 +130,35 @@ public:
      */
     void log_totals() const;
 
-private:
-    struct DictStats {
-        std::chrono::nanoseconds decompress{};
-        uint64_t entries{0};
-    };
+    /**
+     * Snapshots current counters as a completed run and resets for the next run.
+     * @param run_index Zero-based run number.
+     */
+    void collect_run(size_t run_index);
 
+    /**
+     * Writes a JSON array of all collected runs to the given path.
+     * If output_path is empty, writes to "search_timing_total.json" in cwd.
+     * When only one run was collected, writes a single JSON object (backward compat).
+     */
+    void log_all_runs(std::string const& output_path) const;
+
+private:
     static size_t dict_index(DictionaryType type);
 
     std::array<DictStats, 3> m_dict_stats{};
     std::chrono::nanoseconds m_table_metadata_load{};
     std::chrono::nanoseconds m_string_query_plan{};
     std::chrono::nanoseconds m_compressed_io{};
+    std::chrono::nanoseconds m_h2d_transfer{};
     std::chrono::nanoseconds m_schema_table_load{};
     std::chrono::nanoseconds m_total_search{};
     std::chrono::nanoseconds m_scan{};
     std::chrono::nanoseconds m_serialization{};
     uint64_t m_scanned_messages{0};
     std::chrono::nanoseconds m_wall_clock{};
+
+    std::vector<RunData> m_runs{};
 };
 
 // RAII scope helper that accumulates per-archive search time.
@@ -143,6 +184,8 @@ class SearchTiming {
 public:
     using Clock = std::chrono::steady_clock;
     class Scope;
+    using DictStats = SearchDictStats;
+    using RunData = SearchRunData;
 
     static SearchTiming& instance() {
         static SearchTiming timing;
@@ -155,12 +198,15 @@ public:
     void add_table_metadata_load(std::chrono::nanoseconds) {}
     void add_string_query_plan(std::chrono::nanoseconds) {}
     void add_compressed_io(std::chrono::nanoseconds) {}
+    void add_h2d_transfer(std::chrono::nanoseconds) {}
     void add_schema_table_load(std::chrono::nanoseconds) {}
     void add_total_search(std::chrono::nanoseconds) {}
     void add_scan(std::chrono::nanoseconds, uint64_t) {}
     void add_serialization(std::chrono::nanoseconds) {}
     void set_wall_clock(std::chrono::nanoseconds) {}
     void log_totals() const {}
+    void collect_run(size_t) {}
+    void log_all_runs(std::string const&) const {}
 };
 
 class SearchTiming::Scope {

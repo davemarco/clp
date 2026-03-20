@@ -6,6 +6,9 @@
 #include <filesystem>
 #include <set>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <boost/url.hpp>
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
@@ -215,5 +218,17 @@ void StringUtils::escape_json_string(std::string& destination, std::string_view 
         }
     }
     append_unescaped_slice(source.size());
+}
+void try_drop_page_cache() {
+    sync();
+    int fd = open("/proc/sys/vm/drop_caches", O_WRONLY);
+    if (fd >= 0) {
+        if (write(fd, "3", 1) < 0) {
+            SPDLOG_WARN("Failed to write to /proc/sys/vm/drop_caches");
+        }
+        close(fd);
+    } else {
+        SPDLOG_WARN("Cannot drop page cache (not root or /proc not mounted)");
+    }
 }
 }  // namespace clp_s

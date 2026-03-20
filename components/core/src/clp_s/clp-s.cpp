@@ -39,6 +39,7 @@
 #include "gpu/common/cuda/GdsReader.hpp"
 #include "search/Output.hpp"
 #include "SearchTiming.hpp"
+#include "Utils.hpp"
 #include "search/OutputHandler.hpp"
 #include "search/Projection.hpp"
 #include "search/SchemaMatch.hpp"
@@ -402,78 +403,95 @@ int main(int argc, char const* argv[]) {
             }
         }
 
-        auto archive_reader = std::make_shared<clp_s::ArchiveReader>();
-        archive_reader->set_num_threads(command_line_arguments.get_num_threads());
-        for (auto const& input_path : command_line_arguments.get_input_paths()) {
-            if (std::string::npos != input_path.path.find(clp::ir::cIrFileExtension)) {
-                auto const result{clp_s::search_kv_ir_stream(
-                        input_path,
-                        command_line_arguments,
-                        expr->copy(),
-                        reducer_socket_fd
-                )};
-                if (false == result.has_error()) {
-                    continue;
+        auto& timing = clp_s::SearchTiming::instance();
+        auto const repeat_count = command_line_arguments.get_repeat_count();
+        auto const drop_caches = command_line_arguments.get_drop_caches();
+
+        for (size_t run = 0; run < repeat_count; ++run) {
+            timing.reset();
+            auto const run_start = clp_s::SearchTiming::Clock::now();
+
+            if (repeat_count > 1) {
+                SPDLOG_INFO("=== Run {}/{} ===", run + 1, repeat_count);
+            }
+
+            auto archive_reader = std::make_shared<clp_s::ArchiveReader>();
+            archive_reader->set_num_threads(command_line_arguments.get_num_threads());
+            for (auto const& input_path : command_line_arguments.get_input_paths()) {
+                if (std::string::npos != input_path.path.find(clp::ir::cIrFileExtension)) {
+                    auto const result{clp_s::search_kv_ir_stream(
+                            input_path,
+                            command_line_arguments,
+                            expr->copy(),
+                            reducer_socket_fd
+                    )};
+                    if (false == result.has_error()) {
+                        continue;
+                    }
+
+                    auto const error{result.error()};
+                    if (std::errc::result_out_of_range == error) {
+                        SPDLOG_WARN("IR stream `{}` is truncated", input_path.path);
+                        continue;
+                    }
+
+                    if (KvIrSearchError{KvIrSearchErrorEnum::ProjectionSupportNotImplemented}
+                                == error
+                        || KvIrSearchError{KvIrSearchErrorEnum::UnsupportedOutputHandlerType}
+                                   == error
+                        || KvIrSearchError{KvIrSearchErrorEnum::CountSupportNotImplemented}
+                                   == error)
+                    {
+                        SPDLOG_WARN(
+                                "Attempted to search an IR stream using unsupported features."
+                                " Falling back to searching the input as an archive."
+                        );
+                    } else if (KvIrSearchError{KvIrSearchErrorEnum::DeserializerCreationFailure}
+                               != error)
+                    {
+                        SPDLOG_ERROR(
+                                "Failed to search '{}' as an IR stream, error_category={},"
+                                " error={}",
+                                input_path.path,
+                                error.category().name(),
+                                error.message()
+                        );
+                        return 1;
+                    }
                 }
 
-                auto const error{result.error()};
-                if (std::errc::result_out_of_range == error) {
-                    // To support real-time search, we will allow incomplete IR streams.
-                    // TODO: Use dedicated error code for this case once issue #904 is resolved.
-                    SPDLOG_WARN("IR stream `{}` is truncated", input_path.path);
-                    continue;
-                }
-
-                if (KvIrSearchError{KvIrSearchErrorEnum::ProjectionSupportNotImplemented} == error
-                    || KvIrSearchError{KvIrSearchErrorEnum::UnsupportedOutputHandlerType} == error
-                    || KvIrSearchError{KvIrSearchErrorEnum::CountSupportNotImplemented} == error)
-                {
-                    // These errors are treated as non-fatal because they result from unsupported
-                    // features. However, this approach may cause archives with this extension to be
-                    // skipped if the search uses advanced features that are not yet implemented. To
-                    // mitigate this, we log a warning and proceed to search the input as an
-                    // archive.
-                    SPDLOG_WARN(
-                            "Attempted to search an IR stream using unsupported features. Falling"
-                            " back to searching the input as an archive."
+                try {
+                    archive_reader->open(
+                            input_path,
+                            command_line_arguments.get_network_auth()
                     );
-                } else if (KvIrSearchError{KvIrSearchErrorEnum::DeserializerCreationFailure}
-                           != error)
-                {
-                    // If the error is `DeserializerCreationFailure`, we may continue to treat the
-                    // input as an archive and retry. Otherwise, it should be considered as a
-                    // non-recoverable failure and return directly.
-                    SPDLOG_ERROR(
-                            "Failed to search '{}' as an IR stream, error_category={}, error={}",
-                            input_path.path,
-                            error.category().name(),
-                            error.message()
-                    );
+                } catch (std::exception const& e) {
+                    SPDLOG_ERROR("Failed to open archive - {}", e.what());
                     return 1;
                 }
+                if (false
+                    == search_archive(
+                            command_line_arguments,
+                            archive_reader,
+                            expr->copy(),
+                            reducer_socket_fd
+                    ))
+                {
+                    return 1;
+                }
+                archive_reader->close();
             }
 
-            try {
-                archive_reader->open(input_path, command_line_arguments.get_network_auth());
-            } catch (std::exception const& e) {
-                SPDLOG_ERROR("Failed to open archive - {}", e.what());
-                return 1;
+            timing.set_wall_clock(clp_s::SearchTiming::Clock::now() - run_start);
+            timing.log_totals();
+            timing.collect_run(run);
+
+            if (drop_caches && run + 1 < repeat_count) {
+                clp_s::try_drop_page_cache();
             }
-            if (false
-                == search_archive(
-                        command_line_arguments,
-                        archive_reader,
-                        expr->copy(),
-                        reducer_socket_fd
-                ))
-            {
-                return 1;
-            }
-            archive_reader->close();
         }
-        auto& timing = clp_s::SearchTiming::instance();
-        timing.set_wall_clock(clp_s::SearchTiming::Clock::now() - program_start);
-        timing.log_totals();
+
+        timing.log_all_runs(command_line_arguments.get_timing_output_path());
 
         if (command_line_arguments.get_gpu_direct_storage()) {
             clp_s::gpu::gds_driver_close();

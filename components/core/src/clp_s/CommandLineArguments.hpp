@@ -143,6 +143,12 @@ public:
 
     bool get_gpu_direct_storage() const { return m_gpu_direct_storage; }
 
+    size_t get_repeat_count() const { return m_repeat_count; }
+
+    std::string const& get_timing_output_path() const { return m_timing_output_path; }
+
+    bool get_drop_caches() const { return m_drop_caches; }
+
     ArchiveCompressionType get_compression_codec() const { return m_compression_codec; }
 
     std::vector<std::string> const& get_projection_columns() const { return m_projection_columns; }
@@ -237,6 +243,9 @@ private:
     bool m_disable_log_order{false};
     size_t m_num_threads{1};
     bool m_gpu_direct_storage{false};
+    size_t m_repeat_count{1};
+    std::string m_timing_output_path;
+    bool m_drop_caches{false};
     ArchiveCompressionType m_compression_codec{ArchiveCompressionType::Zstd};
 
     // MongoDB configuration variables

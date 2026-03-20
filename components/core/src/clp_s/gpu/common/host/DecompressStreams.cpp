@@ -69,6 +69,7 @@ std::unordered_map<size_t, size_t> decompress_matched_streams_gpu(
     timing.add_compressed_io(clp_s::SearchTiming::Clock::now() - io_start);
 
     // Copy all compressed data H2D into the context's device buffer
+    auto const h2d_start = clp_s::SearchTiming::Clock::now();
     void* d_compressed = nullptr;
     auto cuda_status = decompress_ctx.get_compressed_buffer(total_compressed, d_compressed);
     if (cudaSuccess != cuda_status) {
@@ -91,6 +92,7 @@ std::unordered_map<size_t, size_t> decompress_matched_streams_gpu(
         }
     }
     compressed_bufs.clear();
+    timing.add_h2d_transfer(clp_s::SearchTiming::Clock::now() - h2d_start);
 
     // Build batch input descriptors pointing into the device buffer
     auto const decompress_start = clp_s::SearchTiming::Clock::now();

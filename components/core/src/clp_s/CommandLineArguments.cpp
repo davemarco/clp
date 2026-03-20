@@ -581,7 +581,23 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 "gpu-direct",
                 po::bool_switch(&m_gpu_direct_storage),
                 "Use GPUDirect Storage to load compressed data directly to GPU memory,"
-                " bypassing CPU staging"
+                " bypassing CPU staging (requires GDS-capable hardware and local NVMe)"
+            )(
+                "repeat",
+                po::value<size_t>(&m_repeat_count)
+                    ->default_value(m_repeat_count)
+                    ->value_name("N"),
+                "Run the query N times in the same process and output all timings"
+            )(
+                "timing-output",
+                po::value<std::string>(&m_timing_output_path)
+                    ->default_value(m_timing_output_path)
+                    ->value_name("PATH"),
+                "Path for the search timing JSON output file"
+            )(
+                "drop-caches",
+                po::bool_switch(&m_drop_caches),
+                "Drop OS page cache between repeat runs (requires root)"
             );
             // clang-format on
             search_options.add(match_options);

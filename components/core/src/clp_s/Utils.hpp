@@ -184,5 +184,11 @@ private:
     char* m_begin{nullptr};
     size_t m_size{0};
 };
+/**
+ * Drops the OS page cache, dentries, and inodes (requires root).
+ * Mirrors the standard systems research methodology (echo 3 > /proc/sys/vm/drop_caches).
+ * Logs a warning if the operation fails (e.g. not running as root).
+ */
+void try_drop_page_cache();
 }  // namespace clp_s
 #endif  // CLP_S_UTILS_HPP

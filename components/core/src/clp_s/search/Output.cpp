@@ -141,8 +141,6 @@ bool Output::filter() {
         return false;
     }
 
-    //I believe this is similiar to open segment
-    // I think this just opens the reader for the tables. It dosent do anything
     m_archive_reader->open_packed_streams();
 
     // Matched schemas are already sorted by stream_id (archive writer groups
@@ -267,7 +265,6 @@ bool Output::filter() {
                 continue;
             }
         }
-
         switch (m_scan_mode) {
             case ScanMode::None: {
                 auto const schema_table_start = SearchTiming::Clock::now();
