@@ -8,8 +8,11 @@ namespace clp_s::gpu {
  * The first cudaMalloc triggers a ~300-500ms driver init; calling this early
  * lets that cost overlap with CPU work (query parsing, dictionary loading, etc.).
  * Safe to call multiple times — only the first call launches the thread.
+ *
+ * @param enable_gds If true, also initializes the cuFile (GPUDirect Storage)
+ *                   driver after CUDA context init.
  */
-void launch_cuda_warmup();
+void launch_cuda_warmup(bool enable_gds = false);
 
 /**
  * Blocks until the background CUDA warmup (if any) has completed.

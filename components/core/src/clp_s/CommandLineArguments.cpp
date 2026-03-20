@@ -577,6 +577,11 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                     ->default_value(m_num_threads)
                     ->value_name("N"),
                 "Number of threads for parallel decompression and scanning (default: 1)"
+            )(
+                "gpu-direct",
+                po::bool_switch(&m_gpu_direct_storage),
+                "Use GPUDirect Storage to load compressed data directly to GPU memory,"
+                " bypassing CPU staging"
             );
             // clang-format on
             search_options.add(match_options);
@@ -774,6 +779,12 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
             if (m_scan_mode != ScanMode::None && m_schema_path.empty()) {
                 throw std::invalid_argument(
                         "--schema-path is required when using --scan gpu/gpu-bitmap/cpu-bitmap"
+                );
+            }
+
+            if (m_gpu_direct_storage && m_scan_mode != ScanMode::Gpu) {
+                throw std::invalid_argument(
+                        "--gpu-direct requires --scan gpu"
                 );
             }
 

@@ -412,6 +412,8 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/SchemaTree.hpp
     src/clp_s/SchemaWriter.cpp
     src/clp_s/SchemaWriter.hpp
+    src/clp_s/gpu/common/host/DecompressStreams.cpp
+    src/clp_s/gpu/common/host/DecompressStreams.hpp
     src/clp_s/gpu/common/host/ErtInfo.cpp
     src/clp_s/gpu/common/host/ErtInfo.hpp
     src/clp_s/gpu/common/host/ErtInfoTypes.hpp

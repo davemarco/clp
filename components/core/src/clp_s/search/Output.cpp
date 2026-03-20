@@ -6,9 +6,9 @@
 #include <span>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
+#include <cuda_runtime.h>
 #include <spdlog/spdlog.h>
 
 #include "../../clp/type_utils.hpp"
@@ -16,6 +16,8 @@
 #include "../Utils.hpp"
 #include "../SingleFileArchiveDefs.hpp"
 #include "../gpu/common/cuda/CudaWarmup.hpp"
+#include "../gpu/common/cuda/NvcompDecompress.hpp"
+#include "../gpu/common/host/DecompressStreams.hpp"
 #include "../gpu/common/host/ErtInfo.hpp"
 #include "../gpu/encoded_buffer/host/Scan.hpp"
 #include "../gpu/bitmap/host/Output.hpp"
@@ -44,81 +46,6 @@ using clp_s::search::ast::OpList;
 using clp_s::search::ast::OrExpr;
 
 #define eval(op, a, b) (((op) == FilterOperation::EQ) ? ((a) == (b)) : ((a) != (b)))
-
-namespace {
-/**
- * Collects unique stream IDs from matched schemas, reads their compressed data,
- * and decompresses all of them in a single GPU batch call.
- *
- * @return Map from stream_id to byte offset in device_buffer, or empty on failure.
- */
-std::unordered_map<size_t, size_t> decompress_matched_streams_gpu(
-        clp_s::ArchiveReader& archive_reader,
-        std::vector<int32_t> const& matched_schemas,
-        clp_s::ArchiveCompressionType archive_codec,
-        clp_s::gpu::NvcompDecompressContext& decompress_ctx,
-        clp_s::gpu::DeviceBuffer& device_buffer,
-        clp_s::SearchTiming& timing
-) {
-    // Collect unique stream IDs in order from matched schemas
-    std::vector<size_t> all_stream_ids;
-    {
-        std::unordered_set<size_t> seen;
-        for (int32_t sid : matched_schemas) {
-            size_t stream_id = archive_reader.get_schema_metadata(sid).stream_id;
-            if (seen.insert(stream_id).second) {
-                all_stream_ids.push_back(stream_id);
-            }
-        }
-    }
-
-    // Read all compressed streams from disk
-    auto const io_start = clp_s::SearchTiming::Clock::now();
-    std::vector<std::shared_ptr<char[]>> compressed_bufs(all_stream_ids.size());
-    std::vector<size_t> compressed_sizes(all_stream_ids.size());
-    for (size_t i = 0; i < all_stream_ids.size(); ++i) {
-        archive_reader.read_stream_compressed(
-                all_stream_ids[i], compressed_bufs[i], compressed_sizes[i]
-        );
-    }
-    timing.add_compressed_io(clp_s::SearchTiming::Clock::now() - io_start);
-
-    // Build batch input descriptors
-    std::vector<clp_s::gpu::NvcompDecompressContext::StreamInput> batch_inputs;
-    batch_inputs.reserve(all_stream_ids.size());
-    for (size_t i = 0; i < all_stream_ids.size(); ++i) {
-        auto const& packed_meta = archive_reader.get_packed_stream_metadata(all_stream_ids[i]);
-        batch_inputs.push_back({
-                compressed_bufs[i].get(),
-                compressed_sizes[i],
-                &packed_meta.chunk_compressed_sizes,
-                packed_meta.chunk_size,
-                packed_meta.uncompressed_size,
-        });
-    }
-
-    // Decompress all streams in one batch
-    auto const decompress_start = clp_s::SearchTiming::Clock::now();
-    std::vector<size_t> offsets;
-    auto status = decompress_ctx.decompress_batch(
-            batch_inputs, archive_codec, device_buffer, offsets
-    );
-    compressed_bufs.clear();
-
-    if (cudaSuccess != status) {
-        SPDLOG_ERROR("Batched GPU decompression failed: {}", cudaGetErrorString(status));
-        return {};
-    }
-    timing.add_schema_table_load(clp_s::SearchTiming::Clock::now() - decompress_start);
-
-    // Build stream_id -> byte offset map
-    std::unordered_map<size_t, size_t> stream_batch_offsets;
-    for (size_t i = 0; i < all_stream_ids.size(); ++i) {
-        stream_batch_offsets[all_stream_ids[i]] = offsets[i];
-    }
-    return stream_batch_offsets;
-}
-}  // namespace
 
 namespace clp_s::search {
 using ScanMode = CommandLineArguments::ScanMode;
@@ -238,10 +165,25 @@ bool Output::filter() {
     // For GPU mode: decompress all matched streams in one batch before the schema loop.
     std::unordered_map<size_t, size_t> stream_batch_offsets;
     if (m_scan_mode == ScanMode::Gpu && false == matched_schemas.empty()) {
-        stream_batch_offsets = decompress_matched_streams_gpu(
-                *m_archive_reader, matched_schemas, archive_codec,
-                decompress_ctx, device_buffer, timing
-        );
+        if (m_gpu_direct) {
+            // GPUDirect Storage requires a local filesystem archive.
+            auto const& archive_path = m_archive_reader->get_archive_path();
+            if (InputSource::Filesystem != archive_path.source) {
+                SPDLOG_ERROR("--gpu-direct requires a local filesystem archive, not a network path");
+                return false;
+            }
+        }
+        if (m_gpu_direct) {
+            stream_batch_offsets = clp_s::gpu::decompress_matched_streams_gpu_gds(
+                    *m_archive_reader, matched_schemas, archive_codec,
+                    decompress_ctx, device_buffer, timing
+            );
+        } else {
+            stream_batch_offsets = clp_s::gpu::decompress_matched_streams_gpu(
+                    *m_archive_reader, matched_schemas, archive_codec,
+                    decompress_ctx, device_buffer, timing
+            );
+        }
         if (stream_batch_offsets.empty()) {
             return false;
         }

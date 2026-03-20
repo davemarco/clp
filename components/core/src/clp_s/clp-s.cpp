@@ -36,6 +36,7 @@
 #include "search/EvaluateTimestampIndex.hpp"
 #include "search/kql/kql.hpp"
 #include "gpu/common/cuda/CudaWarmup.hpp"
+#include "gpu/common/cuda/GdsReader.hpp"
 #include "search/Output.hpp"
 #include "SearchTiming.hpp"
 #include "search/OutputHandler.hpp"
@@ -296,7 +297,8 @@ bool search_archive(
             command_line_arguments.get_ignore_case(),
             command_line_arguments.get_scan_mode(),
             command_line_arguments.get_schema_path(),
-            command_line_arguments.get_num_threads()
+            command_line_arguments.get_num_threads(),
+            command_line_arguments.get_gpu_direct_storage()
     );
     return output.filter();
 }
@@ -367,7 +369,9 @@ int main(int argc, char const* argv[]) {
         if (command_line_arguments.get_scan_mode()
             == CommandLineArguments::ScanMode::Gpu)
         {
-            clp_s::gpu::launch_cuda_warmup();
+            clp_s::gpu::launch_cuda_warmup(
+                    command_line_arguments.get_gpu_direct_storage()
+            );
         }
         /*** GPU integration end ***/
 
@@ -470,6 +474,10 @@ int main(int argc, char const* argv[]) {
         auto& timing = clp_s::SearchTiming::instance();
         timing.set_wall_clock(clp_s::SearchTiming::Clock::now() - program_start);
         timing.log_totals();
+
+        if (command_line_arguments.get_gpu_direct_storage()) {
+            clp_s::gpu::gds_driver_close();
+        }
     }
 
     return 0;

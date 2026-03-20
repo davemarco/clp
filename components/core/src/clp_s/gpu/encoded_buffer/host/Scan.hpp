@@ -11,8 +11,6 @@
 #include <vector>
 
 #include "../../../SchemaReader.hpp"
-#include "../../../archive_constants.hpp"
-#include "../../common/cuda/NvcompDecompress.hpp"
 #include "../../common/cuda/Transfer.hpp"
 #include "../../common/host/ScanRequest.hpp"
 
@@ -25,24 +23,6 @@ struct EncodedBuffer {
     size_t size{0};
     uint64_t num_rows{0};
 };
-
-/**
- * Decompresses using a persistent NvcompDecompressContext (reuses GPU buffers).
- * The returned DeviceBuffer is a borrowed view; valid until the next decompress
- * call on the same context.
- */
-int decompress_stream_to_device(
-        NvcompDecompressContext& ctx,
-        void const* compressed_data,
-        size_t compressed_size,
-        std::vector<uint32_t> const& chunk_compressed_sizes,
-        uint32_t chunk_size,
-        size_t total_uncompressed_size,
-        DeviceBuffer& out,
-        std::string& error,
-        ArchiveCompressionType codec = ArchiveCompressionType::Zstd,
-        bool host_pinned = false
-);
 
 /**
  * Runs a GPU scan with multiple clauses (OR-of-ANDs support) and builds an

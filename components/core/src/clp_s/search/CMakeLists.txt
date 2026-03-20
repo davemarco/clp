@@ -10,6 +10,8 @@ set(
         ../DictionaryWriter.cpp
         ../DictionaryWriter.hpp
         ../SearchTiming.hpp
+        ../gpu/common/host/DecompressStreams.cpp
+        ../gpu/common/host/DecompressStreams.hpp
         ../gpu/common/host/ErtInfo.cpp
         ../gpu/common/host/ErtInfo.hpp
         ../gpu/common/host/ErtInfoTypes.hpp

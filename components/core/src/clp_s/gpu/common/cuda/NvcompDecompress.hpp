@@ -13,22 +13,7 @@
 namespace clp_s::gpu {
 
 /**
- * Describes chunked compressed data for nvcomp batched Zstd decompression.
- */
-struct ChunkedCompressedData {
-    void const* host_compressed_buf{nullptr};
-    bool host_buf_is_pinned{false};  // if true, host_compressed_buf is cudaMallocHost'd
-    size_t total_compressed_size{0};
-    std::vector<uint32_t> const* chunk_compressed_sizes{nullptr};
-    uint32_t chunk_size{0};  // uncompressed chunk size (e.g. 65536)
-    size_t total_uncompressed_size{0};
-    size_t stream_offset{0};  // offset of the schema table within the decompressed stream
-    size_t table_uncompressed_size{0};  // size of just the schema table's portion
-    ArchiveCompressionType codec{ArchiveCompressionType::Zstd};
-};
-
-/**
- * Persistent context for nvcomp batched Zstd decompression.
+ * Persistent context for nvcomp batched decompression.
  *
  * Holds all device memory (compressed input buffer, decompressed output buffer,
  * metadata arrays, temp workspace). Buffers grow as needed but are never freed
@@ -36,8 +21,8 @@ struct ChunkedCompressedData {
  * overhead.
  *
  * The decompressed output buffer is owned by this context. The DeviceBuffer
- * returned by decompress() is a borrowed view — the caller must NOT free it.
- * The view is valid until the next decompress() call.
+ * returned by decompress methods is a borrowed view — the caller must NOT free
+ * it. The view is valid until the next decompress call.
  */
 class NvcompDecompressContext {
 public:
@@ -48,17 +33,11 @@ public:
     NvcompDecompressContext& operator=(NvcompDecompressContext const&) = delete;
 
     /**
-     * Decompresses chunked-Zstd data to a device buffer.
-     * The returned DeviceBuffer is a view into internal storage; valid until the
-     * next decompress() call. The caller must NOT free it.
-     */
-    cudaError_t decompress(ChunkedCompressedData const& data, DeviceBuffer& out_view);
-
-    /**
      * Input descriptor for one stream in a batched decompression.
+     * compressed_buf must point to device memory.
      */
     struct StreamInput {
-        void const* host_compressed_buf;
+        void const* compressed_buf;  ///< Device pointer to compressed data
         size_t compressed_size;
         std::vector<uint32_t> const* chunk_compressed_sizes;
         uint32_t chunk_size;
@@ -67,14 +46,9 @@ public:
 
     /**
      * Decompresses multiple streams in a single nvcomp batch call.
-     * All chunks from all streams are submitted as one batch, requiring only
-     * one HtoD copy, one kernel launch, and one sync.
-     *
-     * @param streams Per-stream compressed data descriptors.
-     * @param codec Compression codec (Zstd or Gdeflate).
-     * @param[out] out_view Borrowed view into the decompressed buffer.
-     * @param[out] stream_offsets Byte offset where each stream starts in out_view.
-     * @return cudaSuccess on success.
+     * compressed_buf in each StreamInput must already be on the GPU.
+     * Callers are responsible for getting compressed data onto the device
+     * (e.g. via cudaMemcpy, or GDS cuFileRead into get_compressed_buffer()).
      */
     cudaError_t decompress_batch(
             std::vector<StreamInput> const& streams,
@@ -82,6 +56,15 @@ public:
             DeviceBuffer& out_view,
             std::vector<size_t>& stream_offsets
     );
+
+    /**
+     * Ensures the internal compressed buffer is at least `needed` bytes and
+     * returns a device pointer to it. Used by GDS to write directly into the
+     * context's buffer, avoiding a separate allocation.
+     * The returned pointer is valid until the next get_compressed_buffer()
+     * or decompress_batch() call.
+     */
+    cudaError_t get_compressed_buffer(size_t needed, void*& out_ptr);
 
 private:
     // Device buffers — grow-only
@@ -105,16 +88,26 @@ private:
     void* m_d_temp{nullptr};
     size_t m_d_temp_cap{0};
 
-    // Pinned host staging buffer for DMA transfers
-    void* m_h_pinned{nullptr};
-    size_t m_h_pinned_cap{0};
-
     // Grows a single device buffer if needed; no-op if cap >= needed.
     cudaError_t ensure_device(void*& ptr, size_t& cap, size_t needed);
     // Grows the single allocation backing all 6 nvcomp metadata arrays.
     cudaError_t ensure_arrays(size_t num_chunks);
-    // Grows the pinned host staging buffer if needed.
-    cudaError_t ensure_pinned(size_t needed);
+    /**
+     * Shared implementation for the upload-metadata / get-temp / launch / sync
+     * steps used by both decompress_batch() and decompress_batch_device().
+     * Caller must have already populated h_comp_ptrs/sizes and h_decomp_ptrs/sizes.
+     */
+    cudaError_t upload_metadata_and_decompress(
+            std::vector<void const*> const& h_comp_ptrs,
+            std::vector<size_t> const& h_comp_sizes,
+            std::vector<void*> const& h_decomp_ptrs,
+            std::vector<size_t> const& h_decomp_sizes,
+            size_t total_chunks,
+            uint32_t chunk_size,
+            size_t total_uncompressed,
+            bool use_gdeflate,
+            char const* log_prefix
+    );
 };
 
 }  // namespace clp_s::gpu

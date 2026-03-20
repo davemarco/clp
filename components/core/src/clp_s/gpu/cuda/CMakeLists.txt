@@ -7,6 +7,8 @@ find_package(nvcomp REQUIRED PATHS "${NVCOMP_DIR}/lib/cmake/nvcomp")
 add_library(clp_s_gpu
         ${GPU_BASE}/common/cuda/CudaWarmup.cpp
         ${GPU_BASE}/common/cuda/CudaWarmup.hpp
+        ${GPU_BASE}/common/cuda/GdsReader.cpp
+        ${GPU_BASE}/common/cuda/GdsReader.hpp
         ${GPU_BASE}/common/cuda/Transfer.cpp
         ${GPU_BASE}/common/cuda/Transfer.hpp
         ${GPU_BASE}/common/cuda/NvcompDecompress.cpp
@@ -23,7 +25,7 @@ add_library(clp_s_gpu
 
 find_package(CUDAToolkit REQUIRED)
 target_compile_features(clp_s_gpu PRIVATE cxx_std_20)
-target_link_libraries(clp_s_gpu PRIVATE CUDA::cudart nvcomp::nvcomp)
+target_link_libraries(clp_s_gpu PRIVATE CUDA::cudart CUDA::cuFile nvcomp::nvcomp)
 target_include_directories(
         clp_s_gpu PRIVATE
         ${GPU_BASE}/common/cuda

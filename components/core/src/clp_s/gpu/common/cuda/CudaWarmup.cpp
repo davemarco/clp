@@ -1,22 +1,30 @@
 #include "CudaWarmup.hpp"
 
 #include <future>
+#include <stdexcept>
 
 #include <cuda_runtime.h>
+
+#include "GdsReader.hpp"
 
 namespace clp_s::gpu {
 namespace {
 std::shared_future<void> g_cuda_warmup;
 }  // namespace
 
-void launch_cuda_warmup() {
+void launch_cuda_warmup(bool enable_gds) {
     if (g_cuda_warmup.valid()) {
         return;
     }
-    g_cuda_warmup = std::async(std::launch::async, []() {
+    g_cuda_warmup = std::async(std::launch::async, [enable_gds]() {
         void* dummy{nullptr};
         if (cudaSuccess == cudaMalloc(&dummy, 1)) {
             cudaFree(dummy);
+        }
+        if (enable_gds) {
+            if (0 != gds_driver_open()) {
+                throw std::runtime_error("cuFileDriverOpen failed during GPU warmup");
+            }
         }
     }).share();
 }

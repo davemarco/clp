@@ -39,7 +39,8 @@ public:
            bool ignore_case,
            ScanMode scan_mode,
            std::string schema_path,
-           size_t num_threads = 1)
+           size_t num_threads = 1,
+           bool gpu_direct = false)
             : m_query_runner(match, expr, archive_reader, ignore_case, std::move(schema_path)),
               m_archive_reader(archive_reader),
               m_schema_tree(m_archive_reader->get_schema_tree()),
@@ -49,7 +50,8 @@ public:
               m_should_marshal_records(m_output_handler->should_marshal_records()),
               m_scan_mode(scan_mode),
               m_num_threads(num_threads),
-              m_thread_pool(num_threads > 1 ? std::make_unique<ThreadPool>(num_threads) : nullptr) {}
+              m_thread_pool(num_threads > 1 ? std::make_unique<ThreadPool>(num_threads) : nullptr),
+              m_gpu_direct(gpu_direct) {}
 
     /**
      * Filters messages within the archive and outputs the filtered messages to the configured
@@ -70,6 +72,7 @@ private:
     ScanMode m_scan_mode;
     size_t m_num_threads{1};
     std::unique_ptr<ThreadPool> m_thread_pool;
+    bool m_gpu_direct{false};
 };
 }  // namespace clp_s::search
 

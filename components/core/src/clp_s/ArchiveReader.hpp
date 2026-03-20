@@ -197,6 +197,30 @@ public:
      */
     [[nodiscard]] std::vector<int32_t> const& get_schema_ids() const { return m_schema_ids; }
 
+    /**
+     * @return the archive's input path
+     */
+    [[nodiscard]] Path const& get_archive_path() const {
+        return m_archive_reader_adaptor->get_path();
+    }
+
+    /**
+     * @return the byte offset where the tables section starts in the file
+     */
+    [[nodiscard]] size_t get_tables_begin_offset() const {
+        return m_stream_reader.get_begin_offset();
+    }
+
+    /**
+     * @return the filesystem path to the tables file (archive path + tables filename)
+     */
+    [[nodiscard]] std::string get_tables_file_path() const {
+        if (m_archive_reader_adaptor->is_single_file_archive()) {
+            return m_archive_reader_adaptor->get_path().path;
+        }
+        return m_archive_reader_adaptor->get_path().path + constants::cArchiveTablesFile;
+    }
+
     void set_projection(std::shared_ptr<search::Projection> projection) {
         m_projection = projection;
     }

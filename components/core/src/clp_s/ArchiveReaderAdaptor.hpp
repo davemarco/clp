@@ -87,6 +87,10 @@ public:
 
     ArchiveHeader const& get_header() const { return m_archive_header; }
 
+    [[nodiscard]] Path const& get_path() const { return m_archive_path; }
+
+    [[nodiscard]] bool is_single_file_archive() const { return m_single_file_archive; }
+
     std::vector<RangeIndexEntry> const& get_range_index() const { return m_range_index; }
 
     /**

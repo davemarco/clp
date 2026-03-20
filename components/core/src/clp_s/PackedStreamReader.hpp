@@ -130,6 +130,14 @@ public:
 
     [[nodiscard]] size_t get_num_streams() const { return m_stream_metadata.size(); }
 
+    /**
+     * @return The byte offset where compressed ERT streams begin in the
+     * tables file ("/0"). For multi-file archives this is 0; for single-file
+     * archives it is the offset within the archive where the tables section
+     * is embedded. Stream file_offset values are relative to this position.
+     */
+    [[nodiscard]] size_t get_begin_offset() const { return m_begin_offset; }
+
     [[nodiscard]] bool has_chunk_metadata() const { return m_has_chunk_metadata; }
 
     void set_compression_codec(ArchiveCompressionType codec) { m_compression_codec = codec; }

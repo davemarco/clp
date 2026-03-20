@@ -141,6 +141,8 @@ public:
 
     size_t get_num_threads() const { return m_num_threads; }
 
+    bool get_gpu_direct_storage() const { return m_gpu_direct_storage; }
+
     ArchiveCompressionType get_compression_codec() const { return m_compression_codec; }
 
     std::vector<std::string> const& get_projection_columns() const { return m_projection_columns; }
@@ -234,6 +236,7 @@ private:
     size_t m_chunk_size{ChunkedZstdCompressor::cDefaultChunkSize};
     bool m_disable_log_order{false};
     size_t m_num_threads{1};
+    bool m_gpu_direct_storage{false};
     ArchiveCompressionType m_compression_codec{ArchiveCompressionType::Zstd};
 
     // MongoDB configuration variables

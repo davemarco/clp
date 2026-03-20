@@ -2,9 +2,7 @@
 
 #include <vector>
 
-#include "../../../archive_constants.hpp"
 #include "../../bitmap/cuda/Scan.hpp"
-#include "../../common/cuda/NvcompDecompress.hpp"
 #include "../../common/cuda/Transfer.hpp"
 #include "../../common/host/ErtInfo.hpp"
 #include "../cuda/Packing.hpp"
@@ -123,35 +121,6 @@ int bitmap_to_encoded_buffer(
     return 0;
 }
 }  // namespace
-
-int decompress_stream_to_device(
-        NvcompDecompressContext& ctx,
-        void const* compressed_data,
-        size_t compressed_size,
-        std::vector<uint32_t> const& chunk_compressed_sizes,
-        uint32_t chunk_size,
-        size_t total_uncompressed_size,
-        DeviceBuffer& out,
-        std::string& error,
-        ArchiveCompressionType codec,
-        bool host_pinned
-) {
-    ChunkedCompressedData data{};
-    data.host_compressed_buf = compressed_data;
-    data.host_buf_is_pinned = host_pinned;
-    data.total_compressed_size = compressed_size;
-    data.chunk_compressed_sizes = &chunk_compressed_sizes;
-    data.chunk_size = chunk_size;
-    data.total_uncompressed_size = total_uncompressed_size;
-    data.codec = codec;
-
-    auto status = ctx.decompress(data, out);
-    if (cudaSuccess != status) {
-        error = std::string("nvcomp context decompression failed: ") + cudaGetErrorString(status);
-        return 1;
-    }
-    return 0;
-}
 
 int run_scan_to_encoded_buffer_clauses(
         SchemaReader& reader,
