@@ -219,16 +219,32 @@ void StringUtils::escape_json_string(std::string& destination, std::string_view 
     }
     append_unescaped_slice(source.size());
 }
-void try_drop_page_cache() {
+namespace {
+void evict_file(std::string const& path) {
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        return;
+    }
+    posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+    close(fd);
+}
+}  // namespace
+
+void try_drop_page_cache(std::vector<std::string> const& paths) {
     sync();
-    int fd = open("/proc/sys/vm/drop_caches", O_WRONLY);
-    if (fd >= 0) {
-        if (write(fd, "3", 1) < 0) {
-            SPDLOG_WARN("Failed to write to /proc/sys/vm/drop_caches");
+    for (auto const& p : paths) {
+        std::error_code ec;
+        if (std::filesystem::is_directory(p, ec)) {
+            for (auto const& entry :
+                 std::filesystem::recursive_directory_iterator(p, ec))
+            {
+                if (entry.is_regular_file()) {
+                    evict_file(entry.path().string());
+                }
+            }
+        } else if (std::filesystem::is_regular_file(p, ec)) {
+            evict_file(p);
         }
-        close(fd);
-    } else {
-        SPDLOG_WARN("Cannot drop page cache (not root or /proc not mounted)");
     }
 }
 }  // namespace clp_s

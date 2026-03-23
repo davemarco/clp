@@ -7,6 +7,9 @@
 #include <vector>
 
 #include <spdlog/spdlog.h>
+#include <taskflow/taskflow.hpp>
+#include <taskflow/algorithm/scan.hpp>
+#include <taskflow/algorithm/for_each.hpp>
 
 #include <clp/EncodedVariableInterpreter.hpp>
 #include <clp/string_utils/string_utils.hpp>
@@ -17,25 +20,6 @@
 
 namespace clp_s::gpu {
 namespace {
-template <typename T>
-bool compare(T val, T target, GpuFilterOp op) {
-    switch (op) {
-        case GpuFilterOp::EQ:
-            return val == target;
-        case GpuFilterOp::NEQ:
-            return val != target;
-        case GpuFilterOp::LT:
-            return val < target;
-        case GpuFilterOp::GT:
-            return val > target;
-        case GpuFilterOp::LTE:
-            return val <= target;
-        case GpuFilterOp::GTE:
-            return val >= target;
-    }
-    return false;
-}
-
 template <typename T, GpuFilterOp Op>
 void scan_cmp_to_bitmap_fixed(
         T const* __restrict__ values,
@@ -352,20 +336,8 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
     auto const buffer_view = get_ert_buffer_view(reader);
     size_t const num_rows = reader.get_num_messages();
 
-    // Prefix-sum all delta columns so both the scan and subsequent absolute-mode
-    // readers see absolute values.
-    for (auto const& col : columns) {
-        if (col.type == ColumnType::DeltaInt64 || col.type == ColumnType::Timestamp) {
-            auto* values = reinterpret_cast<int64_t*>(
-                    buffer_view.data + col.primary_offset_bytes
-            );
-            std::partial_sum(values, values + col.length, values);
-        }
-    }
-
     out_bitmap.resize(num_rows);
 
-    // Only use threads when there is a pool and enough rows to amortize overhead.
     constexpr size_t cMinRowsPerThread = 8192;
     size_t const max_useful_threads = std::max(num_rows / cMinRowsPerThread, size_t{1});
     size_t actual_threads = std::min(num_threads, max_useful_threads);
@@ -373,6 +345,32 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
         actual_threads = 1;
     }
 
+    // Reuse taskflow executor across calls for prefix-sum.
+    static std::unique_ptr<tf::Executor> tf_executor;
+    static size_t tf_executor_threads = 0;
+    if (!tf_executor || tf_executor_threads != num_threads) {
+        tf_executor = std::make_unique<tf::Executor>(num_threads);
+        tf_executor_threads = num_threads;
+    }
+
+    // Parallel prefix-sum all delta columns using taskflow's inclusive_scan.
+    for (auto const& col : columns) {
+        if (col.type != ColumnType::DeltaInt64 && col.type != ColumnType::Timestamp) {
+            continue;
+        }
+        auto* values = reinterpret_cast<int64_t*>(
+                buffer_view.data + col.primary_offset_bytes
+        );
+        size_t const n = col.length;
+
+        tf::Taskflow taskflow;
+        taskflow.inclusive_scan(
+                values, values + n, values, std::plus<int64_t>{}
+        );
+        tf_executor->run(taskflow).wait();
+    }
+
+    // Parallel bitmap scan using ThreadPool (uniform chunks, no work-stealing needed).
     if (actual_threads <= 1) {
         auto scan_err = scan_all_clauses_for_range(
                 buffer_view, clauses, columns, 0, num_rows, out_bitmap.data()
@@ -393,12 +391,8 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
             thread_pool->submit([&buffer_view, &clauses, &columns, &out_bitmap, &errors,
                                  start_row, row_count, t]() {
                 errors[t] = scan_all_clauses_for_range(
-                        buffer_view,
-                        clauses,
-                        columns,
-                        start_row,
-                        row_count,
-                        out_bitmap.data() + start_row
+                        buffer_view, clauses, columns,
+                        start_row, row_count, out_bitmap.data() + start_row
                 );
             });
         }

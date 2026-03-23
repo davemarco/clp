@@ -16,12 +16,9 @@
 #include "../Utils.hpp"
 #include "../SingleFileArchiveDefs.hpp"
 #include "../gpu/common/cuda/CudaWarmup.hpp"
-#include "../gpu/common/cuda/NvcompDecompress.hpp"
-#include "../gpu/common/host/DecompressStreams.hpp"
 #include "../gpu/common/host/ErtInfo.hpp"
 #include "../gpu/encoded_buffer/host/Scan.hpp"
 #include "../gpu/bitmap/host/Output.hpp"
-#include "../gpu/bitmap/host/Scan.hpp"
 #include "../gpu/cpu_baseline/host/Scan.hpp"
 #include "ast/AndExpr.hpp"
 #include "ast/ColumnDescriptor.hpp"
@@ -153,8 +150,12 @@ bool Output::filter() {
     // archive open / AST passes to maximize overlap with the ~300-500ms driver init).
     clp_s::gpu::wait_for_cuda_warmup();
 
-    clp_s::gpu::NvcompDecompressContext decompress_ctx;
-    clp_s::gpu::DeviceBuffer device_buffer{};
+    // GPU contexts: use shared if provided, otherwise create local ones lazily.
+    // Only constructed when scan mode actually needs them (Gpu path).
+    clp_s::gpu::NvcompDecompressContext local_decompress_ctx;
+    clp_s::gpu::DeviceBuffer local_device_buffer{};
+    auto& decompress_ctx = m_shared_decompress_ctx ? *m_shared_decompress_ctx : local_decompress_ctx;
+    auto& device_buffer = m_shared_device_buffer ? *m_shared_device_buffer : local_device_buffer;
 
     auto const archive_codec = static_cast<ArchiveCompressionType>(
             m_archive_reader->get_header().compression_type
@@ -170,8 +171,6 @@ bool Output::filter() {
                 SPDLOG_ERROR("--gpu-direct requires a local filesystem archive, not a network path");
                 return false;
             }
-        }
-        if (m_gpu_direct) {
             stream_batch_offsets = clp_s::gpu::decompress_matched_streams_gpu_gds(
                     *m_archive_reader, matched_schemas, archive_codec,
                     decompress_ctx, device_buffer, timing
@@ -183,6 +182,19 @@ bool Output::filter() {
             );
         }
         if (stream_batch_offsets.empty()) {
+            return false;
+        }
+    }
+
+    // For CpuBitmap mode: batch-decompress all matched streams on CPU before the schema loop.
+    std::shared_ptr<char[]> cpu_batch_buffer;
+    std::unordered_map<size_t, size_t> cpu_batch_offsets;
+    if (m_scan_mode == ScanMode::CpuBitmap && false == matched_schemas.empty()) {
+        if (!clp_s::gpu::decompress_matched_streams_cpu(
+                    *m_archive_reader, matched_schemas, archive_codec,
+                    m_num_threads, timing,
+                    cpu_batch_buffer, cpu_batch_offsets, m_shared_cpu_buffer))
+        {
             return false;
         }
     }
@@ -227,23 +239,21 @@ bool Output::filter() {
             // Initialize the reader before building scan clauses so that
             // initialize_filter → QueryRunner::init → populate_sclp_columns
             // sees the current schema's StructuredClpStringReaders.
-            if (m_scan_mode == ScanMode::Gpu) {
-                scan_reader_ptr = &m_archive_reader->init_schema_table(
-                        schema_id,
-                        m_output_handler->should_output_metadata(),
-                        m_should_marshal_records,
-                        /*use_absolute_readers=*/true
-                );
-            } else {
-                auto const schema_table_start = SearchTiming::Clock::now();
-                scan_reader_ptr = &m_archive_reader->read_schema_table(
-                        schema_id,
-                        m_output_handler->should_output_metadata(),
-                        m_should_marshal_records,
-                        /*use_absolute_readers=*/true
-                );
-                timing.add_schema_table_load(
-                        SearchTiming::Clock::now() - schema_table_start
+            scan_reader_ptr = &m_archive_reader->init_schema_table(
+                    schema_id,
+                    m_output_handler->should_output_metadata(),
+                    m_should_marshal_records,
+                    /*use_absolute_readers=*/true
+            );
+            // For CpuBitmap, load from the pre-decompressed host buffer
+            if (m_scan_mode == ScanMode::CpuBitmap) {
+                size_t const batch_offset
+                        = cpu_batch_offsets.at(schema_meta.stream_id)
+                          + schema_meta.stream_offset;
+                scan_reader_ptr->load(
+                        cpu_batch_buffer,
+                        batch_offset,
+                        schema_meta.uncompressed_size
                 );
             }
             scan_reader_ptr->initialize_filter(&m_query_runner);
@@ -385,29 +395,15 @@ bool Output::filter() {
                 break;
             }
 
-            case ScanMode::GpuBitmap:
             case ScanMode::CpuBitmap: {
                 auto& reader = *scan_reader_ptr;
 
                 auto const scan_start = SearchTiming::Clock::now();
                 std::vector<uint8_t> bitmap;
-                clp_s::gpu::ScanCompatError scan_err;
-                switch (m_scan_mode) {
-                    case ScanMode::CpuBitmap:
-                        scan_err = clp_s::gpu::run_cpu_scan_to_bitmap_clauses(
-                                reader, clauses, column_descs, bitmap,
-                                m_num_threads, m_thread_pool.get()
-                        );
-                        break;
-                    case ScanMode::GpuBitmap:
-                        scan_err = clp_s::gpu::run_scan_to_bitmap_clauses(
-                                reader, clauses, column_descs, bitmap
-                        );
-                        break;
-                    default:
-                        SPDLOG_ERROR("Unexpected scan mode in bitmap path");
-                        return false;
-                }
+                auto scan_err = clp_s::gpu::run_cpu_scan_to_bitmap_clauses(
+                        reader, clauses, column_descs, bitmap,
+                        m_num_threads, m_thread_pool.get()
+                );
                 if (clp_s::gpu::ScanCompatError::None != scan_err) {
                     SPDLOG_ERROR(
                             "Bitmap scan failed: {}",

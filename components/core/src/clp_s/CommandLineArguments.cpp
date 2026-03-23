@@ -781,14 +781,12 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 m_scan_mode = ScanMode::None;
             } else if (m_scan_mode_str == "gpu") {
                 m_scan_mode = ScanMode::Gpu;
-            } else if (m_scan_mode_str == "gpu-bitmap") {
-                m_scan_mode = ScanMode::GpuBitmap;
             } else if (m_scan_mode_str == "cpu-bitmap") {
                 m_scan_mode = ScanMode::CpuBitmap;
             } else {
                 throw std::invalid_argument(
                         "Invalid --scan mode '" + m_scan_mode_str
-                        + "'. Valid options: gpu, gpu-bitmap, cpu-bitmap"
+                        + "'. Valid options: gpu, cpu-bitmap"
                 );
             }
 

@@ -6,6 +6,7 @@
 #include "archive_constants.hpp"
 #include "ArchiveReaderAdaptor.hpp"
 #include "ChunkDecompressUtils.hpp"
+#include "DirectIoUtils.hpp"
 
 namespace clp_s {
 
@@ -138,8 +139,7 @@ void PackedStreamReader::read_stream_parallel(
         size_t stream_id,
         std::shared_ptr<char[]>& buf,
         size_t& buf_size,
-        size_t num_threads,
-        ThreadPool* thread_pool
+        size_t num_threads
 ) {
     bool const is_gdeflate = ArchiveCompressionType::Gdeflate == m_compression_codec;
     auto const& meta = m_stream_metadata.at(stream_id);
@@ -157,31 +157,22 @@ void PackedStreamReader::read_stream_parallel(
         buf_size = meta.uncompressed_size;
     }
 
-    // Step 3: Compute chunk byte offsets (prefix sum of compressed sizes) and output offsets
-    std::vector<size_t> chunk_compressed_offsets(num_chunks);
-    std::vector<size_t> chunk_output_offsets(num_chunks);
-    chunk_compressed_offsets[0] = 0;
-    chunk_output_offsets[0] = 0;
-    for (size_t i = 1; i < num_chunks; ++i) {
-        chunk_compressed_offsets[i]
-                = chunk_compressed_offsets[i - 1] + chunk_compressed_sizes[i - 1];
-        chunk_output_offsets[i] = chunk_output_offsets[i - 1] + meta.chunk_size;
+    // Step 3: Build ChunkInfo descriptors
+    std::vector<ChunkInfo> chunks(num_chunks);
+    size_t compressed_off = 0;
+    for (size_t i = 0; i < num_chunks; ++i) {
+        chunks[i].src = compressed_buf.get() + compressed_off;
+        chunks[i].src_size = chunk_compressed_sizes[i];
+        chunks[i].dst = buf.get() + i * static_cast<size_t>(meta.chunk_size);
+        chunks[i].dst_cap = (i + 1 < num_chunks)
+                                    ? meta.chunk_size
+                                    : (meta.uncompressed_size
+                                       - i * static_cast<size_t>(meta.chunk_size));
+        compressed_off += chunk_compressed_sizes[i];
     }
 
-    // Step 4: Decompress chunks in parallel
-    ChunkDecompressArgs const args{
-            compressed_buf.get(),
-            buf.get(),
-            chunk_compressed_offsets.data(),
-            chunk_compressed_sizes.data(),
-            chunk_output_offsets.data(),
-            meta.chunk_size,
-            meta.uncompressed_size,
-            num_chunks,
-            is_gdeflate
-    };
-
-    decompress_chunks_parallel(args, num_threads, *thread_pool);
+    // Step 4: Decompress chunks in parallel with taskflow work-stealing
+    decompress_chunks_taskflow(chunks, num_threads, is_gdeflate);
 }
 
 void PackedStreamReader::read_chunk_metadata(ZstdDecompressor& decompressor) {
@@ -209,13 +200,16 @@ void PackedStreamReader::read_chunk_metadata(ZstdDecompressor& decompressor) {
         }
 
         stream.chunk_compressed_sizes.resize(num_chunks);
+        size_t total = 0;
         for (uint32_t i = 0; i < num_chunks; ++i) {
             if (auto error = decompressor.try_read_numeric_value(stream.chunk_compressed_sizes[i]);
                 ErrorCodeSuccess != error)
             {
                 throw OperationFailed(error, __FILE__, __LINE__);
             }
+            total += stream.chunk_compressed_sizes[i];
         }
+        stream.compressed_size = total;
     }
     m_has_chunk_metadata = true;
 }
@@ -251,10 +245,7 @@ void PackedStreamReader::read_stream_compressed(
         throw OperationFailed(static_cast<ErrorCode>(error), __FILE__, __LINE__);
     }
 
-    size_t total_compressed = 0;
-    for (auto cs : meta.chunk_compressed_sizes) {
-        total_compressed += cs;
-    }
+    size_t const total_compressed = meta.compressed_size;
 
     if (buf_size < total_compressed) {
         buf = std::shared_ptr<char[]>(new char[total_compressed]);
@@ -266,5 +257,84 @@ void PackedStreamReader::read_stream_compressed(
     {
         throw OperationFailed(static_cast<ErrorCode>(error), __FILE__, __LINE__);
     }
+}
+
+size_t PackedStreamReader::read_streams_compressed_bulk(
+        std::vector<size_t> const& stream_ids,
+        char* dest_buf,
+        size_t dest_buf_size,
+        std::vector<size_t>& stream_offsets,
+        std::vector<size_t>& stream_sizes
+) {
+    if (stream_ids.empty()) {
+        return 0;
+    }
+
+    if (m_state != PackedStreamReaderState::PackedStreamsOpened
+        && m_state != PackedStreamReaderState::ReadingPackedStreams)
+    {
+        throw OperationFailed(ErrorCodeNotReady, __FILE__, __LINE__);
+    }
+    m_state = PackedStreamReaderState::ReadingPackedStreams;
+
+    // Compute per-stream compressed sizes and total
+    stream_offsets.resize(stream_ids.size());
+    stream_sizes.resize(stream_ids.size());
+    size_t total_compressed = 0;
+    for (size_t i = 0; i < stream_ids.size(); ++i) {
+        auto const& meta = m_stream_metadata.at(stream_ids[i]);
+        size_t const compressed = meta.compressed_size;
+        stream_offsets[i] = total_compressed;
+        stream_sizes[i] = compressed;
+        total_compressed += compressed;
+    }
+
+    if (nullptr == dest_buf || dest_buf_size < total_compressed) {
+        throw OperationFailed(ErrorCodeBadParam, __FILE__, __LINE__);
+    }
+
+    // Get the file path for raw I/O
+    std::string tables_path;
+    if (m_adaptor->is_single_file_archive()) {
+        tables_path = m_adaptor->get_path().path;
+    } else {
+        tables_path = m_adaptor->get_path().path + constants::cArchiveTablesFile;
+    }
+
+    direct_io::DirectIoFdPair fds(tables_path.c_str());
+    if (!fds.is_valid()) {
+        throw OperationFailed(ErrorCodeFileNotFound, __FILE__, __LINE__);
+    }
+
+    // Check if streams are contiguous
+    bool contiguous = true;
+    for (size_t i = 1; i < stream_ids.size(); ++i) {
+        size_t prev_end = m_stream_metadata[stream_ids[i - 1]].file_offset
+                          + stream_sizes[i - 1];
+        if (m_stream_metadata[stream_ids[i]].file_offset != prev_end) {
+            contiguous = false;
+            break;
+        }
+    }
+
+    size_t const first_file_offset
+            = m_begin_offset + m_stream_metadata[stream_ids[0]].file_offset;
+
+    if (contiguous) {
+        if (!fds.read(dest_buf, total_compressed, first_file_offset)) {
+            throw OperationFailed(ErrorCodeCorrupt, __FILE__, __LINE__);
+        }
+    } else {
+        for (size_t i = 0; i < stream_ids.size(); ++i) {
+            size_t const file_offset
+                    = m_begin_offset + m_stream_metadata[stream_ids[i]].file_offset;
+            if (!fds.read(dest_buf + stream_offsets[i], stream_sizes[i], file_offset)) {
+                throw OperationFailed(ErrorCodeCorrupt, __FILE__, __LINE__);
+            }
+        }
+    }
+
+    m_prev_stream_id = stream_ids.back();
+    return total_compressed;
 }
 }  // namespace clp_s

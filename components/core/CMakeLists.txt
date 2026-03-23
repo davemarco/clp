@@ -800,6 +800,7 @@ if(CLP_ENABLE_TESTS)
             PRIVATE
             ${CLP_SQLITE3_INCLUDE_DIRECTORY}
             )
+    target_include_directories(unitTest SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/cross_dependencies/dependencies/taskflow)
     target_link_libraries(unitTest
             PRIVATE
             absl::flat_hash_map

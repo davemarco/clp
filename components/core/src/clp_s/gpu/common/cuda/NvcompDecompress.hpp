@@ -49,6 +49,7 @@ public:
      * compressed_buf in each StreamInput must already be on the GPU.
      * Callers are responsible for getting compressed data onto the device
      * (e.g. via cudaMemcpy, or GDS cuFileRead into get_compressed_buffer()).
+     * Synchronizes the CUDA stream before returning — output is ready on return.
      */
     cudaError_t decompress_batch(
             std::vector<StreamInput> const& streams,

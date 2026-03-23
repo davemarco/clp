@@ -19,9 +19,21 @@
 #include "ArchiveReaderAdaptor.hpp"
 #include "ChunkDecompressUtils.hpp"
 #include "DictionaryEntry.hpp"
-#include "ThreadPool.hpp"
+#include "DirectIoUtils.hpp"
 
 namespace clp_s {
+
+/**
+ * Reusable buffers for parallel dictionary decompression.
+ * Persists across archives to avoid page fault overhead on repeated runs.
+ */
+struct DictDecompressBuffer {
+    std::shared_ptr<char[]> decomp_buf;
+    size_t decomp_cap{0};
+    std::shared_ptr<char[]> comp_buf;
+    size_t comp_cap{0};
+};
+
 template <typename DictionaryIdType, typename EntryType>
 class DictionaryReader {
 public:
@@ -62,14 +74,16 @@ public:
      * For LogTypeDictionaryEntry, constructs and eagerly decodes entries.
      * @param chunk_size The uncompressed chunk size used during compression.
      * @param chunk_compressed_sizes Per-chunk compressed sizes.
+     * @param total_compressed Sum of chunk_compressed_sizes (total bytes to read from disk).
      * @param num_threads Number of decompression threads.
-     * @param thread_pool Thread pool for parallel decompression.
+     * @param cache Optional reusable buffers to avoid allocation/page-fault overhead.
      */
     void read_entries_parallel(
             uint32_t chunk_size,
             std::vector<uint32_t> const& chunk_compressed_sizes,
+            size_t total_compressed,
             size_t num_threads,
-            ThreadPool* thread_pool
+            DictDecompressBuffer* cache = nullptr
     );
 
     /**
@@ -144,7 +158,7 @@ protected:
     std::vector<EntryType> m_entries;
     size_t m_num_entries{0};
     // Zero-copy parallel path: buffer + offset table instead of entry vector.
-    std::unique_ptr<char[]> m_decompressed_buf;
+    std::shared_ptr<char[]> m_decompressed_buf;
     std::vector<size_t> m_entry_offsets;
 };
 
@@ -204,8 +218,9 @@ template <typename DictionaryIdType, typename EntryType>
 void DictionaryReader<DictionaryIdType, EntryType>::read_entries_parallel(
         uint32_t chunk_size,
         std::vector<uint32_t> const& chunk_compressed_sizes,
+        size_t total_compressed,
         size_t num_threads,
-        ThreadPool* thread_pool
+        DictDecompressBuffer* cache
 ) {
     if (false == m_is_open) {
         throw OperationFailed(ErrorCodeNotInit, __FILENAME__, __LINE__);
@@ -218,49 +233,75 @@ void DictionaryReader<DictionaryIdType, EntryType>::read_entries_parallel(
     dictionary_reader->read_numeric_value(num_dictionary_entries, false);
     m_num_entries = num_dictionary_entries;
 
-    // Read all compressed data into a single buffer
-    size_t total_compressed = 0;
-    for (uint32_t cs : chunk_compressed_sizes) {
-        total_compressed += cs;
+    // Read all compressed data — use O_DIRECT to bypass page cache when possible.
+    std::shared_ptr<char[]> compressed_buf;
+    if (cache && cache->comp_cap >= total_compressed) {
+        compressed_buf = cache->comp_buf;
+    } else {
+        compressed_buf = std::shared_ptr<char[]>(new char[total_compressed]);
+        if (cache) {
+            cache->comp_buf = compressed_buf;
+            cache->comp_cap = total_compressed;
+        }
     }
 
-    auto compressed_buf = std::make_unique<char[]>(total_compressed);
-    if (auto error = dictionary_reader->try_read_exact_length(compressed_buf.get(), total_compressed);
-        clp::ErrorCode::ErrorCode_Success != error)
-    {
-        throw OperationFailed(static_cast<ErrorCode>(error), __FILENAME__, __LINE__);
+    // Get the current file position (after the header) for raw I/O
+    size_t data_file_pos = 0;
+    dictionary_reader->try_get_pos(data_file_pos);
+
+    // Build the file path for O_DIRECT
+    std::string dict_file_path;
+    if (m_adaptor.is_single_file_archive()) {
+        dict_file_path = m_adaptor.get_path().path;
+    } else {
+        dict_file_path = m_adaptor.get_path().path + m_dictionary_path;
     }
 
-    // Compute total uncompressed size and chunk offsets
+    direct_io::DirectIoFdPair fds(dict_file_path.c_str());
+    if (fds.is_valid()) {
+        if (!fds.read(compressed_buf.get(), total_compressed, data_file_pos)) {
+            throw OperationFailed(ErrorCodeCorrupt, __FILENAME__, __LINE__);
+        }
+    } else {
+        // Fallback to buffered read if we can't open the file directly
+        if (auto error = dictionary_reader->try_read_exact_length(
+                    compressed_buf.get(), total_compressed);
+            clp::ErrorCode::ErrorCode_Success != error)
+        {
+            throw OperationFailed(static_cast<ErrorCode>(error), __FILENAME__, __LINE__);
+        }
+    }
+
+    // Build ChunkInfo descriptors for taskflow decompression
     size_t const num_chunks = chunk_compressed_sizes.size();
-    std::vector<size_t> chunk_compressed_offsets(num_chunks);
-    std::vector<size_t> chunk_output_offsets(num_chunks);
-    chunk_compressed_offsets[0] = 0;
-    chunk_output_offsets[0] = 0;
-    for (size_t i = 1; i < num_chunks; ++i) {
-        chunk_compressed_offsets[i]
-                = chunk_compressed_offsets[i - 1] + chunk_compressed_sizes[i - 1];
-        chunk_output_offsets[i] = chunk_output_offsets[i - 1] + chunk_size;
-    }
-    // Estimate total uncompressed size: (num_chunks - 1) * chunk_size + last_chunk_size
-    // Last chunk may be smaller, but we don't know exact size. Over-allocate with chunk_size.
     size_t const uncompressed_size = num_chunks * static_cast<size_t>(chunk_size);
-    auto decompressed_buf = std::make_unique<char[]>(uncompressed_size);
 
-    ChunkDecompressArgs const args{
-            compressed_buf.get(),
-            decompressed_buf.get(),
-            chunk_compressed_offsets.data(),
-            chunk_compressed_sizes.data(),
-            chunk_output_offsets.data(),
-            chunk_size,
-            uncompressed_size,
-            num_chunks,
-            false  // dictionaries always use Zstd
-    };
+    // Reuse caller-provided buffer to avoid page fault overhead on repeated runs.
+    std::shared_ptr<char[]> decompressed_buf;
+    if (cache && cache->decomp_cap >= uncompressed_size) {
+        decompressed_buf = cache->decomp_buf;
+    } else {
+        decompressed_buf = std::shared_ptr<char[]>(new char[uncompressed_size]);
+        if (cache) {
+            cache->decomp_buf = decompressed_buf;
+            cache->decomp_cap = uncompressed_size;
+        }
+    }
 
-    // Decompress chunks in parallel
-    decompress_chunks_parallel(args, num_threads, *thread_pool);
+    std::vector<ChunkInfo> chunks(num_chunks);
+    size_t compressed_off = 0;
+    for (size_t i = 0; i < num_chunks; ++i) {
+        chunks[i].src = compressed_buf.get() + compressed_off;
+        chunks[i].src_size = chunk_compressed_sizes[i];
+        chunks[i].dst = decompressed_buf.get() + i * static_cast<size_t>(chunk_size);
+        chunks[i].dst_cap = (i + 1 < num_chunks)
+                                    ? chunk_size
+                                    : (uncompressed_size
+                                       - i * static_cast<size_t>(chunk_size));
+        compressed_off += chunk_compressed_sizes[i];
+    }
+
+    decompress_chunks_taskflow(chunks, num_threads, false /* dictionaries always use Zstd */);
 
     // Keep buffer alive for zero-copy lookups via offset table.
     m_decompressed_buf = std::move(decompressed_buf);

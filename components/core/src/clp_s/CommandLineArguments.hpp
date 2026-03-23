@@ -47,7 +47,6 @@ public:
     enum class ScanMode : uint8_t {
         None = 0,
         Gpu,
-        GpuBitmap,
         CpuBitmap
     };
 

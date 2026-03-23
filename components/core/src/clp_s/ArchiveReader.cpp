@@ -171,6 +171,11 @@ void ArchiveReader::read_metadata() {
                     return;
                 }
             }
+            size_t total = 0;
+            for (uint32_t i = 0; i < num_chunks; ++i) {
+                total += meta.chunk_compressed_sizes[i];
+            }
+            meta.total_compressed = total;
             meta.has_chunks = (num_chunks > 0);
         };
 
@@ -481,6 +486,18 @@ void ArchiveReader::read_stream_compressed(
     m_stream_reader.read_stream_compressed(stream_id, buf, buf_size);
 }
 
+size_t ArchiveReader::read_streams_compressed_bulk(
+        std::vector<size_t> const& stream_ids,
+        char* dest_buf,
+        size_t dest_buf_size,
+        std::vector<size_t>& stream_offsets,
+        std::vector<size_t>& stream_sizes
+) {
+    return m_stream_reader.read_streams_compressed_bulk(
+            stream_ids, dest_buf, dest_buf_size, stream_offsets, stream_sizes
+    );
+}
+
 SchemaReader& ArchiveReader::init_schema_table(
         int32_t schema_id,
         bool should_extract_timestamp,
@@ -554,8 +571,7 @@ std::shared_ptr<char[]> ArchiveReader::read_stream(size_t stream_id, bool reuse_
                 stream_id,
                 m_stream_buffer,
                 m_stream_buffer_size,
-                std::max(m_num_threads, static_cast<size_t>(1)),
-                m_thread_pool
+                std::max(m_num_threads, static_cast<size_t>(1))
         );
     } else {
         m_stream_reader.read_stream(stream_id, m_stream_buffer, m_stream_buffer_size);

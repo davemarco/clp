@@ -32,6 +32,7 @@ public:
     struct DictChunkMetadata {
         uint32_t chunk_size{0};
         std::vector<uint32_t> chunk_compressed_sizes;
+        size_t total_compressed{0};
         bool has_chunks{false};
     };
 
@@ -160,6 +161,17 @@ public:
     );
 
     /**
+     * Reads compressed data for multiple streams in a single I/O operation.
+     */
+    size_t read_streams_compressed_bulk(
+            std::vector<size_t> const& stream_ids,
+            char* dest_buf,
+            size_t dest_buf_size,
+            std::vector<size_t>& stream_offsets,
+            std::vector<size_t>& stream_sizes
+    );
+
+    /**
      * @return the schema metadata for the given schema_id
      */
     SchemaReader::SchemaMetadata const& get_schema_metadata(int32_t schema_id) const {
@@ -229,6 +241,8 @@ public:
 
     void set_thread_pool(ThreadPool* pool) { m_thread_pool = pool; }
 
+    void set_dict_decompress_buffer(DictDecompressBuffer* cache) { m_dict_decompress_buf = cache; }
+
     /**
      * @return true if this archive has log ordering information, and false otherwise.
      */
@@ -252,8 +266,9 @@ private:
             dict.read_entries_parallel(
                     meta.chunk_size,
                     meta.chunk_compressed_sizes,
+                    meta.total_compressed,
                     m_num_threads,
-                    m_thread_pool
+                    m_dict_decompress_buf
             );
         } else {
             dict.read_entries(lazy);
@@ -343,6 +358,9 @@ private:
     int32_t m_log_event_idx_column_id{-1};
     size_t m_num_threads{1};
     ThreadPool* m_thread_pool{nullptr};
+
+    // External reusable buffers for dictionary decompression (persist across archives and repeat runs).
+    DictDecompressBuffer* m_dict_decompress_buf{nullptr};
 };
 }  // namespace clp_s
 

@@ -3,46 +3,36 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "ErrorCode.hpp"
 
 namespace clp_s {
 
-struct ChunkDecompressArgs {
-    char const* compressed_data;
-    char* output_data;
-    size_t const* chunk_compressed_offsets;
-    uint32_t const* chunk_compressed_sizes;
-    size_t const* chunk_output_offsets;
-    size_t chunk_size;
-    size_t uncompressed_size;
-    size_t num_chunks;
-    bool is_gdeflate;
+/**
+ * Describes a single compressed chunk for decompression.
+ */
+struct ChunkInfo {
+    char const* src;
+    size_t src_size;
+    char* dst;
+    size_t dst_cap;
 };
 
 /**
- * Decompresses a contiguous range of chunks [start_chunk, start_chunk + count).
- * Pre-faults output pages to parallelize page fault cost across cores.
- * Thread-safe: each invocation creates its own ZSTD_DCtx.
+ * Decompresses chunks in parallel using taskflow's work-stealing scheduler.
+ * One task per chunk for maximum load balancing. Uses thread_local ZSTD_DCtx
+ * to avoid per-call allocation overhead.
+ *
+ * @param chunks Per-chunk src/dst descriptors.
+ * @param num_threads Number of worker threads for the taskflow executor.
+ * @param is_gdeflate If true, uses gdeflate CPU decompressor instead of zstd.
+ * @throws TraceableException on decompression failure.
  */
-ErrorCode decompress_chunk_range(
-        ChunkDecompressArgs const& args,
-        size_t start_chunk,
-        size_t count
-);
-
-class ThreadPool;
-
-/**
- * Distributes chunk decompression across threads and waits for completion.
- * @param args Decompression arguments (compressed/output buffers, offsets, sizes).
- * @param num_threads Maximum number of threads to use.
- * @param thread_pool Thread pool for parallel execution.
- */
-void decompress_chunks_parallel(
-        ChunkDecompressArgs const& args,
+void decompress_chunks_taskflow(
+        std::vector<ChunkInfo> const& chunks,
         size_t num_threads,
-        ThreadPool& thread_pool
+        bool is_gdeflate
 );
 
 }  // namespace clp_s

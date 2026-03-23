@@ -2,6 +2,7 @@
 #define CLP_S_GPU_COMMON_HOST_DECOMPRESS_STREAMS_HPP
 
 #include <cstdint>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -12,6 +13,34 @@
 #include "../cuda/Transfer.hpp"
 
 namespace clp_s::gpu {
+
+/**
+ * Reusable host buffer for CPU batch decompression.
+ * Persists across archives and repeat runs to avoid page fault overhead.
+ */
+struct CpuDecompressBuffer {
+    std::shared_ptr<char[]> buf;
+    size_t capacity{0};
+};
+
+/**
+ * Batch-decompresses all matched ERT streams on the CPU,
+ * mirroring the GPU path but into host memory.
+ *
+ * @param[out] out_buffer receives the decompressed data buffer
+ * @param[out] out_stream_offsets receives stream_id → byte offset mapping
+ * @return true on success, false on failure.
+ */
+bool decompress_matched_streams_cpu(
+        clp_s::ArchiveReader& archive_reader,
+        std::vector<int32_t> const& matched_schemas,
+        clp_s::ArchiveCompressionType archive_codec,
+        size_t num_threads,
+        clp_s::SearchTiming& timing,
+        std::shared_ptr<char[]>& out_buffer,
+        std::unordered_map<size_t, size_t>& out_stream_offsets,
+        CpuDecompressBuffer* cache = nullptr
+);
 
 /**
  * Reads compressed ERT streams from disk to host, copies them H2D, then

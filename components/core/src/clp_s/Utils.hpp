@@ -185,10 +185,10 @@ private:
     size_t m_size{0};
 };
 /**
- * Drops the OS page cache, dentries, and inodes (requires root).
- * Mirrors the standard systems research methodology (echo 3 > /proc/sys/vm/drop_caches).
- * Logs a warning if the operation fails (e.g. not running as root).
+ * Evicts page cache for all files under the given paths using posix_fadvise
+ * (POSIX_FADV_DONTNEED). Works without root or --privileged in containers.
+ * Each path may be a regular file or a directory (walked recursively).
  */
-void try_drop_page_cache();
+void try_drop_page_cache(std::vector<std::string> const& paths);
 }  // namespace clp_s
 #endif  // CLP_S_UTILS_HPP

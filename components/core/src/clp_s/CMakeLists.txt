@@ -322,6 +322,7 @@ set(
         DictionaryEntry.cpp
         DictionaryEntry.hpp
         DictionaryReader.hpp
+        DirectIoUtils.hpp
         ChunkDecompressUtils.cpp
         ChunkDecompressUtils.hpp
         ErrorCode.hpp
@@ -355,6 +356,7 @@ if(CLP_BUILD_CLP_S_ARCHIVEREADER)
         add_library(clp_s::archive_reader ALIAS clp_s_archive_reader)
         target_compile_features(clp_s_archive_reader PRIVATE cxx_std_20)
         target_include_directories(clp_s_archive_reader PUBLIC ../)
+        target_include_directories(clp_s_archive_reader SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/cross_dependencies/dependencies/taskflow)
         target_link_libraries(
                 clp_s_archive_reader
                 PUBLIC

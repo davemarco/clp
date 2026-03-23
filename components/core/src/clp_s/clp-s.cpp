@@ -37,6 +37,9 @@
 #include "search/kql/kql.hpp"
 #include "gpu/common/cuda/CudaWarmup.hpp"
 #include "gpu/common/cuda/GdsReader.hpp"
+#include "gpu/common/cuda/NvcompDecompress.hpp"
+#include "gpu/common/cuda/Transfer.hpp"
+#include "gpu/common/host/DecompressStreams.hpp"
 #include "search/Output.hpp"
 #include "SearchTiming.hpp"
 #include "Utils.hpp"
@@ -79,7 +82,10 @@ bool search_archive(
         CommandLineArguments const& command_line_arguments,
         std::shared_ptr<clp_s::ArchiveReader> const& archive_reader,
         std::shared_ptr<ast::Expression> expr,
-        int reducer_socket_fd
+        int reducer_socket_fd,
+        clp_s::gpu::NvcompDecompressContext* shared_decompress_ctx,
+        clp_s::gpu::DeviceBuffer* shared_device_buffer,
+        clp_s::gpu::CpuDecompressBuffer* shared_cpu_buffer
 );
 
 bool compress(CommandLineArguments const& command_line_arguments) {
@@ -133,7 +139,10 @@ bool search_archive(
         CommandLineArguments const& command_line_arguments,
         std::shared_ptr<clp_s::ArchiveReader> const& archive_reader,
         std::shared_ptr<ast::Expression> expr,
-        int reducer_socket_fd
+        int reducer_socket_fd,
+        clp_s::gpu::NvcompDecompressContext* shared_decompress_ctx,
+        clp_s::gpu::DeviceBuffer* shared_device_buffer,
+        clp_s::gpu::CpuDecompressBuffer* shared_cpu_buffer
 ) {
     auto const& query = command_line_arguments.get_query();
 
@@ -299,7 +308,10 @@ bool search_archive(
             command_line_arguments.get_scan_mode(),
             command_line_arguments.get_schema_path(),
             command_line_arguments.get_num_threads(),
-            command_line_arguments.get_gpu_direct_storage()
+            command_line_arguments.get_gpu_direct_storage(),
+            shared_decompress_ctx,
+            shared_device_buffer,
+            shared_cpu_buffer
     );
     return output.filter();
 }
@@ -407,6 +419,20 @@ int main(int argc, char const* argv[]) {
         auto const repeat_count = command_line_arguments.get_repeat_count();
         auto const drop_caches = command_line_arguments.get_drop_caches();
 
+        // Shared contexts that persist across archives and repeat runs
+        clp_s::gpu::NvcompDecompressContext shared_decompress_ctx;
+        clp_s::gpu::DeviceBuffer shared_device_buffer{};
+        clp_s::gpu::CpuDecompressBuffer shared_cpu_buffer;
+        clp_s::DictDecompressBuffer shared_dict_decompress_buf;
+
+        // Build cache eviction paths once (used between repeat runs)
+        std::vector<std::string> cache_paths;
+        if (drop_caches) {
+            for (auto const& p : command_line_arguments.get_input_paths()) {
+                cache_paths.push_back(p.path);
+            }
+        }
+
         for (size_t run = 0; run < repeat_count; ++run) {
             timing.reset();
             auto const run_start = clp_s::SearchTiming::Clock::now();
@@ -417,6 +443,7 @@ int main(int argc, char const* argv[]) {
 
             auto archive_reader = std::make_shared<clp_s::ArchiveReader>();
             archive_reader->set_num_threads(command_line_arguments.get_num_threads());
+            archive_reader->set_dict_decompress_buffer(&shared_dict_decompress_buf);
             for (auto const& input_path : command_line_arguments.get_input_paths()) {
                 if (std::string::npos != input_path.path.find(clp::ir::cIrFileExtension)) {
                     auto const result{clp_s::search_kv_ir_stream(
@@ -474,7 +501,10 @@ int main(int argc, char const* argv[]) {
                             command_line_arguments,
                             archive_reader,
                             expr->copy(),
-                            reducer_socket_fd
+                            reducer_socket_fd,
+                            &shared_decompress_ctx,
+                            &shared_device_buffer,
+                            &shared_cpu_buffer
                     ))
                 {
                     return 1;
@@ -487,7 +517,7 @@ int main(int argc, char const* argv[]) {
             timing.collect_run(run);
 
             if (drop_caches && run + 1 < repeat_count) {
-                clp_s::try_drop_page_cache();
+                clp_s::try_drop_page_cache(cache_paths);
             }
         }
 

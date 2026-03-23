@@ -21,8 +21,11 @@
 #include "OutputHandler.hpp"
 #include "QueryRunner.hpp"
 #include "SchemaMatch.hpp"
+#include "../gpu/common/cuda/NvcompDecompress.hpp"
+#include "../gpu/common/host/DecompressStreams.hpp"
 
 namespace clp_s::search {
+
 /**
  * This class orchestrates the process of searching through a CLP archive,
  * filtering log messages according to a specified query, and then outputting the
@@ -40,7 +43,10 @@ public:
            ScanMode scan_mode,
            std::string schema_path,
            size_t num_threads = 1,
-           bool gpu_direct = false)
+           bool gpu_direct = false,
+           gpu::NvcompDecompressContext* shared_decompress_ctx = nullptr,
+           gpu::DeviceBuffer* shared_device_buffer = nullptr,
+           gpu::CpuDecompressBuffer* shared_cpu_buffer = nullptr)
             : m_query_runner(match, expr, archive_reader, ignore_case, std::move(schema_path)),
               m_archive_reader(archive_reader),
               m_schema_tree(m_archive_reader->get_schema_tree()),
@@ -51,7 +57,10 @@ public:
               m_scan_mode(scan_mode),
               m_num_threads(num_threads),
               m_thread_pool(num_threads > 1 ? std::make_unique<ThreadPool>(num_threads) : nullptr),
-              m_gpu_direct(gpu_direct) {}
+              m_gpu_direct(gpu_direct),
+              m_shared_decompress_ctx(shared_decompress_ctx),
+              m_shared_device_buffer(shared_device_buffer),
+              m_shared_cpu_buffer(shared_cpu_buffer) {}
 
     /**
      * Filters messages within the archive and outputs the filtered messages to the configured
@@ -73,6 +82,9 @@ private:
     size_t m_num_threads{1};
     std::unique_ptr<ThreadPool> m_thread_pool;
     bool m_gpu_direct{false};
+    gpu::NvcompDecompressContext* m_shared_decompress_ctx{nullptr};
+    gpu::DeviceBuffer* m_shared_device_buffer{nullptr};
+    gpu::CpuDecompressBuffer* m_shared_cpu_buffer{nullptr};
 };
 }  // namespace clp_s::search
 
