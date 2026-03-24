@@ -159,7 +159,8 @@ protected:
     size_t m_num_entries{0};
     // Zero-copy parallel path: buffer + offset table instead of entry vector.
     std::shared_ptr<char[]> m_decompressed_buf;
-    std::vector<size_t> m_entry_offsets;
+    uint64_t const* m_cumulative_u64{nullptr};
+    size_t m_data_section_offset{0};
 };
 
 using VariableDictionaryReader
@@ -184,7 +185,8 @@ void DictionaryReader<DictionaryIdType, EntryType>::close() {
     }
     m_entries.clear();
     m_num_entries = 0;
-    m_entry_offsets.clear();
+    m_cumulative_u64 = nullptr;
+    m_data_section_offset = 0;
     m_decompressed_buf.reset();
     m_is_open = false;
 }
@@ -307,47 +309,34 @@ void DictionaryReader<DictionaryIdType, EntryType>::read_entries_parallel(
     m_decompressed_buf = std::move(decompressed_buf);
 
     // Parse entries from the decompressed buffer.
-    // Entry format: [uint64_t length][length bytes of string data], repeated.
-    // For VariableDictionaryEntry: store offset table only (zero-copy lookups).
-    // For LogTypeDictionaryEntry: construct entries with string copies + decode.
+    // Lengths-first format: [len_0..len_N][data_0..data_N]
+    // Lengths section starts at byte 0, data section follows.
+    size_t const lengths_section_size = num_dictionary_entries * sizeof(uint64_t);
+    auto const* lengths = reinterpret_cast<uint64_t const*>(m_decompressed_buf.get());
+
     if constexpr (std::is_same_v<EntryType, VariableDictionaryEntry>) {
-        // Build offset table with a sentinel at the end.
-        // Each offset points to the start of an entry (before the uint64_t length prefix).
-        // The sentinel points past the last entry's string data.
-        m_entry_offsets.resize(num_dictionary_entries + 1);
-        size_t buf_pos = 0;
-        for (size_t i = 0; i < num_dictionary_entries; ++i) {
-            if (buf_pos + sizeof(uint64_t) > uncompressed_size) {
-                throw OperationFailed(ErrorCodeCorrupt, __FILENAME__, __LINE__);
-            }
-            m_entry_offsets[i] = buf_pos;
-            uint64_t str_length;
-            memcpy(&str_length, m_decompressed_buf.get() + buf_pos, sizeof(uint64_t));
-            buf_pos += sizeof(uint64_t);
-            if (buf_pos + str_length > uncompressed_size) {
-                throw OperationFailed(ErrorCodeCorrupt, __FILENAME__, __LINE__);
-            }
-            buf_pos += str_length;
-        }
-        m_entry_offsets[num_dictionary_entries] = buf_pos;
+        // In-place prefix-sum: lengths → cumulative end-offsets in data section.
+        static_assert(sizeof(uint64_t) == sizeof(size_t));
+        auto* offsets = reinterpret_cast<size_t*>(const_cast<uint64_t*>(lengths));
+        parallel_prefix_sum(offsets, num_dictionary_entries, num_threads);
+        m_cumulative_u64 = reinterpret_cast<uint64_t const*>(offsets);
+        m_data_section_offset = lengths_section_size;
     } else {
+        // LogTypeDictionaryEntry: sequential prefix-sum for offsets, then construct entries.
+        std::vector<size_t> data_offsets(num_dictionary_entries + 1);
+        data_offsets[0] = 0;
+        for (size_t i = 0; i < num_dictionary_entries; ++i) {
+            data_offsets[i + 1] = data_offsets[i] + lengths[i];
+        }
+
+        char const* data_section = m_decompressed_buf.get() + lengths_section_size;
         m_entries.clear();
         m_entries.reserve(num_dictionary_entries);
-        size_t buf_pos = 0;
         for (size_t i = 0; i < num_dictionary_entries; ++i) {
-            if (buf_pos + sizeof(uint64_t) > uncompressed_size) {
-                throw OperationFailed(ErrorCodeCorrupt, __FILENAME__, __LINE__);
-            }
-            uint64_t str_length;
-            memcpy(&str_length, m_decompressed_buf.get() + buf_pos, sizeof(uint64_t));
-            buf_pos += sizeof(uint64_t);
-            if (buf_pos + str_length > uncompressed_size) {
-                throw OperationFailed(ErrorCodeCorrupt, __FILENAME__, __LINE__);
-            }
-            std::string value(m_decompressed_buf.get() + buf_pos, str_length);
-            buf_pos += str_length;
+            size_t const off = data_offsets[i];
+            size_t const len = lengths[i];
+            std::string value(data_section + off, len);
             m_entries.emplace_back(std::move(value), static_cast<DictionaryIdType>(i));
-            // Eagerly decode logtype entries to match read_entries(lazy=false).
             if constexpr (std::is_same_v<EntryType, LogTypeDictionaryEntry>) {
                 m_entries.back().decode_log_type();
             }
@@ -376,11 +365,11 @@ DictionaryReader<DictionaryIdType, EntryType>::get_value(DictionaryIdType id) co
     if (idx >= m_num_entries) {
         throw OperationFailed(ErrorCodeCorrupt, __FILENAME__, __LINE__);
     }
-    // Zero-copy path: read directly from decompressed buffer via offset table.
-    if (false == m_entry_offsets.empty()) {
-        size_t const str_start = m_entry_offsets[idx] + sizeof(uint64_t);
-        size_t const str_end = m_entry_offsets[idx + 1];
-        return {m_decompressed_buf.get() + str_start, str_end - str_start};
+    // Zero-copy path: in-place cumulative offsets from prefix-sum (VariableDictionaryEntry).
+    if (m_cumulative_u64) {
+        uint64_t const start = (idx > 0) ? m_cumulative_u64[idx - 1] : 0;
+        uint64_t const end = m_cumulative_u64[idx];
+        return {m_decompressed_buf.get() + m_data_section_offset + start, end - start};
     }
     return m_entries[idx].get_value();
 }

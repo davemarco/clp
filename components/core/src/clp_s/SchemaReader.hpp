@@ -241,7 +241,8 @@ public:
      * @param per_thread_output Output vector, one string per thread.
      */
     void serialize_bitmap_parallel(
-            std::vector<uint8_t> const& bitmap,
+            uint8_t const* bitmap,
+            size_t num_rows,
             size_t num_threads,
             ThreadPool* thread_pool,
             std::vector<std::string>& per_thread_output

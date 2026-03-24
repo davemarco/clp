@@ -62,7 +62,7 @@ public:
      * @return the variable dictionary reader
      */
     std::shared_ptr<VariableDictionaryReader> read_variable_dictionary(bool lazy = false) {
-        read_dictionary(*m_var_dict, m_var_dict_chunk_meta, lazy);
+        read_dictionary(*m_var_dict, m_var_dict_chunk_meta, lazy, m_var_dict_buf);
         return m_var_dict;
     }
 
@@ -72,7 +72,7 @@ public:
      * @return the log type dictionary reader
      */
     std::shared_ptr<LogTypeDictionaryReader> read_log_type_dictionary(bool lazy = false) {
-        read_dictionary(*m_log_dict, m_log_dict_chunk_meta, lazy);
+        read_dictionary(*m_log_dict, m_log_dict_chunk_meta, lazy, m_log_dict_buf);
         return m_log_dict;
     }
 
@@ -82,7 +82,7 @@ public:
      * @return the array dictionary reader
      */
     std::shared_ptr<LogTypeDictionaryReader> read_array_dictionary(bool lazy = false) {
-        read_dictionary(*m_array_dict, m_array_dict_chunk_meta, lazy);
+        read_dictionary(*m_array_dict, m_array_dict_chunk_meta, lazy, m_array_dict_buf);
         return m_array_dict;
     }
 
@@ -241,7 +241,15 @@ public:
 
     void set_thread_pool(ThreadPool* pool) { m_thread_pool = pool; }
 
-    void set_dict_decompress_buffer(DictDecompressBuffer* cache) { m_dict_decompress_buf = cache; }
+    void set_dict_decompress_buffers(
+            DictDecompressBuffer* var_buf,
+            DictDecompressBuffer* log_buf,
+            DictDecompressBuffer* array_buf
+    ) {
+        m_var_dict_buf = var_buf;
+        m_log_dict_buf = log_buf;
+        m_array_dict_buf = array_buf;
+    }
 
     /**
      * @return true if this archive has log ordering information, and false otherwise.
@@ -261,14 +269,19 @@ private:
      * Reads a dictionary, using parallel chunk decompression when metadata is available.
      */
     template <typename DictReader>
-    void read_dictionary(DictReader& dict, DictChunkMetadata const& meta, bool lazy) {
+    void read_dictionary(
+            DictReader& dict,
+            DictChunkMetadata const& meta,
+            bool lazy,
+            DictDecompressBuffer*& buf
+    ) {
         if (meta.has_chunks && m_num_threads > 1 && false == lazy) {
             dict.read_entries_parallel(
                     meta.chunk_size,
                     meta.chunk_compressed_sizes,
                     meta.total_compressed,
                     m_num_threads,
-                    m_dict_decompress_buf
+                    buf
             );
         } else {
             dict.read_entries(lazy);
@@ -359,8 +372,12 @@ private:
     size_t m_num_threads{1};
     ThreadPool* m_thread_pool{nullptr};
 
-    // External reusable buffers for dictionary decompression (persist across archives and repeat runs).
-    DictDecompressBuffer* m_dict_decompress_buf{nullptr};
+    // Per-dict-type reusable buffers (persist across archives and repeat runs).
+    // Separate buffers so in-place modifications (e.g., prefix-sum on var dict)
+    // don't corrupt other dicts' data.
+    DictDecompressBuffer* m_var_dict_buf{nullptr};
+    DictDecompressBuffer* m_log_dict_buf{nullptr};
+    DictDecompressBuffer* m_array_dict_buf{nullptr};
 };
 }  // namespace clp_s
 

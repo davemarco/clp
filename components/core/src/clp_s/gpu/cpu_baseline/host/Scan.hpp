@@ -4,10 +4,14 @@
 // CPU baseline for bitmap scan (mirrors GPU bitmap path).
 
 #include <cstdint>
+#include <memory>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
+#include "../../../ArchiveReader.hpp"
 #include "../../../SchemaReader.hpp"
+#include "../../../SchemaTree.hpp"
 #include "../../../ThreadPool.hpp"
 #include "../../common/host/ScanRequest.hpp"
 
@@ -21,10 +25,24 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
         SchemaReader& reader,
         std::vector<ScanClause> const& clauses,
         std::span<ColumnDesc const> columns,
-        std::vector<uint8_t>& out_bitmap,
+        uint8_t* out_bitmap,
+        size_t num_rows,
         size_t num_threads = 1,
         clp_s::ThreadPool* thread_pool = nullptr
 );
+/**
+ * Prefix-sums all delta/timestamp columns across matched schemas on the CPU
+ * using taskflow parallel inclusive_scan.
+ */
+void run_cpu_prefix_sum_schemas(
+        clp_s::ArchiveReader& archive_reader,
+        SchemaTree const& schema_tree,
+        std::vector<int32_t> const& matched_schemas,
+        std::unordered_map<size_t, size_t> const& cpu_batch_offsets,
+        std::shared_ptr<char[]> const& cpu_batch_buffer,
+        size_t num_threads
+);
+
 }  // namespace clp_s::gpu
 
 #endif  // CLP_S_GPU_CPU_BASELINE_HOST_SCAN_HPP

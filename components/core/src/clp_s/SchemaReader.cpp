@@ -418,14 +418,15 @@ auto SchemaReader::serialize_message_at(uint64_t message_index) -> std::string {
 }
 
 void SchemaReader::serialize_bitmap_parallel(
-        std::vector<uint8_t> const& bitmap,
+        uint8_t const* bitmap,
+        size_t num_rows,
         size_t num_threads,
         ThreadPool* thread_pool,
         std::vector<std::string>& per_thread_output
 ) {
     std::vector<size_t> match_indices;
-    match_indices.reserve(bitmap.size() / 10);
-    for (size_t i = 0; i < bitmap.size(); ++i) {
+    match_indices.reserve(num_rows / 10);
+    for (size_t i = 0; i < num_rows; ++i) {
         if (bitmap[i]) {
             match_indices.push_back(i);
         }

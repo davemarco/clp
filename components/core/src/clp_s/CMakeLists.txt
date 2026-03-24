@@ -341,6 +341,8 @@ set(
         SchemaTree.hpp
         TimestampDictionaryReader.cpp
         TimestampDictionaryReader.hpp
+        TaskflowExecutor.cpp
+        TaskflowExecutor.hpp
         TimestampEntry.cpp
         TimestampEntry.hpp
         TraceableException.hpp

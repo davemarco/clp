@@ -1,12 +1,13 @@
 #include "ChunkDecompressUtils.hpp"
 
 #include <atomic>
-#include <memory>
 
 #include <nvcomp/native/gdeflate_cpu.h>
 #include <taskflow/taskflow.hpp>
+#include <taskflow/algorithm/scan.hpp>
 #include <zstd.h>
 
+#include "TaskflowExecutor.hpp"
 #include "TraceableException.hpp"
 
 namespace clp_s {
@@ -25,14 +26,7 @@ void decompress_chunks_taskflow(
         return;
     }
 
-    // Keep executor static so worker threads are reused across calls.
-    // Recreate only if the requested thread count changes.
-    static std::unique_ptr<tf::Executor> executor;
-    static size_t executor_threads = 0;
-    if (!executor || executor_threads != num_threads) {
-        executor = std::make_unique<tf::Executor>(num_threads);
-        executor_threads = num_threads;
-    }
+    auto& executor = get_taskflow_executor(num_threads);
 
     std::atomic<bool> has_error{false};
     tf::Taskflow taskflow;
@@ -67,11 +61,21 @@ void decompress_chunks_taskflow(
             }
         });
     }
-    executor->run(taskflow).wait();
+    executor.run(taskflow).wait();
 
     if (has_error.load()) {
         throw TraceableException(ErrorCodeFailure, __FILENAME__, __LINE__);
     }
+}
+
+void parallel_prefix_sum(size_t* data, size_t count, size_t num_threads) {
+    if (count <= 1) {
+        return;
+    }
+    auto& executor = get_taskflow_executor(num_threads);
+    tf::Taskflow taskflow;
+    taskflow.inclusive_scan(data, data + count, data, std::plus<size_t>{});
+    executor.run(taskflow).wait();
 }
 
 }  // namespace clp_s

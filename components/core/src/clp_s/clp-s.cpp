@@ -85,7 +85,8 @@ bool search_archive(
         int reducer_socket_fd,
         clp_s::gpu::NvcompDecompressContext* shared_decompress_ctx,
         clp_s::gpu::DeviceBuffer* shared_device_buffer,
-        clp_s::gpu::CpuDecompressBuffer* shared_cpu_buffer
+        clp_s::gpu::CpuDecompressBuffer* shared_cpu_buffer,
+        clp_s::gpu::DeviceBuffer* shared_batch_bitmap
 );
 
 bool compress(CommandLineArguments const& command_line_arguments) {
@@ -142,7 +143,8 @@ bool search_archive(
         int reducer_socket_fd,
         clp_s::gpu::NvcompDecompressContext* shared_decompress_ctx,
         clp_s::gpu::DeviceBuffer* shared_device_buffer,
-        clp_s::gpu::CpuDecompressBuffer* shared_cpu_buffer
+        clp_s::gpu::CpuDecompressBuffer* shared_cpu_buffer,
+        clp_s::gpu::DeviceBuffer* shared_batch_bitmap
 ) {
     auto const& query = command_line_arguments.get_query();
 
@@ -311,7 +313,8 @@ bool search_archive(
             command_line_arguments.get_gpu_direct_storage(),
             shared_decompress_ctx,
             shared_device_buffer,
-            shared_cpu_buffer
+            shared_cpu_buffer,
+            shared_batch_bitmap
     );
     return output.filter();
 }
@@ -422,8 +425,11 @@ int main(int argc, char const* argv[]) {
         // Shared contexts that persist across archives and repeat runs
         clp_s::gpu::NvcompDecompressContext shared_decompress_ctx;
         clp_s::gpu::DeviceBuffer shared_device_buffer{};
+        clp_s::gpu::DeviceBuffer shared_batch_bitmap{};
         clp_s::gpu::CpuDecompressBuffer shared_cpu_buffer;
-        clp_s::DictDecompressBuffer shared_dict_decompress_buf;
+        clp_s::DictDecompressBuffer shared_var_dict_buf;
+        clp_s::DictDecompressBuffer shared_log_dict_buf;
+        clp_s::DictDecompressBuffer shared_array_dict_buf;
 
         // Build cache eviction paths once (used between repeat runs)
         std::vector<std::string> cache_paths;
@@ -443,7 +449,9 @@ int main(int argc, char const* argv[]) {
 
             auto archive_reader = std::make_shared<clp_s::ArchiveReader>();
             archive_reader->set_num_threads(command_line_arguments.get_num_threads());
-            archive_reader->set_dict_decompress_buffer(&shared_dict_decompress_buf);
+            archive_reader->set_dict_decompress_buffers(
+                    &shared_var_dict_buf, &shared_log_dict_buf, &shared_array_dict_buf
+            );
             for (auto const& input_path : command_line_arguments.get_input_paths()) {
                 if (std::string::npos != input_path.path.find(clp::ir::cIrFileExtension)) {
                     auto const result{clp_s::search_kv_ir_stream(
@@ -504,7 +512,8 @@ int main(int argc, char const* argv[]) {
                             reducer_socket_fd,
                             &shared_decompress_ctx,
                             &shared_device_buffer,
-                            &shared_cpu_buffer
+                            &shared_cpu_buffer,
+                            &shared_batch_bitmap
                     ))
                 {
                     return 1;
@@ -522,6 +531,10 @@ int main(int argc, char const* argv[]) {
         }
 
         timing.log_all_runs(command_line_arguments.get_timing_output_path());
+
+        // Free shared GPU buffers before CUDA context teardown.
+        clp_s::gpu::free_device_buffer(shared_device_buffer);
+        clp_s::gpu::free_device_buffer(shared_batch_bitmap);
 
         if (command_line_arguments.get_gpu_direct_storage()) {
             clp_s::gpu::gds_driver_close();

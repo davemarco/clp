@@ -35,6 +35,16 @@ void decompress_chunks_taskflow(
         bool is_gdeflate
 );
 
+/**
+ * Parallel inclusive prefix-sum over an array of size_t values.
+ * Uses taskflow's inclusive_scan with a reusable static executor.
+ *
+ * @param data Array to prefix-sum in-place.
+ * @param count Number of elements.
+ * @param num_threads Number of worker threads.
+ */
+void parallel_prefix_sum(size_t* data, size_t count, size_t num_threads);
+
 }  // namespace clp_s
 
 #endif  // CLP_S_CHUNKDECOMPRESSUTILS_HPP

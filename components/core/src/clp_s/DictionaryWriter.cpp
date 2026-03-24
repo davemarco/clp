@@ -37,7 +37,8 @@ VariableDictionaryWriter::add_entry(std::string_view value, clp::variable_dictio
 
         m_data_size += entry.get_data_size();
 
-        entry.write_to_file(m_dictionary_compressor);
+        // Buffer value for lengths-first format (written at close)
+        m_buffered_values.push_back(std::string{value});
     }
     return new_entry;
 }
@@ -67,7 +68,8 @@ bool LogTypeDictionaryWriter::add_entry(
         // TODO: This doesn't account for the segment index that's constantly updated
         m_data_size += logtype_entry.get_data_size();
 
-        logtype_entry.write_to_file(m_dictionary_compressor);
+        // Buffer value for lengths-first format (written at close)
+        m_buffered_values.emplace_back(value);
     }
     return is_new_entry;
 }

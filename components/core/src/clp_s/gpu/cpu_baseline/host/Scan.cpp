@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -9,12 +10,12 @@
 #include <spdlog/spdlog.h>
 #include <taskflow/taskflow.hpp>
 #include <taskflow/algorithm/scan.hpp>
-#include <taskflow/algorithm/for_each.hpp>
 
 #include <clp/EncodedVariableInterpreter.hpp>
 #include <clp/string_utils/string_utils.hpp>
 
 #include "../../../SchemaReader.hpp"
+#include "../../../TaskflowExecutor.hpp"
 #include "../../common/host/ErtInfo.hpp"
 #include "../../common/host/ScanRequestTypeUtils.hpp"
 
@@ -325,7 +326,8 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
         SchemaReader& reader,
         std::vector<ScanClause> const& clauses,
         std::span<ColumnDesc const> columns,
-        std::vector<uint8_t>& out_bitmap,
+        uint8_t* out_bitmap,
+        size_t num_rows,
         size_t num_threads,
         clp_s::ThreadPool* thread_pool
 ) {
@@ -334,9 +336,6 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
     }
 
     auto const buffer_view = get_ert_buffer_view(reader);
-    size_t const num_rows = reader.get_num_messages();
-
-    out_bitmap.resize(num_rows);
 
     constexpr size_t cMinRowsPerThread = 8192;
     size_t const max_useful_threads = std::max(num_rows / cMinRowsPerThread, size_t{1});
@@ -345,35 +344,10 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
         actual_threads = 1;
     }
 
-    // Reuse taskflow executor across calls for prefix-sum.
-    static std::unique_ptr<tf::Executor> tf_executor;
-    static size_t tf_executor_threads = 0;
-    if (!tf_executor || tf_executor_threads != num_threads) {
-        tf_executor = std::make_unique<tf::Executor>(num_threads);
-        tf_executor_threads = num_threads;
-    }
-
-    // Parallel prefix-sum all delta columns using taskflow's inclusive_scan.
-    for (auto const& col : columns) {
-        if (col.type != ColumnType::DeltaInt64 && col.type != ColumnType::Timestamp) {
-            continue;
-        }
-        auto* values = reinterpret_cast<int64_t*>(
-                buffer_view.data + col.primary_offset_bytes
-        );
-        size_t const n = col.length;
-
-        tf::Taskflow taskflow;
-        taskflow.inclusive_scan(
-                values, values + n, values, std::plus<int64_t>{}
-        );
-        tf_executor->run(taskflow).wait();
-    }
-
     // Parallel bitmap scan using ThreadPool (uniform chunks, no work-stealing needed).
     if (actual_threads <= 1) {
         auto scan_err = scan_all_clauses_for_range(
-                buffer_view, clauses, columns, 0, num_rows, out_bitmap.data()
+                buffer_view, clauses, columns, 0, num_rows, out_bitmap
         );
         if (ScanCompatError::None != scan_err) {
             return scan_err;
@@ -388,11 +362,11 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
             size_t const start_row = t * rows_per_thread + std::min(t, remainder);
             size_t const row_count = rows_per_thread + (t < remainder ? 1 : 0);
 
-            thread_pool->submit([&buffer_view, &clauses, &columns, &out_bitmap, &errors,
+            thread_pool->submit([&buffer_view, &clauses, &columns, out_bitmap, &errors,
                                  start_row, row_count, t]() {
                 errors[t] = scan_all_clauses_for_range(
                         buffer_view, clauses, columns,
-                        start_row, row_count, out_bitmap.data() + start_row
+                        start_row, row_count, out_bitmap + start_row
                 );
             });
         }
@@ -404,14 +378,49 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
             }
         }
     }
-
-    auto matches = std::count(out_bitmap.begin(), out_bitmap.end(), static_cast<uint8_t>(1));
-    SPDLOG_DEBUG(
-            "CPU bitmap scan clauses={} matches={}/{}.",
-            clauses.size(),
-            matches,
-            num_rows
-    );
     return ScanCompatError::None;
 }
+void run_cpu_prefix_sum_schemas(
+        clp_s::ArchiveReader& archive_reader,
+        SchemaTree const& schema_tree,
+        std::vector<int32_t> const& matched_schemas,
+        std::unordered_map<size_t, size_t> const& cpu_batch_offsets,
+        std::shared_ptr<char[]> const& cpu_batch_buffer,
+        size_t num_threads
+) {
+    auto& tf_executor = clp_s::get_taskflow_executor(num_threads);
+    tf::Taskflow taskflow;
+
+    for (int32_t const schema_id : matched_schemas) {
+        auto const& schema_meta = archive_reader.get_schema_metadata(schema_id);
+        auto const& schema = (*archive_reader.get_schema_map())[schema_id];
+
+        std::vector<ColumnDesc> column_descs;
+        std::string col_error;
+        if (0 != compute_column_descs_from_metadata(
+                    schema_tree, schema, schema_meta, column_descs, col_error))
+        {
+            continue;
+        }
+
+        auto it = cpu_batch_offsets.find(schema_meta.stream_id);
+        if (it == cpu_batch_offsets.end()) {
+            continue;
+        }
+        size_t const stream_offset = it->second + schema_meta.stream_offset;
+
+        for (auto const& col : column_descs) {
+            if (col.type == ColumnType::DeltaInt64 || col.type == ColumnType::Timestamp) {
+                auto* values = reinterpret_cast<int64_t*>(
+                        cpu_batch_buffer.get() + stream_offset + col.primary_offset_bytes
+                );
+                taskflow.inclusive_scan(
+                        values, values + col.length, values, std::plus<int64_t>{}
+                );
+            }
+        }
+    }
+    tf_executor.run(taskflow).wait();
+}
+
 }  // namespace clp_s::gpu

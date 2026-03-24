@@ -9,7 +9,8 @@
 namespace clp_s::gpu {
 int emit_bitmap_matches(
         SchemaReader& reader,
-        std::vector<uint8_t> const& bitmap,
+        uint8_t const* bitmap,
+        size_t num_rows,
         search::OutputHandler& output_handler,
         std::string& error,
         size_t num_threads,
@@ -17,12 +18,12 @@ int emit_bitmap_matches(
 ) {
     if (num_threads > 1 && thread_pool) {
         std::vector<std::string> outputs;
-        reader.serialize_bitmap_parallel(bitmap, num_threads, thread_pool, outputs);
+        reader.serialize_bitmap_parallel(bitmap, num_rows, num_threads, thread_pool, outputs);
         for (auto& chunk : outputs) {
             output_handler.write(chunk);
         }
     } else {
-        for (size_t i = 0; i < bitmap.size(); ++i) {
+        for (size_t i = 0; i < num_rows; ++i) {
             if (0 == bitmap[i]) {
                 continue;
             }

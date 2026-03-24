@@ -92,6 +92,10 @@ protected:
 
     // Size (in-memory) of the data contained in the dictionary
     size_t m_data_size{};
+
+    // Buffered entry values for lengths-first format (parallel read path).
+    // Entries are accumulated here during ingestion and written in bulk at close.
+    std::vector<std::string> m_buffered_values;
 };
 
 class VariableDictionaryWriter
@@ -170,6 +174,7 @@ size_t DictionaryWriter<DictionaryIdType, EntryType>::close() {
     m_dictionary_file_writer.close();
 
     m_value_to_id.clear();
+    m_buffered_values.clear();
 
     m_is_open = false;
     return compressed_size;
@@ -186,6 +191,16 @@ void DictionaryWriter<DictionaryIdType, EntryType>::write_header_and_flush_to_di
     m_dictionary_file_writer.seek_from_begin(0);
     m_dictionary_file_writer.write_numeric_value<uint64_t>(m_value_to_id.size());
     m_dictionary_file_writer.seek_from_begin(dictionary_file_writer_pos);
+
+    // Write in lengths-first format: [all lengths][all string data]
+    // This enables parallel prefix-sum to compute offsets on read.
+    for (auto const& val : m_buffered_values) {
+        m_dictionary_compressor.template write_numeric_value<uint64_t>(val.length());
+    }
+    for (auto const& val : m_buffered_values) {
+        m_dictionary_compressor.write(val.data(), val.length());
+    }
+    m_buffered_values.clear();
 
     m_dictionary_compressor.flush();
     m_dictionary_file_writer.flush();
