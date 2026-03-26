@@ -398,6 +398,8 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/JsonParser.hpp
     src/clp_s/OutputHandlerImpl.cpp
     src/clp_s/OutputHandlerImpl.hpp
+    src/clp_s/ParallelReader.cpp
+    src/clp_s/ParallelReader.hpp
     src/clp_s/PackedStreamReader.cpp
     src/clp_s/PackedStreamReader.hpp
     src/clp_s/RangeIndexWriter.cpp

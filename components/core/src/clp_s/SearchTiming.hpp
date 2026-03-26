@@ -25,7 +25,9 @@ struct SearchRunData {
     std::chrono::nanoseconds string_query_plan{};
     std::chrono::nanoseconds compressed_io{};
     std::chrono::nanoseconds h2d_transfer{};
-    std::chrono::nanoseconds schema_table_load{};
+    std::chrono::nanoseconds prefix_sum{};
+    std::chrono::nanoseconds result_transfer{};
+    std::chrono::nanoseconds ert_decompress{};
     std::chrono::nanoseconds total_search{};
     std::chrono::nanoseconds scan{};
     std::chrono::nanoseconds serialization{};
@@ -93,12 +95,9 @@ public:
      * @param duration Time spent in H2D transfers (0 for GPUDirect Storage).
      */
     void add_h2d_transfer(std::chrono::nanoseconds duration);
-    /**
-     * Adds elapsed time spent reading and loading a schema table.
-     *
-     * @param duration Time spent reading and loading a schema table.
-     */
-    void add_schema_table_load(std::chrono::nanoseconds duration);
+    void add_prefix_sum(std::chrono::nanoseconds duration);
+    void add_result_transfer(std::chrono::nanoseconds duration);
+    void add_ert_decompress(std::chrono::nanoseconds duration);
     /**
      * Adds elapsed time spent in the overall search path.
      *
@@ -151,7 +150,9 @@ private:
     std::chrono::nanoseconds m_string_query_plan{};
     std::chrono::nanoseconds m_compressed_io{};
     std::chrono::nanoseconds m_h2d_transfer{};
-    std::chrono::nanoseconds m_schema_table_load{};
+    std::chrono::nanoseconds m_prefix_sum{};
+    std::chrono::nanoseconds m_result_transfer{};
+    std::chrono::nanoseconds m_ert_decompress{};
     std::chrono::nanoseconds m_total_search{};
     std::chrono::nanoseconds m_scan{};
     std::chrono::nanoseconds m_serialization{};
@@ -199,7 +200,9 @@ public:
     void add_string_query_plan(std::chrono::nanoseconds) {}
     void add_compressed_io(std::chrono::nanoseconds) {}
     void add_h2d_transfer(std::chrono::nanoseconds) {}
-    void add_schema_table_load(std::chrono::nanoseconds) {}
+    void add_prefix_sum(std::chrono::nanoseconds) {}
+    void add_result_transfer(std::chrono::nanoseconds) {}
+    void add_ert_decompress(std::chrono::nanoseconds) {}
     void add_total_search(std::chrono::nanoseconds) {}
     void add_scan(std::chrono::nanoseconds, uint64_t) {}
     void add_serialization(std::chrono::nanoseconds) {}

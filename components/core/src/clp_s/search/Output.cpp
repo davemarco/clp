@@ -187,10 +187,12 @@ bool Output::filter() {
             }
 
             // 2. Prefix-sum all delta/timestamp columns
+            auto const gpu_prefix_sum_start = SearchTiming::Clock::now();
             clp_s::gpu::run_gpu_prefix_sum_schemas(
                     *m_archive_reader, *m_schema_tree, matched_schemas,
                     stream_batch_offsets, device_buffer
             );
+            timing.add_prefix_sum(SearchTiming::Clock::now() - gpu_prefix_sum_start);
 
             // 3. Batched scan: collect per-schema info, then scan into bitmap
             if (m_output_handler->should_output_metadata()) {
@@ -247,10 +249,12 @@ bool Output::filter() {
 
             // 2. Prefix-sum all delta/timestamp columns
             if (false == cpu_batch_offsets.empty()) {
+                auto const prefix_sum_start = SearchTiming::Clock::now();
                 clp_s::gpu::run_cpu_prefix_sum_schemas(
                         *m_archive_reader, *m_schema_tree, matched_schemas,
                         cpu_batch_offsets, cpu_batch_buffer, m_num_threads
                 );
+                timing.add_prefix_sum(SearchTiming::Clock::now() - prefix_sum_start);
             }
             break;
         }
@@ -274,7 +278,7 @@ bool Output::filter() {
                         m_output_handler->should_output_metadata(),
                         m_should_marshal_records
                 );
-                timing.add_schema_table_load(
+                timing.add_ert_decompress(
                         SearchTiming::Clock::now() - schema_table_start
                 );
                 reader.initialize_filter(&m_query_runner);
@@ -306,6 +310,8 @@ bool Output::filter() {
                 }
                 auto const& batch_info = batched_schemas[batch_idx++];
 
+                auto const gpu_pack_start = SearchTiming::Clock::now();
+
                 auto& reader = m_archive_reader->init_schema_table(
                         schema_id, false, m_should_marshal_records, true
                 );
@@ -328,6 +334,7 @@ bool Output::filter() {
                 if (0 != matches) {
                     clp_s::gpu::sync_default_stream();
                 }
+                timing.add_result_transfer(SearchTiming::Clock::now() - gpu_pack_start);
                 if (0 != matches) {
                     auto const serialize_start = SearchTiming::Clock::now();
                     reader.reset_read_state(encoded_buffer.num_rows);
@@ -378,6 +385,8 @@ bool Output::filter() {
                     return false;
                 }
 
+                auto const schema_setup_start = SearchTiming::Clock::now();
+
                 auto const& schema_meta = m_archive_reader->get_schema_metadata(schema_id);
                 auto const& schema = (*m_archive_reader->get_schema_map())[schema_id];
 
@@ -399,6 +408,10 @@ bool Output::filter() {
                                             + schema_meta.stream_offset;
                 reader.load(cpu_batch_buffer, batch_offset, schema_meta.uncompressed_size);
                 reader.initialize_filter(&m_query_runner);
+
+                timing.add_ert_decompress(SearchTiming::Clock::now() - schema_setup_start);
+
+                auto const scan_start = SearchTiming::Clock::now();
 
                 std::vector<clp_s::gpu::ScanClause> clauses;
                 auto scan_compat_error = clp_s::gpu::build_scan_clauses(
@@ -426,7 +439,6 @@ bool Output::filter() {
                     reuse_bitmap.resize(num_rows);
                 }
 
-                auto const scan_start = SearchTiming::Clock::now();
                 auto scan_err = clp_s::gpu::run_cpu_scan_to_bitmap_clauses(
                         reader, clauses, column_descs,
                         reuse_bitmap.data(), num_rows,
@@ -439,13 +451,13 @@ bool Output::filter() {
                     );
                     return false;
                 }
-                timing.add_scan(
-                        SearchTiming::Clock::now() - scan_start,
-                        num_rows
-                );
                 auto matches = static_cast<size_t>(
                         std::count(reuse_bitmap.data(), reuse_bitmap.data() + num_rows,
                                    static_cast<uint8_t>(1))
+                );
+                timing.add_scan(
+                        SearchTiming::Clock::now() - scan_start,
+                        num_rows
                 );
                 if (0 != matches) {
                     auto const serialize_start = SearchTiming::Clock::now();

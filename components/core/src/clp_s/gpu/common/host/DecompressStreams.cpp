@@ -159,7 +159,7 @@ std::unordered_map<size_t, size_t> decompress_matched_streams_gpu(
         SPDLOG_ERROR("Batched GPU decompression failed: {}", cudaGetErrorString(status));
         return {};
     }
-    timing.add_schema_table_load(clp_s::SearchTiming::Clock::now() - decompress_start);
+    timing.add_ert_decompress(clp_s::SearchTiming::Clock::now() - decompress_start);
 
     return build_offset_map(all_stream_ids, offsets);
 }
@@ -250,7 +250,7 @@ std::unordered_map<size_t, size_t> decompress_matched_streams_gpu_gds(
         SPDLOG_ERROR("GDS batched GPU decompression failed: {}", cudaGetErrorString(status));
         return {};
     }
-    timing.add_schema_table_load(clp_s::SearchTiming::Clock::now() - decompress_start);
+    timing.add_ert_decompress(clp_s::SearchTiming::Clock::now() - decompress_start);
 
     return build_offset_map(all_stream_ids, offsets);
 }
@@ -344,7 +344,7 @@ bool decompress_matched_streams_cpu(
     }
 
     clp_s::decompress_chunks_taskflow(chunks, num_threads, is_gdeflate);
-    timing.add_schema_table_load(clp_s::SearchTiming::Clock::now() - decompress_start);
+    timing.add_ert_decompress(clp_s::SearchTiming::Clock::now() - decompress_start);
 
     out_buffer = std::move(host_buffer);
     out_stream_offsets = build_offset_map(all_stream_ids, offsets);

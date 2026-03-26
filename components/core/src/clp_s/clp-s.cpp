@@ -425,7 +425,7 @@ int main(int argc, char const* argv[]) {
         // Shared contexts that persist across archives and repeat runs
         clp_s::gpu::NvcompDecompressContext shared_decompress_ctx;
         clp_s::gpu::DeviceBuffer shared_device_buffer{};
-        clp_s::gpu::DeviceBuffer shared_batch_bitmap{};
+        clp_s::gpu::DeviceBufferGuard shared_batch_bitmap;
         clp_s::gpu::CpuDecompressBuffer shared_cpu_buffer;
         clp_s::DictDecompressBuffer shared_var_dict_buf;
         clp_s::DictDecompressBuffer shared_log_dict_buf;
@@ -513,7 +513,7 @@ int main(int argc, char const* argv[]) {
                             &shared_decompress_ctx,
                             &shared_device_buffer,
                             &shared_cpu_buffer,
-                            &shared_batch_bitmap
+                            &shared_batch_bitmap.buf
                     ))
                 {
                     return 1;
@@ -531,10 +531,6 @@ int main(int argc, char const* argv[]) {
         }
 
         timing.log_all_runs(command_line_arguments.get_timing_output_path());
-
-        // Free shared GPU buffers before CUDA context teardown.
-        clp_s::gpu::free_device_buffer(shared_device_buffer);
-        clp_s::gpu::free_device_buffer(shared_batch_bitmap);
 
         if (command_line_arguments.get_gpu_direct_storage()) {
             clp_s::gpu::gds_driver_close();

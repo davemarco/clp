@@ -6,7 +6,7 @@
 #include "archive_constants.hpp"
 #include "ArchiveReaderAdaptor.hpp"
 #include "ChunkDecompressUtils.hpp"
-#include "DirectIoUtils.hpp"
+#include "ParallelReader.hpp"
 
 namespace clp_s {
 
@@ -301,37 +301,20 @@ size_t PackedStreamReader::read_streams_compressed_bulk(
         tables_path = m_adaptor->get_path().path + constants::cArchiveTablesFile;
     }
 
-    direct_io::DirectIoFdPair fds(tables_path.c_str());
-    if (!fds.is_valid()) {
-        throw OperationFailed(ErrorCodeFileNotFound, __FILE__, __LINE__);
+    // Build read entries for all streams.
+    std::vector<direct_io::ParallelReader::ReadRequest> read_entries;
+    read_entries.reserve(stream_ids.size());
+    for (size_t i = 0; i < stream_ids.size(); ++i) {
+        read_entries.push_back({
+                stream_sizes[i],
+                m_begin_offset + m_stream_metadata[stream_ids[i]].file_offset,
+                stream_offsets[i]
+        });
     }
 
-    // Check if streams are contiguous
-    bool contiguous = true;
-    for (size_t i = 1; i < stream_ids.size(); ++i) {
-        size_t prev_end = m_stream_metadata[stream_ids[i - 1]].file_offset
-                          + stream_sizes[i - 1];
-        if (m_stream_metadata[stream_ids[i]].file_offset != prev_end) {
-            contiguous = false;
-            break;
-        }
-    }
-
-    size_t const first_file_offset
-            = m_begin_offset + m_stream_metadata[stream_ids[0]].file_offset;
-
-    if (contiguous) {
-        if (!fds.read(dest_buf, total_compressed, first_file_offset)) {
-            throw OperationFailed(ErrorCodeCorrupt, __FILE__, __LINE__);
-        }
-    } else {
-        for (size_t i = 0; i < stream_ids.size(); ++i) {
-            size_t const file_offset
-                    = m_begin_offset + m_stream_metadata[stream_ids[i]].file_offset;
-            if (!fds.read(dest_buf + stream_offsets[i], stream_sizes[i], file_offset)) {
-                throw OperationFailed(ErrorCodeCorrupt, __FILE__, __LINE__);
-            }
-        }
+    direct_io::ParallelReader reader(tables_path.c_str());
+    if (!reader.read_batch(dest_buf, read_entries)) {
+        throw OperationFailed(ErrorCodeCorrupt, __FILE__, __LINE__);
     }
 
     m_prev_stream_id = stream_ids.back();

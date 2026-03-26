@@ -24,7 +24,9 @@ void SearchTiming::reset() {
     m_string_query_plan = {};
     m_compressed_io = {};
     m_h2d_transfer = {};
-    m_schema_table_load = {};
+    m_prefix_sum = {};
+    m_result_transfer = {};
+    m_ert_decompress = {};
     m_total_search = {};
     m_scan = {};
     m_serialization = {};
@@ -74,8 +76,16 @@ void SearchTiming::add_h2d_transfer(std::chrono::nanoseconds duration) {
     m_h2d_transfer += duration;
 }
 
-void SearchTiming::add_schema_table_load(std::chrono::nanoseconds duration) {
-    m_schema_table_load += duration;
+void SearchTiming::add_prefix_sum(std::chrono::nanoseconds duration) {
+    m_prefix_sum += duration;
+}
+
+void SearchTiming::add_result_transfer(std::chrono::nanoseconds duration) {
+    m_result_transfer += duration;
+}
+
+void SearchTiming::add_ert_decompress(std::chrono::nanoseconds duration) {
+    m_ert_decompress += duration;
 }
 
 void SearchTiming::add_total_search(std::chrono::nanoseconds duration) {
@@ -137,7 +147,9 @@ void write_run_json(
     json << "\"string_query_plan_ms\":" << to_ms(run.string_query_plan) << ",";
     json << "\"compressed_io_ms\":" << to_ms(run.compressed_io) << ",";
     json << "\"h2d_transfer_ms\":" << to_ms(run.h2d_transfer) << ",";
-    json << "\"schema_table_load_ms\":" << to_ms(run.schema_table_load) << ",";
+    json << "\"prefix_sum_ms\":" << to_ms(run.prefix_sum) << ",";
+    json << "\"result_transfer_ms\":" << to_ms(run.result_transfer) << ",";
+    json << "\"ert_decompress_ms\":" << to_ms(run.ert_decompress) << ",";
     json << "\"scan_ms\":" << to_ms(run.scan) << ",";
     json << "\"serialization_ms\":" << to_ms(run.serialization) << ",";
     json << "\"scanned_messages\":" << run.scanned_messages << ",";
@@ -172,7 +184,9 @@ void SearchTiming::log_totals() const {
     SPDLOG_INFO("String query plan: {:.3f}ms", to_ms(m_string_query_plan));
     SPDLOG_INFO("Compressed IO: {:.3f}ms", to_ms(m_compressed_io));
     SPDLOG_INFO("H2D transfer: {:.3f}ms", to_ms(m_h2d_transfer));
-    SPDLOG_INFO("Schema table load: {:.3f}ms", to_ms(m_schema_table_load));
+    SPDLOG_INFO("Prefix sum: {:.3f}ms", to_ms(m_prefix_sum));
+    SPDLOG_INFO("Result transfer: {:.3f}ms", to_ms(m_result_transfer));
+    SPDLOG_INFO("ERT decompress: {:.3f}ms", to_ms(m_ert_decompress));
     SPDLOG_INFO(
             "Scan: {:.3f}ms ({} messages)",
             to_ms(m_scan),
@@ -191,7 +205,9 @@ void SearchTiming::collect_run(size_t run_index) {
     run.string_query_plan = m_string_query_plan;
     run.compressed_io = m_compressed_io;
     run.h2d_transfer = m_h2d_transfer;
-    run.schema_table_load = m_schema_table_load;
+    run.prefix_sum = m_prefix_sum;
+    run.result_transfer = m_result_transfer;
+    run.ert_decompress = m_ert_decompress;
     run.total_search = m_total_search;
     run.scan = m_scan;
     run.serialization = m_serialization;

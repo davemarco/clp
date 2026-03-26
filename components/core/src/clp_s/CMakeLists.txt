@@ -323,6 +323,8 @@ set(
         DictionaryEntry.hpp
         DictionaryReader.hpp
         DirectIoUtils.hpp
+        ParallelReader.cpp
+        ParallelReader.hpp
         ChunkDecompressUtils.cpp
         ChunkDecompressUtils.hpp
         ErrorCode.hpp

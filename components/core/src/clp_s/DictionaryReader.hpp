@@ -19,7 +19,7 @@
 #include "ArchiveReaderAdaptor.hpp"
 #include "ChunkDecompressUtils.hpp"
 #include "DictionaryEntry.hpp"
-#include "DirectIoUtils.hpp"
+#include "ParallelReader.hpp"
 
 namespace clp_s {
 
@@ -259,19 +259,10 @@ void DictionaryReader<DictionaryIdType, EntryType>::read_entries_parallel(
         dict_file_path = m_adaptor.get_path().path + m_dictionary_path;
     }
 
-    direct_io::DirectIoFdPair fds(dict_file_path.c_str());
-    if (fds.is_valid()) {
-        if (!fds.read(compressed_buf.get(), total_compressed, data_file_pos)) {
-            throw OperationFailed(ErrorCodeCorrupt, __FILENAME__, __LINE__);
-        }
-    } else {
-        // Fallback to buffered read if we can't open the file directly
-        if (auto error = dictionary_reader->try_read_exact_length(
-                    compressed_buf.get(), total_compressed);
-            clp::ErrorCode::ErrorCode_Success != error)
-        {
-            throw OperationFailed(static_cast<ErrorCode>(error), __FILENAME__, __LINE__);
-        }
+    direct_io::ParallelReader reader(dict_file_path.c_str());
+    std::vector<direct_io::ParallelReader::ReadRequest> entries{{total_compressed, data_file_pos, 0}};
+    if (!reader.read_batch(compressed_buf.get(), entries)) {
+        throw OperationFailed(ErrorCodeCorrupt, __FILENAME__, __LINE__);
     }
 
     // Build ChunkInfo descriptors for taskflow decompression

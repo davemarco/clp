@@ -275,7 +275,7 @@ private:
             bool lazy,
             DictDecompressBuffer*& buf
     ) {
-        if (meta.has_chunks && m_num_threads > 1 && false == lazy) {
+        if (meta.has_chunks && false == lazy) {
             dict.read_entries_parallel(
                     meta.chunk_size,
                     meta.chunk_compressed_sizes,
