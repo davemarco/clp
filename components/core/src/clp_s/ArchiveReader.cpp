@@ -125,23 +125,20 @@ void ArchiveReader::read_metadata() {
               - prev_metadata.stream_offset;
     m_id_to_schema_metadata[prev_schema_id] = prev_metadata;
 
-    // Section 3: Chunk metadata for GPU decompression
-    m_stream_reader.read_chunk_metadata(m_table_metadata_decompressor);
-
     // Set the compression codec from the archive header
     m_stream_reader.set_compression_codec(
             static_cast<ArchiveCompressionType>(get_header().compression_type)
     );
 
     m_table_metadata_decompressor.close();
-
     m_archive_reader_adaptor->checkin_reader_for_section(constants::cArchiveTableMetadataFile);
 
+    m_stream_reader.read_chunk_metadata(*m_archive_reader_adaptor);
+
     // Read dictionary chunk metadata for parallel decompression (if present).
-    // Only attempt if the archive has this section — old archives won't.
-    if (m_archive_reader_adaptor->has_section(constants::cArchiveDictMetadataFile)) {
+    if (m_archive_reader_adaptor->has_section(constants::cArchiveDictChunkMetadataFile)) {
         auto dict_meta_reader = m_archive_reader_adaptor->checkout_reader_for_section(
-                constants::cArchiveDictMetadataFile
+                constants::cArchiveDictChunkMetadataFile
         );
         ZstdDecompressor dict_meta_decompressor;
         dict_meta_decompressor.open(*dict_meta_reader, 64 * 1024);
@@ -162,10 +159,10 @@ void ArchiveReader::read_metadata() {
                 return;
             }
             meta.chunk_compressed_sizes.resize(num_chunks);
-            for (uint32_t i = 0; i < num_chunks; ++i) {
-                if (auto err = dict_meta_decompressor.try_read_numeric_value(
-                            meta.chunk_compressed_sizes[i]
-                    );
+            if (num_chunks > 0) {
+                if (auto err = dict_meta_decompressor.try_read_exact_length(
+                            reinterpret_cast<char*>(meta.chunk_compressed_sizes.data()),
+                            num_chunks * sizeof(uint32_t));
                     ErrorCodeSuccess != err)
                 {
                     return;
@@ -184,7 +181,9 @@ void ArchiveReader::read_metadata() {
         read_dict_chunk_meta(m_array_dict_chunk_meta);
 
         dict_meta_decompressor.close();
-        m_archive_reader_adaptor->checkin_reader_for_section(constants::cArchiveDictMetadataFile);
+        m_archive_reader_adaptor->checkin_reader_for_section(
+                constants::cArchiveDictChunkMetadataFile
+        );
     }
 }
 

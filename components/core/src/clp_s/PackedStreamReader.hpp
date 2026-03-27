@@ -102,10 +102,10 @@ public:
     }
 
     /**
-     * Reads chunk metadata (section 3) for all streams from the provided decompressor.
-     * @param decompressor an open ZstdDecompressor positioned at the chunk metadata
+     * Reads per-stream chunk metadata from the separate table_chunk_metadata file.
+     * @param adaptor archive reader adaptor for file access
      */
-    void read_chunk_metadata(ZstdDecompressor& decompressor);
+    void read_chunk_metadata(ArchiveReaderAdaptor& adaptor);
 
     /**
      * Reads raw compressed bytes for a stream without decompressing. Must be called in ascending

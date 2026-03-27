@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #include <boost/uuid/uuid.hpp>
@@ -312,11 +313,17 @@ private:
 
     /**
      * Compresses and stores the tables.
-     * @return A pair containing:
-     *         - The size of the compressed table metadata in bytes.
-     *         - The size of the compressed tables in bytes.
+     * @return A tuple of (table_metadata_size, tables_size, table_chunk_metadata_size).
      */
-    [[nodiscard]] std::pair<size_t, size_t> store_tables();
+    [[nodiscard]] std::tuple<size_t, size_t, size_t> store_tables();
+
+    /**
+     * Writes per-stream table chunk metadata to a separate file.
+     * @return The compressed size of the metadata file.
+     */
+    [[nodiscard]] size_t store_table_chunk_metadata(
+            std::vector<StreamMetadata> const& stream_metadata
+    );
 
     /**
      * Writes per-dictionary chunk metadata for parallel decompression.

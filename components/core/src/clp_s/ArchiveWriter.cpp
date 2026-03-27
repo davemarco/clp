@@ -1,8 +1,11 @@
 #include "ArchiveWriter.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <sstream>
+
+#include <zstd.h>
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -71,9 +74,10 @@ auto ArchiveWriter::close(bool is_split) -> ArchiveStats {
     auto array_dict_compressed_size = m_array_dict->close();
     auto schema_tree_compressed_size = m_schema_tree.store(m_archive_path, m_compression_level);
     auto schema_map_compressed_size = m_schema_map.store(m_archive_path, m_compression_level);
-    auto [table_metadata_compressed_size, table_compressed_size] = store_tables();
+    auto [table_metadata_compressed_size, table_compressed_size, table_chunk_meta_size]
+            = store_tables();
 
-    auto dict_metadata_compressed_size = store_dict_chunk_metadata();
+    auto dict_chunk_meta_size = store_dict_chunk_metadata();
 
     std::vector<ArchiveFileInfo> files{
             {constants::cArchiveSchemaTreeFile, schema_tree_compressed_size},
@@ -82,10 +86,11 @@ auto ArchiveWriter::close(bool is_split) -> ArchiveStats {
             {constants::cArchiveVarDictFile, var_dict_compressed_size},
             {constants::cArchiveLogDictFile, log_dict_compressed_size},
             {constants::cArchiveArrayDictFile, array_dict_compressed_size},
-            {constants::cArchiveTablesFile, table_compressed_size}
+            {constants::cArchiveTablesFile, table_compressed_size},
+            {constants::cArchiveTableChunkMetadataFile, table_chunk_meta_size}
     };
-    if (dict_metadata_compressed_size > 0) {
-        files.push_back({constants::cArchiveDictMetadataFile, dict_metadata_compressed_size});
+    if (dict_chunk_meta_size > 0) {
+        files.push_back({constants::cArchiveDictChunkMetadataFile, dict_chunk_meta_size});
     }
     uint64_t offset = 0;
     for (auto& file : files) {
@@ -358,7 +363,7 @@ void ArchiveWriter::initialize_schema_writer(SchemaWriter* writer, Schema const&
     }
 }
 
-std::pair<size_t, size_t> ArchiveWriter::store_tables() {
+std::tuple<size_t, size_t, size_t> ArchiveWriter::store_tables() {
     m_tables_file_writer.open(
             m_archive_path + constants::cArchiveTablesFile,
             FileWriter::OpenMode::CreateForWriting
@@ -488,15 +493,6 @@ std::pair<size_t, size_t> ArchiveWriter::store_tables() {
         m_table_metadata_compressor.write_numeric_value(schema.num_messages);
     }
 
-    for (auto& stream : stream_metadata) {
-        m_table_metadata_compressor.write_numeric_value(stream.chunk_size);
-        uint32_t const num_chunks = static_cast<uint32_t>(stream.chunk_compressed_sizes.size());
-        m_table_metadata_compressor.write_numeric_value(num_chunks);
-        for (uint32_t cs : stream.chunk_compressed_sizes) {
-            m_table_metadata_compressor.write_numeric_value(cs);
-        }
-    }
-
     m_table_metadata_compressor.close();
 
     auto table_metadata_compressed_size = m_table_metadata_file_writer.get_pos();
@@ -505,7 +501,60 @@ std::pair<size_t, size_t> ArchiveWriter::store_tables() {
     m_table_metadata_file_writer.close();
     m_tables_file_writer.close();
 
-    return {table_metadata_compressed_size, table_compressed_size};
+    // Write table chunk metadata to a separate file for fast single-shot decompression.
+    auto table_chunk_meta_size = store_table_chunk_metadata(stream_metadata);
+
+    return {table_metadata_compressed_size, table_compressed_size, table_chunk_meta_size};
+}
+
+size_t ArchiveWriter::store_table_chunk_metadata(
+        std::vector<StreamMetadata> const& stream_metadata
+) {
+    // Serialize to a flat buffer: [chunk_size, num_chunks, sizes...]  per stream.
+    size_t uncompressed_size = 0;
+    for (auto const& stream : stream_metadata) {
+        uncompressed_size += 2 * sizeof(uint32_t)
+                             + stream.chunk_compressed_sizes.size() * sizeof(uint32_t);
+    }
+
+    std::vector<char> buf(uncompressed_size);
+    char* ptr = buf.data();
+    for (auto const& stream : stream_metadata) {
+        auto const num_chunks = static_cast<uint32_t>(stream.chunk_compressed_sizes.size());
+        std::memcpy(ptr, &stream.chunk_size, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
+        std::memcpy(ptr, &num_chunks, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
+        if (num_chunks > 0) {
+            std::memcpy(
+                    ptr,
+                    stream.chunk_compressed_sizes.data(),
+                    num_chunks * sizeof(uint32_t)
+            );
+            ptr += num_chunks * sizeof(uint32_t);
+        }
+    }
+
+    // File format: [uncompressed_size: u64][compressed_size: u64][compressed zstd frame]
+    size_t const compress_bound = ZSTD_compressBound(uncompressed_size);
+    std::vector<char> compressed(compress_bound);
+    size_t const compressed_size
+            = ZSTD_compress(compressed.data(), compress_bound, buf.data(), uncompressed_size, m_compression_level);
+    if (ZSTD_isError(compressed_size)) {
+        throw OperationFailed(ErrorCodeFailure, __FILENAME__, __LINE__);
+    }
+
+    FileWriter writer;
+    writer.open(
+            m_archive_path + constants::cArchiveTableChunkMetadataFile,
+            FileWriter::OpenMode::CreateForWriting
+    );
+    writer.write_numeric_value(static_cast<uint64_t>(uncompressed_size));
+    writer.write_numeric_value(static_cast<uint64_t>(compressed_size));
+    writer.write(compressed.data(), compressed_size);
+    auto file_size = writer.get_pos();
+    writer.close();
+    return file_size;
 }
 
 size_t ArchiveWriter::store_dict_chunk_metadata() {
@@ -519,7 +568,7 @@ size_t ArchiveWriter::store_dict_chunk_metadata() {
 
     FileWriter dict_meta_writer;
     dict_meta_writer.open(
-            m_archive_path + constants::cArchiveDictMetadataFile,
+            m_archive_path + constants::cArchiveDictChunkMetadataFile,
             FileWriter::OpenMode::CreateForWriting
     );
     ZstdCompressor dict_meta_compressor;

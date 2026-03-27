@@ -1,6 +1,9 @@
 #include "PackedStreamReader.hpp"
 
+#include <cstring>
 #include <vector>
+
+#include <zstd.h>
 
 #include "../clp/BoundedReader.hpp"
 #include "archive_constants.hpp"
@@ -175,43 +178,54 @@ void PackedStreamReader::read_stream_parallel(
     decompress_chunks_taskflow(chunks, num_threads, is_gdeflate);
 }
 
-void PackedStreamReader::read_chunk_metadata(ZstdDecompressor& decompressor) {
-    bool first_read{true};
+void PackedStreamReader::read_chunk_metadata(ArchiveReaderAdaptor& adaptor) {
+    auto reader = adaptor.checkout_reader_for_section(constants::cArchiveTableChunkMetadataFile);
+
+    // File format: [uncompressed_size: u64][compressed_size: u64][compressed zstd frame]
+    uint64_t uncompressed_size;
+    uint64_t compressed_size;
+    reader->read_numeric_value(uncompressed_size, false);
+    reader->read_numeric_value(compressed_size, false);
+
+    std::vector<char> compressed(compressed_size);
+    if (auto error = reader->try_read_exact_length(compressed.data(), compressed_size);
+        clp::ErrorCode::ErrorCode_Success != error)
+    {
+        throw OperationFailed(static_cast<ErrorCode>(error), __FILE__, __LINE__);
+    }
+
+    std::vector<char> buf(uncompressed_size);
+    size_t const result = ZSTD_decompress(buf.data(), uncompressed_size, compressed.data(), compressed_size);
+    if (ZSTD_isError(result)) {
+        throw OperationFailed(ErrorCodeCorrupt, __FILE__, __LINE__);
+    }
+
+    // Parse per-stream chunk metadata from the flat buffer.
+    char const* ptr = buf.data();
     for (auto& stream : m_stream_metadata) {
-        uint32_t chunk_size;
-        if (auto error = decompressor.try_read_numeric_value(chunk_size);
-            ErrorCodeSuccess != error)
-        {
-            if (first_read && ErrorCodeEndOfFile == error) {
-                // No chunk metadata in this archive (pre-GPU format). Leave defaults.
-                m_has_chunk_metadata = false;
-                return;
-            }
-            throw OperationFailed(error, __FILE__, __LINE__);
-        }
-        first_read = false;
-        stream.chunk_size = chunk_size;
+        std::memcpy(&stream.chunk_size, ptr, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
 
         uint32_t num_chunks;
-        if (auto error = decompressor.try_read_numeric_value(num_chunks);
-            ErrorCodeSuccess != error)
-        {
-            throw OperationFailed(error, __FILE__, __LINE__);
-        }
+        std::memcpy(&num_chunks, ptr, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
 
         stream.chunk_compressed_sizes.resize(num_chunks);
+        if (num_chunks > 0) {
+            size_t const bytes = num_chunks * sizeof(uint32_t);
+            std::memcpy(stream.chunk_compressed_sizes.data(), ptr, bytes);
+            ptr += bytes;
+        }
+
         size_t total = 0;
         for (uint32_t i = 0; i < num_chunks; ++i) {
-            if (auto error = decompressor.try_read_numeric_value(stream.chunk_compressed_sizes[i]);
-                ErrorCodeSuccess != error)
-            {
-                throw OperationFailed(error, __FILE__, __LINE__);
-            }
             total += stream.chunk_compressed_sizes[i];
         }
         stream.compressed_size = total;
     }
     m_has_chunk_metadata = true;
+
+    adaptor.checkin_reader_for_section(constants::cArchiveTableChunkMetadataFile);
 }
 
 void PackedStreamReader::read_stream_compressed(
