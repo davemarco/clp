@@ -17,10 +17,8 @@ set(
         ../gpu/common/host/ErtInfoTypes.hpp
         ../gpu/common/host/ScanRequest.cpp
         ../gpu/common/host/ScanRequest.hpp
-        ../gpu/bitmap/host/Scan.cpp
-        ../gpu/bitmap/host/Scan.hpp
-        ../gpu/bitmap/host/Output.cpp
-        ../gpu/bitmap/host/Output.hpp
+        ../gpu/common/host/Output.cpp
+        ../gpu/common/host/Output.hpp
         ../gpu/cpu_baseline/host/Scan.cpp
         ../gpu/cpu_baseline/host/Scan.hpp
         ../gpu/encoded_buffer/host/Scan.cpp

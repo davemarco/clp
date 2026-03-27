@@ -2,12 +2,9 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <functional>
-#include <numeric>
 #include <string>
 #include <vector>
 
-#include <spdlog/spdlog.h>
 #include <taskflow/taskflow.hpp>
 #include <taskflow/algorithm/scan.hpp>
 
@@ -16,6 +13,7 @@
 
 #include "../../../SchemaReader.hpp"
 #include "../../../TaskflowExecutor.hpp"
+#include "../../common/host/BitmapUtils.hpp"
 #include "../../common/host/ErtInfo.hpp"
 #include "../../common/host/ScanRequestTypeUtils.hpp"
 
@@ -25,22 +23,28 @@ template <typename T, GpuFilterOp Op>
 void scan_cmp_to_bitmap_fixed(
         T const* __restrict__ values,
         T target,
-        uint8_t* __restrict__ bitmap,
+        uint32_t* __restrict__ bitmap,
         size_t row_count
 ) {
     for (size_t i = 0; i < row_count; ++i) {
+        bool match;
         if constexpr (Op == GpuFilterOp::EQ) {
-            bitmap[i] = (values[i] == target) ? 1 : 0;
+            match = (values[i] == target);
         } else if constexpr (Op == GpuFilterOp::NEQ) {
-            bitmap[i] = (values[i] != target) ? 1 : 0;
+            match = (values[i] != target);
         } else if constexpr (Op == GpuFilterOp::LT) {
-            bitmap[i] = (values[i] < target) ? 1 : 0;
+            match = (values[i] < target);
         } else if constexpr (Op == GpuFilterOp::GT) {
-            bitmap[i] = (values[i] > target) ? 1 : 0;
+            match = (values[i] > target);
         } else if constexpr (Op == GpuFilterOp::LTE) {
-            bitmap[i] = (values[i] <= target) ? 1 : 0;
+            match = (values[i] <= target);
         } else if constexpr (Op == GpuFilterOp::GTE) {
-            bitmap[i] = (values[i] >= target) ? 1 : 0;
+            match = (values[i] >= target);
+        }
+        if (match) {
+            bitmap_set_bit(bitmap, i);
+        } else {
+            bitmap_clear_bit(bitmap, i);
         }
     }
 }
@@ -51,7 +55,7 @@ void scan_cmp_to_bitmap(
         size_t offset_bytes,
         T target,
         GpuFilterOp op,
-        uint8_t* bitmap,
+        uint32_t* bitmap,
         size_t start_row,
         size_t row_count
 ) {
@@ -78,14 +82,11 @@ void scan_cmp_to_bitmap(
     }
 }
 
-/**
- * Scans a single column predicate into a bitmap using CPU loops.
- */
 void cpu_scan_predicate_to_bitmap(
         char const* buffer_base,
         ColumnDesc const& col,
         ColumnPredicate const& pred,
-        uint8_t* bitmap,
+        uint32_t* bitmap,
         size_t start_row,
         size_t row_count
 ) {
@@ -127,7 +128,11 @@ void cpu_scan_predicate_to_bitmap(
                         break;
                     }
                 }
-                bitmap[i] = (found != negate) ? 1 : 0;
+                if (found != negate) {
+                    bitmap_set_bit(bitmap, i);
+                } else {
+                    bitmap_clear_bit(bitmap, i);
+                }
             }
             break;
         }
@@ -136,33 +141,26 @@ void cpu_scan_predicate_to_bitmap(
     }
 }
 
-/**
- * Merges src bitmap into dst bitmap element-wise on the CPU.
- */
-void cpu_merge_bitmaps(uint8_t* dst, uint8_t const* src, size_t n, MergeOp op) {
+void cpu_merge_bitmaps(uint32_t* dst, uint32_t const* src, size_t num_rows, MergeOp op) {
+    size_t const num_words = bitmap_num_words(num_rows);
     if (MergeOp::And == op) {
-        for (size_t i = 0; i < n; ++i) {
-            dst[i] = dst[i] & src[i];
+        for (size_t i = 0; i < num_words; ++i) {
+            dst[i] &= src[i];
         }
     } else {
-        for (size_t i = 0; i < n; ++i) {
-            dst[i] = dst[i] | src[i];
+        for (size_t i = 0; i < num_words; ++i) {
+            dst[i] |= src[i];
         }
     }
 }
 
-/**
- * Scans a single clause for rows [start_row, start_row + row_count) into out_bitmap.
- * out_bitmap must have at least row_count elements; results are written at [0, row_count).
- * Assumes delta columns have already been prefix-summed.
- */
 ScanCompatError cpu_scan_clause_to_bitmap(
         ErtBufferView const& buffer_view,
         ScanClause const& clause,
         std::span<ColumnDesc const> columns,
         size_t start_row,
         size_t row_count,
-        uint8_t* out_bitmap
+        uint32_t* out_bitmap
 ) {
     auto const& column_predicates = clause.column_predicates;
     auto const& sclp_filters = clause.sclp_filters;
@@ -170,13 +168,18 @@ ScanCompatError cpu_scan_clause_to_bitmap(
     bool const has_predicates = false == column_predicates.predicates.empty();
     bool const has_sclp = false == sclp_filters.empty();
 
+    size_t const num_words = bitmap_num_words(row_count);
+
     // Initialize result bitmap with identity value for merge_op
-    uint8_t const identity = (MergeOp::And == merge_op) ? 1 : 0;
-    std::fill(out_bitmap, out_bitmap + row_count, identity);
+    if (MergeOp::And == merge_op) {
+        bitmap_fill_ones(out_bitmap, row_count);
+    } else {
+        bitmap_fill_zeros(out_bitmap, row_count);
+    }
 
     // Scan base predicates
     if (has_predicates) {
-        std::vector<uint8_t> pred_bitmap(row_count);
+        std::vector<uint32_t> pred_bitmap(num_words);
         for (auto const& pred : column_predicates.predicates) {
             ScanCompatError err;
             auto const* col
@@ -191,18 +194,16 @@ ScanCompatError cpu_scan_clause_to_bitmap(
         }
     }
 
-    // Scan each SCLP filter and merge into result bitmap (skip all allocations if empty)
     if (false == has_sclp) {
         return ScanCompatError::None;
     }
 
-    std::vector<uint8_t> sclp_bitmap(row_count);
-    std::vector<uint8_t> temp_bitmap(row_count);
-    std::vector<uint8_t> pred_bitmap(row_count);
+    std::vector<uint32_t> sclp_bitmap(num_words);
+    std::vector<uint32_t> temp_bitmap(num_words);
+    std::vector<uint32_t> pred_bitmap(num_words);
 
     for (auto const& sclp_filter : sclp_filters) {
-        // Initialize sclp_bitmap to OR identity (all 0s) — subqueries are OR'd
-        std::fill(sclp_bitmap.begin(), sclp_bitmap.end(), static_cast<uint8_t>(0));
+        bitmap_fill_zeros(sclp_bitmap.data(), row_count);
 
         auto const* logtype_col = find_column_by_id(columns, sclp_filter.logtype_column_id);
         if (nullptr == logtype_col) {
@@ -210,9 +211,7 @@ ScanCompatError cpu_scan_clause_to_bitmap(
         }
 
         for (auto const& subquery : sclp_filter.subqueries) {
-            // Initialize temp_bitmap to AND identity (all 1s) — predicates within
-            // a subquery are AND'd
-            std::fill(temp_bitmap.begin(), temp_bitmap.end(), static_cast<uint8_t>(1));
+            bitmap_fill_ones(temp_bitmap.data(), row_count);
 
             // Scan logtype IN-list
             auto logtype_pred = make_sclp_predicate(
@@ -224,7 +223,6 @@ ScanCompatError cpu_scan_clause_to_bitmap(
             );
             cpu_merge_bitmaps(temp_bitmap.data(), pred_bitmap.data(), row_count, MergeOp::And);
 
-            // Scan each var predicate using pinned column index
             for (auto const& var_predicate : subquery.vars) {
                 if (var_predicate.var_column_index >= sclp_filter.var_column_ids.size()) {
                     return ScanCompatError::ColumnOutOfBounds;
@@ -237,7 +235,6 @@ ScanCompatError cpu_scan_clause_to_bitmap(
                 }
 
                 if (false == var_predicate.wildcard_pattern.empty()) {
-                    // Wildcard pattern: convert each encoded var to string and match
                     auto const* values = reinterpret_cast<int64_t const*>(
                             buffer_view.data + var_col->primary_offset_bytes
                     ) + start_row;
@@ -249,10 +246,14 @@ ScanCompatError cpu_scan_clause_to_bitmap(
                         } else {
                             str_val = std::to_string(values[i]);
                         }
-                        pred_bitmap[i] = clp::string_utils::wildcard_match_unsafe_case_sensitive(
-                                str_val,
-                                var_predicate.wildcard_pattern
+                        bool match = clp::string_utils::wildcard_match_unsafe_case_sensitive(
+                                str_val, var_predicate.wildcard_pattern
                         );
+                        if (match) {
+                            bitmap_set_bit(pred_bitmap.data(), i);
+                        } else {
+                            bitmap_clear_bit(pred_bitmap.data(), i);
+                        }
                     }
                 } else {
                     auto var_pred
@@ -271,14 +272,11 @@ ScanCompatError cpu_scan_clause_to_bitmap(
             cpu_merge_bitmaps(sclp_bitmap.data(), temp_bitmap.data(), row_count, MergeOp::Or);
         }
 
-        // Invert if negated (NEQ)
         if (sclp_filter.is_negated) {
-            for (size_t i = 0; i < row_count; ++i) {
-                sclp_bitmap[i] = 1 - sclp_bitmap[i];
-            }
+            bitmap_invert(sclp_bitmap.data(), row_count);
         }
 
-        // Merge SCLP bitmap into result with the expression's merge_op
+        // Merge SCLP bitmap into result
         cpu_merge_bitmaps(out_bitmap, sclp_bitmap.data(), row_count, merge_op);
     }
 
@@ -286,17 +284,13 @@ ScanCompatError cpu_scan_clause_to_bitmap(
 }
 }  // namespace
 
-/**
- * Scans all clauses for rows [start_row, start_row + row_count) into out_bitmap.
- * out_bitmap must point to row_count elements.
- */
 ScanCompatError scan_all_clauses_for_range(
         ErtBufferView const& buffer_view,
         std::vector<ScanClause> const& clauses,
         std::span<ColumnDesc const> columns,
         size_t start_row,
         size_t row_count,
-        uint8_t* out_bitmap
+        uint32_t* out_bitmap
 ) {
     auto scan_err = cpu_scan_clause_to_bitmap(
             buffer_view, clauses[0], columns, start_row, row_count, out_bitmap
@@ -305,18 +299,15 @@ ScanCompatError scan_all_clauses_for_range(
         return scan_err;
     }
 
-    std::vector<uint8_t> clause_bitmap(row_count);
+    std::vector<uint32_t> clause_bitmap(bitmap_num_words(row_count));
     for (size_t i = 1; i < clauses.size(); ++i) {
-        std::fill(clause_bitmap.begin(), clause_bitmap.end(), static_cast<uint8_t>(0));
         scan_err = cpu_scan_clause_to_bitmap(
                 buffer_view, clauses[i], columns, start_row, row_count, clause_bitmap.data()
         );
         if (ScanCompatError::None != scan_err) {
             return scan_err;
         }
-        for (size_t j = 0; j < row_count; ++j) {
-            out_bitmap[j] |= clause_bitmap[j];
-        }
+        cpu_merge_bitmaps(out_bitmap, clause_bitmap.data(), row_count, MergeOp::Or);
     }
 
     return ScanCompatError::None;
@@ -326,7 +317,7 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
         SchemaReader& reader,
         std::vector<ScanClause> const& clauses,
         std::span<ColumnDesc const> columns,
-        uint8_t* out_bitmap,
+        uint32_t* out_bitmap,
         size_t num_rows,
         size_t num_threads,
         clp_s::ThreadPool* thread_pool
@@ -344,42 +335,49 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
         actual_threads = 1;
     }
 
-    // Parallel bitmap scan using ThreadPool (uniform chunks, no work-stealing needed).
     if (actual_threads <= 1) {
-        auto scan_err = scan_all_clauses_for_range(
+        return scan_all_clauses_for_range(
                 buffer_view, clauses, columns, 0, num_rows, out_bitmap
         );
-        if (ScanCompatError::None != scan_err) {
-            return scan_err;
-        }
-    } else {
-        size_t const rows_per_thread = num_rows / actual_threads;
-        size_t const remainder = num_rows % actual_threads;
+    }
 
-        std::vector<ScanCompatError> errors(actual_threads, ScanCompatError::None);
+    // Divide rows into word-aligned chunks (multiples of 32) so each thread
+    // writes to disjoint words in the shared output bitmap. The last thread
+    // handles any remainder.
+    size_t const total_words = bitmap_num_words(num_rows);
+    actual_threads = std::min(actual_threads, total_words);
+    size_t const words_per_thread = total_words / actual_threads;
+    size_t const word_remainder = total_words % actual_threads;
 
-        for (size_t t = 0; t < actual_threads; ++t) {
-            size_t const start_row = t * rows_per_thread + std::min(t, remainder);
-            size_t const row_count = rows_per_thread + (t < remainder ? 1 : 0);
+    std::vector<ScanCompatError> errors(actual_threads, ScanCompatError::None);
 
-            thread_pool->submit([&buffer_view, &clauses, &columns, out_bitmap, &errors,
-                                 start_row, row_count, t]() {
-                errors[t] = scan_all_clauses_for_range(
-                        buffer_view, clauses, columns,
-                        start_row, row_count, out_bitmap + start_row
-                );
-            });
-        }
-        thread_pool->wait_all();
+    for (size_t t = 0; t < actual_threads; ++t) {
+        size_t const word_start = t * words_per_thread + std::min(t, word_remainder);
+        size_t const word_count = words_per_thread + (t < word_remainder ? 1 : 0);
+        size_t const start_row = word_start * 32;
+        size_t const row_count = (t == actual_threads - 1)
+                                         ? (num_rows - start_row)
+                                         : (word_count * 32);
 
-        for (size_t t = 0; t < actual_threads; ++t) {
-            if (ScanCompatError::None != errors[t]) {
-                return errors[t];
-            }
+        thread_pool->submit([&buffer_view, &clauses, &columns, out_bitmap, &errors,
+                             word_start, start_row, row_count, t]() {
+            errors[t] = scan_all_clauses_for_range(
+                    buffer_view, clauses, columns,
+                    start_row, row_count, out_bitmap + word_start
+            );
+        });
+    }
+    thread_pool->wait_all();
+
+    for (size_t t = 0; t < actual_threads; ++t) {
+        if (ScanCompatError::None != errors[t]) {
+            return errors[t];
         }
     }
+
     return ScanCompatError::None;
 }
+
 void run_cpu_prefix_sum_schemas(
         clp_s::ArchiveReader& archive_reader,
         SchemaTree const& schema_tree,

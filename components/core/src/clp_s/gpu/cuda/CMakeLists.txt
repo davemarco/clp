@@ -14,8 +14,10 @@ add_library(clp_s_gpu
         ${GPU_BASE}/common/cuda/NvcompDecompress.cpp
         ${GPU_BASE}/common/cuda/NvcompDecompress.hpp
         ${GPU_BASE}/common/cuda/StreamOrderedAllocator.hpp
-        ${GPU_BASE}/bitmap/cuda/Scan.cu
-        ${GPU_BASE}/bitmap/cuda/Scan.hpp
+        ${GPU_BASE}/encoded_buffer/cuda/BitmapScan.cu
+        ${GPU_BASE}/encoded_buffer/cuda/BitmapScan.hpp
+        ${GPU_BASE}/encoded_buffer/cuda/BitmapScanKernels.cuh
+        ${GPU_BASE}/common/host/BitmapUtils.hpp
         ${GPU_BASE}/encoded_buffer/cuda/Scan.cpp
         ${GPU_BASE}/encoded_buffer/cuda/Packing.cu
         ${GPU_BASE}/encoded_buffer/cuda/Packing.hpp
@@ -29,7 +31,6 @@ target_link_libraries(clp_s_gpu PRIVATE CUDA::cudart CUDA::cuFile nvcomp::nvcomp
 target_include_directories(
         clp_s_gpu PRIVATE
         ${GPU_BASE}/common/cuda
-        ${GPU_BASE}/bitmap/cuda
         ${GPU_BASE}/encoded_buffer/cuda
         ${GPU_BASE}
 )

@@ -1,5 +1,5 @@
-#ifndef CLP_S_GPU_BITMAP_HOST_OUTPUT_HPP
-#define CLP_S_GPU_BITMAP_HOST_OUTPUT_HPP
+#ifndef CLP_S_GPU_COMMON_HOST_OUTPUT_HPP
+#define CLP_S_GPU_COMMON_HOST_OUTPUT_HPP
 
 // Host-facing API for emitting GPU bitmap scan matches.
 
@@ -17,7 +17,7 @@ namespace clp_s::gpu {
  * Writes matching rows (one per line) for rows flagged in the bitmap.
  *
  * @param reader Schema reader for the current ERT.
- * @param bitmap One byte per row (1=match, 0=non-match).
+ * @param bitmap Packed uint32_t bitmap (1 bit per row).
  * @param output_handler Output handler to write results.
  * @param error Error message on failure.
  * @param num_threads Number of threads for parallel serialization.
@@ -26,7 +26,7 @@ namespace clp_s::gpu {
  */
 int emit_bitmap_matches(
         SchemaReader& reader,
-        uint8_t const* bitmap,
+        uint32_t const* bitmap,
         size_t num_rows,
         search::OutputHandler& output_handler,
         std::string& error,
@@ -35,4 +35,4 @@ int emit_bitmap_matches(
 );
 }  // namespace clp_s::gpu
 
-#endif  // CLP_S_GPU_BITMAP_HOST_OUTPUT_HPP
+#endif  // CLP_S_GPU_COMMON_HOST_OUTPUT_HPP

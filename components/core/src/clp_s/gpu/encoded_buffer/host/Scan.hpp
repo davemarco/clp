@@ -24,13 +24,52 @@
 #include "../../common/host/ScanRequest.hpp"
 
 namespace clp_s::gpu {
+
 /**
- * Host-side result of a GPU encoded-buffer extraction.
+ * Reusable pinned host buffers for batch_gather_encoded_buffers.
+ * Persists across archives and repeat runs to avoid repeated allocation.
  */
-struct EncodedBuffer {
-    std::shared_ptr<char[]> data;
-    size_t size{0};
-    uint64_t num_rows{0};
+struct GatherBuffers {
+    void* host_output{nullptr};       ///< Page-locked buffer for GPU-to-host column data.
+    size_t host_output_cap{0};
+    void* pinned_upload{nullptr};     ///< Page-locked buffer for host-to-GPU offset uploads.
+    size_t pinned_upload_cap{0};
+
+    /// Grows host_output to at least @p needed bytes. No-op if already large enough.
+    cudaError_t ensure_host_output(size_t needed) {
+        if (host_output_cap >= needed) {
+            return cudaSuccess;
+        }
+        if (host_output) {
+            cudaFreeHost(host_output);
+        }
+        auto status = cudaMallocHost(&host_output, needed);
+        if (cudaSuccess != status) {
+            host_output = nullptr;
+            host_output_cap = 0;
+            return status;
+        }
+        host_output_cap = needed;
+        return cudaSuccess;
+    }
+
+    /// Grows pinned_upload to at least @p needed bytes. No-op if already large enough.
+    cudaError_t ensure_pinned_upload(size_t needed) {
+        if (pinned_upload_cap >= needed) {
+            return cudaSuccess;
+        }
+        if (pinned_upload) {
+            cudaFreeHost(pinned_upload);
+        }
+        auto status = cudaMallocHost(&pinned_upload, needed);
+        if (cudaSuccess != status) {
+            pinned_upload = nullptr;
+            pinned_upload_cap = 0;
+            return status;
+        }
+        pinned_upload_cap = needed;
+        return cudaSuccess;
+    }
 };
 
 /**
@@ -39,7 +78,7 @@ struct EncodedBuffer {
 struct SchemaScanInfo {
     int32_t schema_id;
     size_t num_rows;
-    size_t bitmap_offset;  // byte offset into concatenated bitmap
+    size_t bitmap_word_offset;  // uint32_t word offset into concatenated packed bitmap
     std::vector<ColumnDesc> column_descs;
     std::vector<ScanClause> clauses;
     size_t stream_offset;  // offset into ERT device buffer
@@ -64,20 +103,39 @@ int run_batched_scan(
 );
 
 /**
- * Converts a pre-computed device bitmap into an encoded buffer.
- * Used after run_batched_scan to pack matching rows per-schema.
- * The bitmap is NOT freed — caller owns it.
+ * Per-schema result from batch_gather_encoded_buffers.
  */
-int bitmap_to_encoded_buffer_for_schema(
-        SchemaReader& reader,
-        uint8_t* d_bitmap,
+struct BatchGatherResult {
+    int32_t schema_id;
+    uint64_t num_matches;
+    size_t host_offset;  // offset into shared host buffer
+    size_t size;          // bytes for this schema in host buffer
+};
+
+/**
+ * Batched GPU gather: counts matches, compacts row IDs, gathers columns,
+ * and transfers all results to host in a single D2H copy.
+ *
+ * @param d_ert Device ERT buffer.
+ * @param d_ert_size Size of ERT buffer.
+ * @param schemas Per-schema scan info (from run_batched_scan).
+ * @param d_bitmap Device bitmap (from run_batched_scan).
+ * @param[out] out_host_buf Receives pinned host buffer with all packed data.
+ * @param[out] out_results Per-schema offsets and match counts.
+ * @param[out] error Error message on failure.
+ * @return 0 on success, non-zero on failure.
+ */
+int batch_gather_encoded_buffers(
         void* d_ert,
         size_t d_ert_size,
-        std::span<ColumnDesc const> columns,
-        size_t stream_offset,
-        EncodedBuffer& out_buffer,
+        std::vector<SchemaScanInfo> const& schemas,
+        DeviceBuffer const& d_bitmap,
+        GatherBuffers& buffers,
+        std::shared_ptr<char[]>& out_host_buf,
+        std::vector<BatchGatherResult>& out_results,
         std::string& error
 );
+
 /**
  * Builds a SchemaScanInfo for a single schema: resolves column layout,
  * computes stream offset, and translates the query into scan clauses.

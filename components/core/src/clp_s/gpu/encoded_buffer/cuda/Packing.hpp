@@ -6,19 +6,13 @@
 #include <span>
 #include <vector>
 
-#include "Types.hpp"
+#include "../../common/cuda/Transfer.hpp"
+#include "../../common/host/ErtInfoTypes.hpp"
 
 namespace clp_s::gpu {
 
 /**
  * Computes the byte offset and total size for each column in a packed output buffer.
- * All columns are aligned to 8-byte boundaries. Boolean columns include archive-format
- * padding to maintain alignment.
- *
- * @param columns Column descriptors for the schema.
- * @param num_matches Number of matching rows to pack.
- * @param[out] column_offsets Byte offset into the output buffer for each column.
- * @param[out] total_size Total output buffer size in bytes.
  */
 void compute_column_offsets(
         std::span<ColumnDesc const> columns,
@@ -28,35 +22,53 @@ void compute_column_offsets(
 );
 
 /**
- * Compacts a 1-byte-per-row bitmap into an array of matching row indices.
- *
- * @param device_bitmap Device array of num_rows bytes (nonzero = match).
- * @param num_rows Number of rows in the bitmap.
- * @param out_row_ids Device buffer for matching row indices (uint32_t).
- *                    If out_row_ids.ptr is non-null and out_row_ids.size >= needed,
- *                    the existing buffer is reused; otherwise a new one is allocated.
- * @param[out] out_num_matches Number of matching rows written to out_row_ids.
- * @return cudaSuccess on success, otherwise the CUDA error code.
+ * Counts matching rows for multiple packed bitmap segments via CUB segmented reduce.
+ * Offsets are in uint32_t-word units. Does not synchronize.
  */
-cudaError_t bitmap_to_row_ids(
-        uint8_t const* device_bitmap,
-        size_t num_rows,
-        DeviceBuffer& out_row_ids,
-        uint64_t& out_num_matches
+cudaError_t count_bitmap_matches_batched(
+        uint32_t const* device_bitmap,
+        int const* d_offsets_begin,
+        int const* d_offsets_end,
+        size_t num_schemas,
+        uint64_t* d_out_counts
 );
 
 /**
- * Packs a single fixed-size column by gathering matching rows into the output buffer.
+ * Extracts matching row indices from a packed bitmap into a device array.
+ * The output buffer is reusable — grown as needed, never shrunk.
+ * Does not synchronize.
+ *
+ * @param device_bitmap Device packed bitmap (1 bit per row).
+ * @param num_rows Total number of rows in the bitmap.
+ * @param row_ids_buf Device buffer for output row indices (reused across calls).
+ * @param num_matches Number of set bits (from a prior popcount).
+ * @return cudaSuccess on success.
+ */
+cudaError_t bitmap_to_row_ids(
+        uint32_t const* device_bitmap,
+        size_t num_rows,
+        DeviceBuffer& row_ids_buf,
+        uint64_t num_matches
+);
+
+/**
+ * Gathers matching rows for one column into the output buffer.
  *
  * @param column Column descriptor (type + ERT byte offsets).
- * @param output_offset Byte offset into the output buffer where this column starts.
- * @param ctx Pack context with device buffers and match count.
- * @return cudaSuccess on success, otherwise the CUDA error code.
+ * @param output_offset Byte offset into device_output for this column.
+ * @param device_ert_base Device pointer to the ERT buffer.
+ * @param device_row_ids Device array of matching row indices.
+ * @param device_output Device output buffer for packed column data.
+ * @param num_matches Number of matching rows.
+ * @return cudaSuccess on success.
  */
 cudaError_t pack_fixed_column(
         ColumnDesc const& column,
         size_t output_offset,
-        PackContext const& ctx
+        char const* device_ert_base,
+        uint32_t const* device_row_ids,
+        char* device_output,
+        uint64_t num_matches
 );
 
 }  // namespace clp_s::gpu

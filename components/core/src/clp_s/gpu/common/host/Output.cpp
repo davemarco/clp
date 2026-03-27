@@ -5,11 +5,12 @@
 
 #include "../../../SchemaReader.hpp"
 #include "../../../search/OutputHandler.hpp"
+#include "BitmapUtils.hpp"
 
 namespace clp_s::gpu {
 int emit_bitmap_matches(
         SchemaReader& reader,
-        uint8_t const* bitmap,
+        uint32_t const* bitmap,
         size_t num_rows,
         search::OutputHandler& output_handler,
         std::string& error,
@@ -24,7 +25,7 @@ int emit_bitmap_matches(
         }
     } else {
         for (size_t i = 0; i < num_rows; ++i) {
-            if (0 == bitmap[i]) {
+            if (!bitmap_get_bit(bitmap, i)) {
                 continue;
             }
             output_handler.write(reader.serialize_message_at(i));

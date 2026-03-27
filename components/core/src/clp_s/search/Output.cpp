@@ -14,10 +14,11 @@
 #include "../SchemaTree.hpp"
 #include "../Utils.hpp"
 #include "../SingleFileArchiveDefs.hpp"
+#include "../gpu/common/host/BitmapUtils.hpp"
 #include "../gpu/common/cuda/CudaWarmup.hpp"
 #include "../gpu/common/host/ErtInfo.hpp"
+#include "../gpu/common/host/Output.hpp"
 #include "../gpu/encoded_buffer/host/Scan.hpp"
-#include "../gpu/bitmap/host/Output.hpp"
 #include "../gpu/cpu_baseline/host/Scan.hpp"
 #include "ast/AndExpr.hpp"
 #include "ast/ColumnDescriptor.hpp"
@@ -160,6 +161,8 @@ bool Output::filter() {
     std::vector<clp_s::gpu::SchemaScanInfo> batched_schemas;
     std::shared_ptr<char[]> cpu_batch_buffer;
     std::unordered_map<size_t, size_t> cpu_batch_offsets;
+    std::shared_ptr<char[]> gpu_host_buf;
+    std::vector<clp_s::gpu::BatchGatherResult> gpu_gather_results;
 
     switch (m_scan_mode) {
         case ScanMode::Gpu: {
@@ -192,6 +195,7 @@ bool Output::filter() {
                     *m_archive_reader, *m_schema_tree, matched_schemas,
                     stream_batch_offsets, device_buffer
             );
+            clp_s::gpu::sync_default_stream();
             timing.add_prefix_sum(SearchTiming::Clock::now() - gpu_prefix_sum_start);
 
             // 3. Batched scan: collect per-schema info, then scan into bitmap
@@ -201,6 +205,7 @@ bool Output::filter() {
             }
 
             auto const scan_start = SearchTiming::Clock::now();
+            size_t total_bitmap_words = 0;
             size_t total_bitmap_rows = 0;
             for (int32_t const schema_id : matched_schemas) {
                 if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
@@ -219,7 +224,8 @@ bool Output::filter() {
                 {
                     return false;
                 }
-                info.bitmap_offset = total_bitmap_rows;
+                info.bitmap_word_offset = total_bitmap_words;
+                total_bitmap_words += clp_s::gpu::bitmap_num_words(info.num_rows);
                 total_bitmap_rows += info.num_rows;
                 batched_schemas.push_back(std::move(info));
             }
@@ -233,7 +239,26 @@ bool Output::filter() {
                     return false;
                 }
             }
+            clp_s::gpu::sync_default_stream();
             timing.add_scan(SearchTiming::Clock::now() - scan_start, total_bitmap_rows);
+
+            // 4. Batched gather + single D2H transfer
+            if (false == batched_schemas.empty()) {
+                auto const gather_start = SearchTiming::Clock::now();
+                std::string gather_error;
+                if (0 != clp_s::gpu::batch_gather_encoded_buffers(
+                            device_buffer.ptr, device_buffer.size,
+                            batched_schemas, *m_shared_batch_bitmap,
+                            *m_shared_gather_buffers,
+                            gpu_host_buf, gpu_gather_results, gather_error))
+                {
+                    SPDLOG_ERROR("Batched GPU gather failed: {}", gather_error);
+                    return false;
+                }
+                timing.add_result_transfer(
+                        SearchTiming::Clock::now() - gather_start
+                );
+            }
             break;
         }
 
@@ -308,70 +333,52 @@ bool Output::filter() {
                 if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
                     continue;
                 }
-                auto const& batch_info = batched_schemas[batch_idx++];
+                auto const& gather_result = gpu_gather_results[batch_idx++];
+                if (0 == gather_result.num_matches) {
+                    continue;
+                }
 
-                auto const gpu_pack_start = SearchTiming::Clock::now();
-
+                auto const serialize_start = SearchTiming::Clock::now();
                 auto& reader = m_archive_reader->init_schema_table(
                         schema_id, false, m_should_marshal_records, true
                 );
-
-                auto* schema_bitmap = static_cast<uint8_t*>(m_shared_batch_bitmap->ptr)
-                                      + batch_info.bitmap_offset;
-
-                clp_s::gpu::EncodedBuffer encoded_buffer;
-                std::string error_message;
-                if (0 != clp_s::gpu::bitmap_to_encoded_buffer_for_schema(
-                            reader, schema_bitmap,
-                            device_buffer.ptr, device_buffer.size,
-                            batch_info.column_descs, batch_info.stream_offset,
-                            encoded_buffer, error_message))
-                {
-                    SPDLOG_ERROR("GPU bitmap pack failed: {}", error_message);
+                reader.reset_read_state(gather_result.num_matches);
+                try {
+                    reader.load(
+                            gpu_host_buf,
+                            gather_result.host_offset,
+                            gather_result.size
+                    );
+                } catch (std::exception const& e) {
+                    SPDLOG_ERROR(
+                            "schema {}: encoded buffer load failed ({} matches, "
+                            "buf_size={}): {}",
+                            schema_id,
+                            gather_result.num_matches,
+                            gather_result.size,
+                            e.what()
+                    );
                     return false;
                 }
-                auto matches = static_cast<size_t>(encoded_buffer.num_rows);
-                if (0 != matches) {
-                    clp_s::gpu::sync_default_stream();
-                }
-                timing.add_result_transfer(SearchTiming::Clock::now() - gpu_pack_start);
-                if (0 != matches) {
-                    auto const serialize_start = SearchTiming::Clock::now();
-                    reader.reset_read_state(encoded_buffer.num_rows);
-                    try {
-                        reader.load(encoded_buffer.data, 0, encoded_buffer.size);
-                    } catch (std::exception const& e) {
-                        SPDLOG_ERROR(
-                                "schema {}: encoded buffer load failed ({} matches, "
-                                "buf_size={}, {} clauses): {}",
-                                schema_id,
-                                matches,
-                                encoded_buffer.size,
-                                batch_info.clauses.size(),
-                                e.what()
-                        );
-                        return false;
-                    }
-                    if (m_num_threads > 1 && m_thread_pool) {
-                        std::vector<std::string> outputs;
-                        reader.serialize_range_parallel(
-                                m_num_threads,
-                                m_thread_pool.get(),
-                                outputs
-                        );
-                        for (auto& chunk : outputs) {
-                            m_output_handler->write(chunk);
-                        }
-                    } else {
-                        std::string msg;
-                        while (reader.get_next_message(msg)) {
-                            m_output_handler->write(msg);
-                        }
-                    }
-                    timing.add_serialization(
-                            SearchTiming::Clock::now() - serialize_start
+                if (m_num_threads > 1 && m_thread_pool) {
+                    std::vector<std::string> outputs;
+                    reader.serialize_range_parallel(
+                            m_num_threads,
+                            m_thread_pool.get(),
+                            outputs
                     );
+                    for (auto& chunk : outputs) {
+                        m_output_handler->write(chunk);
+                    }
+                } else {
+                    std::string msg;
+                    while (reader.get_next_message(msg)) {
+                        m_output_handler->write(msg);
+                    }
                 }
+                timing.add_serialization(
+                        SearchTiming::Clock::now() - serialize_start
+                );
                 break;
             }
 
@@ -433,10 +440,11 @@ bool Output::filter() {
 
                 size_t const num_rows = reader.get_num_messages();
 
-                // Use a reusable bitmap buffer to avoid per-schema allocation
-                static std::vector<uint8_t> reuse_bitmap;
-                if (reuse_bitmap.size() < num_rows) {
-                    reuse_bitmap.resize(num_rows);
+                // Use a reusable packed bitmap buffer to avoid per-schema allocation
+                size_t const num_words = clp_s::gpu::bitmap_num_words(num_rows);
+                static std::vector<uint32_t> reuse_bitmap;
+                if (reuse_bitmap.size() < num_words) {
+                    reuse_bitmap.resize(num_words);
                 }
 
                 auto scan_err = clp_s::gpu::run_cpu_scan_to_bitmap_clauses(
@@ -451,9 +459,8 @@ bool Output::filter() {
                     );
                     return false;
                 }
-                auto matches = static_cast<size_t>(
-                        std::count(reuse_bitmap.data(), reuse_bitmap.data() + num_rows,
-                                   static_cast<uint8_t>(1))
+                auto matches = clp_s::gpu::bitmap_popcount(
+                        reuse_bitmap.data(), num_words
                 );
                 timing.add_scan(
                         SearchTiming::Clock::now() - scan_start,

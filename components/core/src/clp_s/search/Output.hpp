@@ -22,6 +22,7 @@
 #include "QueryRunner.hpp"
 #include "SchemaMatch.hpp"
 #include "../gpu/common/cuda/NvcompDecompress.hpp"
+#include "../gpu/encoded_buffer/host/Scan.hpp"
 #include "../gpu/common/host/DecompressStreams.hpp"
 
 namespace clp_s::search {
@@ -47,7 +48,8 @@ public:
            gpu::NvcompDecompressContext* shared_decompress_ctx = nullptr,
            gpu::DeviceBuffer* shared_device_buffer = nullptr,
            gpu::CpuDecompressBuffer* shared_cpu_buffer = nullptr,
-           gpu::DeviceBuffer* shared_batch_bitmap = nullptr)
+           gpu::DeviceBuffer* shared_batch_bitmap = nullptr,
+           gpu::GatherBuffers* shared_gather_buffers = nullptr)
             : m_query_runner(match, expr, archive_reader, ignore_case, std::move(schema_path)),
               m_archive_reader(archive_reader),
               m_schema_tree(m_archive_reader->get_schema_tree()),
@@ -62,7 +64,8 @@ public:
               m_shared_decompress_ctx(shared_decompress_ctx),
               m_shared_device_buffer(shared_device_buffer),
               m_shared_cpu_buffer(shared_cpu_buffer),
-              m_shared_batch_bitmap(shared_batch_bitmap) {}
+              m_shared_batch_bitmap(shared_batch_bitmap),
+              m_shared_gather_buffers(shared_gather_buffers) {}
 
     /**
      * Filters messages within the archive and outputs the filtered messages to the configured
@@ -88,6 +91,7 @@ private:
     gpu::DeviceBuffer* m_shared_device_buffer{nullptr};
     gpu::CpuDecompressBuffer* m_shared_cpu_buffer{nullptr};
     gpu::DeviceBuffer* m_shared_batch_bitmap{nullptr};
+    gpu::GatherBuffers* m_shared_gather_buffers{nullptr};
 };
 }  // namespace clp_s::search
 

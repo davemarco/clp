@@ -86,7 +86,8 @@ bool search_archive(
         clp_s::gpu::NvcompDecompressContext* shared_decompress_ctx,
         clp_s::gpu::DeviceBuffer* shared_device_buffer,
         clp_s::gpu::CpuDecompressBuffer* shared_cpu_buffer,
-        clp_s::gpu::DeviceBuffer* shared_batch_bitmap
+        clp_s::gpu::DeviceBuffer* shared_batch_bitmap,
+        clp_s::gpu::GatherBuffers* shared_gather_buffers
 );
 
 bool compress(CommandLineArguments const& command_line_arguments) {
@@ -144,7 +145,8 @@ bool search_archive(
         clp_s::gpu::NvcompDecompressContext* shared_decompress_ctx,
         clp_s::gpu::DeviceBuffer* shared_device_buffer,
         clp_s::gpu::CpuDecompressBuffer* shared_cpu_buffer,
-        clp_s::gpu::DeviceBuffer* shared_batch_bitmap
+        clp_s::gpu::DeviceBuffer* shared_batch_bitmap,
+        clp_s::gpu::GatherBuffers* shared_gather_buffers
 ) {
     auto const& query = command_line_arguments.get_query();
 
@@ -314,7 +316,8 @@ bool search_archive(
             shared_decompress_ctx,
             shared_device_buffer,
             shared_cpu_buffer,
-            shared_batch_bitmap
+            shared_batch_bitmap,
+            shared_gather_buffers
     );
     return output.filter();
 }
@@ -426,6 +429,7 @@ int main(int argc, char const* argv[]) {
         clp_s::gpu::NvcompDecompressContext shared_decompress_ctx;
         clp_s::gpu::DeviceBuffer shared_device_buffer{};
         clp_s::gpu::DeviceBufferGuard shared_batch_bitmap;
+        clp_s::gpu::GatherBuffers shared_gather_buffers;
         clp_s::gpu::CpuDecompressBuffer shared_cpu_buffer;
         clp_s::DictDecompressBuffer shared_var_dict_buf;
         clp_s::DictDecompressBuffer shared_log_dict_buf;
@@ -513,7 +517,8 @@ int main(int argc, char const* argv[]) {
                             &shared_decompress_ctx,
                             &shared_device_buffer,
                             &shared_cpu_buffer,
-                            &shared_batch_bitmap.buf
+                            &shared_batch_bitmap.buf,
+                            &shared_gather_buffers
                     ))
                 {
                     return 1;

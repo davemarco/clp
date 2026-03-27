@@ -418,17 +418,28 @@ auto SchemaReader::serialize_message_at(uint64_t message_index) -> std::string {
 }
 
 void SchemaReader::serialize_bitmap_parallel(
-        uint8_t const* bitmap,
+        uint32_t const* bitmap,
         size_t num_rows,
         size_t num_threads,
         ThreadPool* thread_pool,
         std::vector<std::string>& per_thread_output
 ) {
+    // Extract matching row indices from the packed bitmap.
+    // For each word, __builtin_ctz finds the position of the lowest set bit,
+    // then word &= word - 1 clears that bit so the next iteration finds the next one.
+    // This skips zero words entirely and processes only set bits.
+    size_t const num_words = (num_rows + 31) / 32;
     std::vector<size_t> match_indices;
-    match_indices.reserve(num_rows / 10);
-    for (size_t i = 0; i < num_rows; ++i) {
-        if (bitmap[i]) {
-            match_indices.push_back(i);
+    match_indices.reserve(num_rows / 10);  // Assume ~10% selectivity to reduce reallocations
+    for (size_t w = 0; w < num_words; ++w) {
+        uint32_t word = bitmap[w];
+        while (word != 0) {
+            int bit = __builtin_ctz(word);
+            size_t row = w * 32 + static_cast<size_t>(bit);
+            if (row < num_rows) {
+                match_indices.push_back(row);
+            }
+            word &= word - 1;
         }
     }
     serialize_indices_parallel(match_indices, num_threads, thread_pool, per_thread_output);

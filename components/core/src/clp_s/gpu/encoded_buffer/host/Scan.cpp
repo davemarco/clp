@@ -4,16 +4,22 @@
 
 #include <cuda_runtime.h>
 
-#include "../../bitmap/cuda/Scan.hpp"
+#include "../../common/host/BitmapUtils.hpp"
+#include "../cuda/BitmapScan.hpp"
 #include "../../common/cuda/Transfer.hpp"
 #include "../../common/host/ErtInfo.hpp"
 #include "../cuda/Packing.hpp"
-#include "../cuda/Types.hpp"
 
 namespace clp_s::gpu {
 namespace {
+
 /**
- * Adjusts column offsets for a schema's position within the concatenated ERT buffer.
+ * Returns a copy of @p columns with byte offsets adjusted for a schema's
+ * position within the concatenated ERT device buffer.
+ *
+ * @param columns Column descriptors with offsets relative to the schema's stream start.
+ * @param stream_offset Byte offset of this schema's stream within the ERT buffer.
+ * @return Adjusted column descriptors with absolute ERT offsets.
  */
 std::vector<ColumnDesc> offset_columns(
         std::span<ColumnDesc const> columns,
@@ -29,6 +35,143 @@ std::vector<ColumnDesc> offset_columns(
     return result;
 }
 
+/**
+ * Counts matching rows per schema by running a CUB segmented popcount
+ * reduction over the packed bitmap. Synchronizes once to copy counts to host.
+ *
+ * @param schemas Per-schema scan info (num_rows, bitmap_word_offset).
+ * @param d_bitmap Device bitmap produced by run_batched_scan.
+ * @param buffers Reusable pinned buffers for host-device transfers.
+ * @param[out] h_counts Receives one match count per schema.
+ * @param[out] error Error message on failure.
+ * @return 0 on success, non-zero on failure.
+ */
+int count_matches_per_schema(
+        std::vector<SchemaScanInfo> const& schemas,
+        DeviceBuffer const& d_bitmap,
+        GatherBuffers& buffers,
+        std::vector<uint64_t>& h_counts,
+        std::string& error
+) {
+    size_t const num_schemas = schemas.size();
+    size_t const offsets_count = num_schemas + 1;
+    size_t const offsets_bytes = offsets_count * sizeof(int);
+
+    auto s = buffers.ensure_pinned_upload(offsets_bytes);
+    if (cudaSuccess != s) {
+        error = "pinned upload alloc failed: " + std::string(cudaGetErrorString(s));
+        return 1;
+    }
+
+    // Build per-schema word-offset array on pinned host memory.
+    auto* h_offsets = static_cast<int*>(buffers.pinned_upload);
+    h_offsets[0] = 0;
+    for (size_t i = 0; i < num_schemas; ++i) {
+        h_offsets[i + 1] = h_offsets[i]
+                           + static_cast<int>(bitmap_num_words(schemas[i].num_rows));
+    }
+
+    // Upload offsets + allocate counts array on device (single allocation).
+    size_t const device_bytes = offsets_bytes + num_schemas * sizeof(uint64_t);
+    DeviceBufferGuard device_buf;
+    auto status = cudaMallocAsync(&device_buf.buf.ptr, device_bytes, 0);
+    if (cudaSuccess != status) {
+        error = "device alloc failed: " + std::string(cudaGetErrorString(status));
+        return 1;
+    }
+    device_buf.buf.size = device_bytes;
+
+    auto* d_offsets = static_cast<int*>(device_buf.buf.ptr);
+    auto* d_counts = reinterpret_cast<uint64_t*>(
+            static_cast<char*>(device_buf.buf.ptr) + offsets_bytes
+    );
+    cudaMemcpyAsync(d_offsets, h_offsets, offsets_bytes, cudaMemcpyHostToDevice, 0);
+
+    status = count_bitmap_matches_batched(
+            static_cast<uint32_t const*>(d_bitmap.ptr),
+            d_offsets, d_offsets + 1, num_schemas, d_counts
+    );
+    if (cudaSuccess != status) {
+        error = "count failed: " + std::string(cudaGetErrorString(status));
+        return 1;
+    }
+
+    // Sync to get counts on host.
+    h_counts.resize(num_schemas);
+    status = cudaMemcpy(
+            h_counts.data(), d_counts,
+            num_schemas * sizeof(uint64_t), cudaMemcpyDeviceToHost
+    );
+    if (cudaSuccess != status) {
+        error = "counts D2H failed: " + std::string(cudaGetErrorString(status));
+        return 1;
+    }
+    return 0;
+}
+
+/**
+ * For each schema with matches: extracts matching row indices from the bitmap,
+ * then gathers the corresponding column values into a contiguous device output buffer.
+ *
+ * @param d_ert Device pointer to the ERT buffer.
+ * @param schemas Per-schema scan info (column descriptors, stream offsets).
+ * @param d_bitmap Device bitmap produced by run_batched_scan.
+ * @param h_counts Per-schema match counts (from count_matches_per_schema).
+ * @param results Per-schema output layout (host_offset used for output positioning).
+ * @param output_guard Device buffer to gather into (must be pre-allocated).
+ * @param[out] error Error message on failure.
+ * @return 0 on success, non-zero on failure.
+ */
+int gather_all_schemas(
+        void* d_ert,
+        std::vector<SchemaScanInfo> const& schemas,
+        DeviceBuffer const& d_bitmap,
+        std::vector<uint64_t> const& h_counts,
+        std::vector<BatchGatherResult> const& results,
+        DeviceBufferGuard& output_guard,
+        std::string& error
+) {
+    DeviceBufferGuard row_ids_guard;
+    for (size_t i = 0; i < schemas.size(); ++i) {
+        if (0 == h_counts[i]) {
+            continue;
+        }
+
+        auto const& info = schemas[i];
+        auto* bitmap_ptr = static_cast<uint32_t const*>(d_bitmap.ptr) + info.bitmap_word_offset;
+
+        auto status = bitmap_to_row_ids(
+                bitmap_ptr, info.num_rows, row_ids_guard.buf, h_counts[i]
+        );
+        if (cudaSuccess != status) {
+            error = "bitmap_to_row_ids failed: "
+                    + std::string(cudaGetErrorString(status));
+            return 1;
+        }
+
+        auto adjusted_columns = offset_columns(info.column_descs, info.stream_offset);
+        std::vector<size_t> column_offsets;
+        size_t total_size = 0;
+        compute_column_offsets(adjusted_columns, h_counts[i], column_offsets, total_size);
+
+        auto const* ert_base = static_cast<char const*>(d_ert);
+        auto const* row_ids = static_cast<uint32_t const*>(row_ids_guard.buf.ptr);
+        auto* output_ptr = static_cast<char*>(output_guard.buf.ptr) + results[i].host_offset;
+
+        for (size_t c = 0; c < adjusted_columns.size(); ++c) {
+            status = pack_fixed_column(
+                    adjusted_columns[c], column_offsets[c],
+                    ert_base, row_ids, output_ptr, h_counts[i]
+            );
+            if (cudaSuccess != status) {
+                error = "pack failed: " + std::string(cudaGetErrorString(status));
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 }  // namespace
 
 int run_batched_scan(
@@ -41,39 +184,51 @@ int run_batched_scan(
         return 0;
     }
 
-    // Compute total bitmap size
-    size_t total_rows = 0;
+    // Compute total bitmap size in words (each schema padded to word boundary)
+    size_t total_words = 0;
     for (auto const& info : schemas) {
-        total_rows += info.num_rows;
+        total_words += bitmap_num_words(info.num_rows);
     }
-    if (0 == total_rows) {
+    if (0 == total_words) {
         return 0;
     }
 
+    size_t const total_bytes = total_words * sizeof(uint32_t);
+
     // Reuse existing allocation if large enough; grow otherwise.
-    if (out_bitmap.size < total_rows) {
+    if (out_bitmap.size < total_bytes) {
         if (out_bitmap.ptr) {
             cudaFreeAsync(out_bitmap.ptr, 0);
         }
-        auto status = cudaMallocAsync(&out_bitmap.ptr, total_rows, 0);
+        auto status = cudaMallocAsync(&out_bitmap.ptr, total_bytes, 0);
         if (cudaSuccess != status) {
             out_bitmap = {};
             return 1;
         }
-        out_bitmap.size = total_rows;
+        out_bitmap.size = total_bytes;
     }
 
-    // Determine init value from first clause's merge op
-    uint8_t init_val = 0;
-    if (false == schemas[0].clauses.empty()) {
-        auto merge_op = schemas[0].clauses[0].column_predicates.merge_op;
-        init_val = (merge_op == MergeOp::And) ? 1 : 0;
+    // Bitmap must be initialized to the identity value for the clause's merge op:
+    // - AND merge: identity is all 1s (any row AND 1 = that row). A predicate
+    //   clears bits for non-matching rows.
+    // - OR merge: identity is all 0s (any row OR 0 = that row). A predicate
+    //   sets bits for matching rows.
+    bool const init_all_ones = false == schemas[0].clauses.empty()
+                               && schemas[0].clauses[0].column_predicates.merge_op
+                                          == MergeOp::And;
+    if (init_all_ones) {
+        for (auto const& info : schemas) {
+            auto* schema_bitmap = static_cast<uint32_t*>(out_bitmap.ptr)
+                                  + info.bitmap_word_offset;
+            memset_bitmap_ones(schema_bitmap, info.num_rows);
+        }
+    } else {
+        cudaMemsetAsync(out_bitmap.ptr, 0x00, total_bytes, 0);
     }
-    cudaMemsetAsync(out_bitmap.ptr, init_val, total_rows, 0);
 
     // Scan each schema's predicates and SCLP filters into its bitmap region
     for (auto const& info : schemas) {
-        auto* bitmap_ptr = static_cast<uint8_t*>(out_bitmap.ptr) + info.bitmap_offset;
+        auto* bitmap_ptr = static_cast<uint32_t*>(out_bitmap.ptr) + info.bitmap_word_offset;
         auto const adj_cols = offset_columns(info.column_descs, info.stream_offset);
 
         for (auto const& clause : info.clauses) {
@@ -108,20 +263,22 @@ int run_batched_scan(
             // SCLP filters
             for (auto const& sclp : clause.sclp_filters) {
                 DeviceBufferGuard sclp_guard;
-                DeviceBuffer sclp_buf;
-                cudaMallocAsync(&sclp_buf.ptr, info.num_rows, 0);
-                sclp_buf.size = info.num_rows;
-                sclp_guard.buf = sclp_buf;
+                size_t const sclp_bytes = bitmap_num_bytes(info.num_rows);
+                auto sclp_status = cudaMallocAsync(&sclp_guard.buf.ptr, sclp_bytes, 0);
+                if (cudaSuccess != sclp_status) {
+                    return 1;
+                }
+                sclp_guard.buf.size = sclp_bytes;
 
                 scan_sclp_to_device_bitmap(
                         static_cast<char const*>(d_ert),
                         sclp, adj_cols, info.num_rows,
-                        static_cast<uint8_t*>(sclp_guard.buf.ptr)
+                        static_cast<uint32_t*>(sclp_guard.buf.ptr)
                 );
 
                 merge_device_bitmaps(
                         bitmap_ptr,
-                        static_cast<uint8_t const*>(sclp_guard.buf.ptr),
+                        static_cast<uint32_t const*>(sclp_guard.buf.ptr),
                         info.num_rows,
                         clause.column_predicates.merge_op
                 );
@@ -131,66 +288,99 @@ int run_batched_scan(
     return 0;
 }
 
-int bitmap_to_encoded_buffer_for_schema(
-        SchemaReader& reader,
-        uint8_t* d_bitmap,
+int batch_gather_encoded_buffers(
         void* d_ert,
         size_t d_ert_size,
-        std::span<ColumnDesc const> columns,
-        size_t stream_offset,
-        EncodedBuffer& out_buffer,
+        std::vector<SchemaScanInfo> const& schemas,
+        DeviceBuffer const& d_bitmap,
+        GatherBuffers& buffers,
+        std::shared_ptr<char[]>& out_host_buf,
+        std::vector<BatchGatherResult>& out_results,
         std::string& error
 ) {
-    out_buffer = {};
-    auto adjusted_columns = offset_columns(columns, stream_offset);
-    size_t const num_rows = reader.get_num_messages();
+    out_results.clear();
+    if (schemas.empty()) {
+        return 0;
+    }
+    size_t const num_schemas = schemas.size();
 
-    DeviceContext device_ctx;
-    device_ctx.ert.ptr = d_ert;
-    device_ctx.ert.size = d_ert_size;
+    // Phase 1: Count matches per schema.
 
-    uint64_t num_matches = 0;
-    auto status = bitmap_to_row_ids(d_bitmap, num_rows, device_ctx.row_ids.buf, num_matches);
-    if (cudaSuccess != status) {
-        error = std::string("bitmap_to_row_ids failed: ") + cudaGetErrorString(status);
+    std::vector<uint64_t> h_counts;
+    if (0 != count_matches_per_schema(schemas, d_bitmap, buffers, h_counts, error)) {
         return 1;
     }
 
-    out_buffer.num_rows = num_matches;
-    if (0 == num_matches) {
+
+    // Phase 2: Compute per-schema output sizes, allocate device buffer, gather.
+    size_t total_output_size = 0;
+    out_results.resize(num_schemas);
+    for (size_t i = 0; i < num_schemas; ++i) {
+        out_results[i].schema_id = schemas[i].schema_id;
+        out_results[i].num_matches = h_counts[i];
+        if (0 == h_counts[i]) {
+            out_results[i].host_offset = 0;
+            out_results[i].size = 0;
+            continue;
+        }
+        auto adjusted = offset_columns(schemas[i].column_descs, schemas[i].stream_offset);
+        std::vector<size_t> col_offsets;
+        size_t schema_size = 0;
+        compute_column_offsets(adjusted, h_counts[i], col_offsets, schema_size);
+        out_results[i].host_offset = total_output_size;
+        out_results[i].size = schema_size;
+        total_output_size += schema_size;
+    }
+
+    if (0 == total_output_size) {
         return 0;
     }
 
-    PackContext pack_ctx{adjusted_columns, device_ctx, num_matches};
-
-    std::vector<size_t> column_offsets;
-    size_t total_size = 0;
-    compute_column_offsets(adjusted_columns, num_matches, column_offsets, total_size);
-
-    status = cudaMallocAsync(&device_ctx.encoded_buffer.buf.ptr, total_size, 0);
+    DeviceBufferGuard output_guard;
+    auto status = cudaMallocAsync(&output_guard.buf.ptr, total_output_size, 0);
     if (cudaSuccess != status) {
-        error = std::string("output alloc failed: ") + cudaGetErrorString(status);
+        error = "output alloc failed: " + std::string(cudaGetErrorString(status));
         return 1;
     }
-    device_ctx.encoded_buffer.buf.size = total_size;
+    output_guard.buf.size = total_output_size;
 
-    for (size_t i = 0; i < adjusted_columns.size(); ++i) {
-        status = pack_fixed_column(adjusted_columns[i], column_offsets[i], pack_ctx);
-        if (cudaSuccess != status) {
-            error = std::string("pack failed: ") + cudaGetErrorString(status);
-            return 1;
-        }
-    }
-
-    void* host_ptr = nullptr;
-    status = copy_to_host(device_ctx.encoded_buffer.buf, &host_ptr);
-    if (cudaSuccess != status) {
-        error = std::string("copy to host failed: ") + cudaGetErrorString(status);
+    if (0 != gather_all_schemas(
+                d_ert, schemas, d_bitmap,
+                h_counts, out_results, output_guard, error))
+    {
         return 1;
     }
 
-    out_buffer.data = std::shared_ptr<char[]>(static_cast<char*>(host_ptr), free_host_buffer);
-    out_buffer.size = total_size;
+
+    // Phase 3: Copy all gathered data to host in one transfer.
+    status = buffers.ensure_host_output(total_output_size);
+    if (cudaSuccess != status) {
+        error = "host output alloc failed: " + std::string(cudaGetErrorString(status));
+        return 1;
+    }
+
+    status = cudaMemcpyAsync(
+            buffers.host_output, output_guard.buf.ptr,
+            total_output_size, cudaMemcpyDeviceToHost, 0
+    );
+    if (cudaSuccess != status) {
+        error = "D2H copy failed: " + std::string(cudaGetErrorString(status));
+        return 1;
+    }
+
+    status = cudaStreamSynchronize(0);
+    if (cudaSuccess != status) {
+        error = "sync failed: " + std::string(cudaGetErrorString(status));
+        return 1;
+    }
+
+
+    // reader.load() requires shared_ptr<char[]>, but the buffer is owned by
+    // GatherBuffers and must not be freed here. The empty lambda prevents
+    // shared_ptr from calling delete when it goes out of scope.
+    out_host_buf = std::shared_ptr<char[]>(
+            static_cast<char*>(buffers.host_output), [](char*) {}
+    );
     return 0;
 }
 
@@ -201,6 +391,10 @@ void run_gpu_prefix_sum_schemas(
         std::unordered_map<size_t, size_t> const& stream_batch_offsets,
         DeviceBuffer& device_buffer
 ) {
+    // Collect all delta/timestamp columns first.
+    std::vector<size_t> col_offsets;
+    std::vector<size_t> col_lengths;
+
     for (int32_t const schema_id : matched_schemas) {
         auto const& schema_meta = archive_reader.get_schema_metadata(schema_id);
         auto const& schema = (*archive_reader.get_schema_map())[schema_id];
@@ -221,13 +415,19 @@ void run_gpu_prefix_sum_schemas(
 
         for (auto const& col : column_descs) {
             if (col.type == ColumnType::DeltaInt64 || col.type == ColumnType::Timestamp) {
-                prefix_sum_column_in_place(
-                        static_cast<char*>(device_buffer.ptr),
-                        stream_offset + col.primary_offset_bytes,
-                        col.length
-                );
+                col_offsets.push_back(stream_offset + col.primary_offset_bytes);
+                col_lengths.push_back(col.length);
             }
         }
+    }
+
+    if (false == col_offsets.empty()) {
+        prefix_sum_columns_batched(
+                static_cast<char*>(device_buffer.ptr),
+                col_offsets.data(),
+                col_lengths.data(),
+                col_offsets.size()
+        );
     }
 }
 

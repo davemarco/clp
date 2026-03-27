@@ -25,7 +25,7 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
         SchemaReader& reader,
         std::vector<ScanClause> const& clauses,
         std::span<ColumnDesc const> columns,
-        uint8_t* out_bitmap,
+        uint32_t* out_bitmap,
         size_t num_rows,
         size_t num_threads = 1,
         clp_s::ThreadPool* thread_pool = nullptr
