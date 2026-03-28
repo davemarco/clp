@@ -518,6 +518,24 @@ SchemaReader& ArchiveReader::init_schema_table(
     return m_schema_reader;
 }
 
+std::unique_ptr<SchemaReader> ArchiveReader::create_schema_reader(
+        int32_t schema_id,
+        bool should_extract_timestamp,
+        bool should_marshal_records,
+        bool use_absolute_readers
+) {
+    if (false == m_id_to_schema_metadata.contains(schema_id)) {
+        throw OperationFailed(ErrorCodeFileNotFound, __FILENAME__, __LINE__);
+    }
+
+    auto reader = std::make_unique<SchemaReader>();
+    initialize_schema_reader(
+            *reader, schema_id, should_extract_timestamp,
+            should_marshal_records, use_absolute_readers
+    );
+    return reader;
+}
+
 void ArchiveReader::store(FileWriter& writer) {
     std::string message;
     for (auto schema_id : m_schema_ids) {

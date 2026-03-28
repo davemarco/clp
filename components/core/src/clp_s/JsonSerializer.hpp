@@ -1,6 +1,8 @@
 #ifndef CLP_S_JSONSERIALIZER_HPP
 #define CLP_S_JSONSERIALIZER_HPP
 
+#include <charconv>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -75,9 +77,11 @@ public:
     }
 
     void add_special_key(std::string_view const key) {
-        std::string tmp;
-        StringUtils::escape_json_string(tmp, key);
-        m_special_keys.emplace_back(tmp);
+        std::string escaped;
+        escaped.push_back('"');
+        StringUtils::escape_json_string(escaped, key);
+        escaped.append("\":");
+        m_special_keys.emplace_back(std::move(escaped));
     }
 
     void begin_object() {
@@ -120,17 +124,26 @@ public:
         m_json_string += "],";
     }
 
-    void append_key() { append_escaped_key(m_special_keys[m_special_keys_index++]); }
-
-    void append_key(std::string_view const key) {
-        m_json_string += "\"";
-        StringUtils::escape_json_string(m_json_string, key);
-        m_json_string += "\":";
-    }
+    void append_key() { m_json_string.append(m_special_keys[m_special_keys_index++]); }
 
     void append_value(std::string_view const value) {
         m_json_string += value;
         m_json_string += ",";
+    }
+
+    // Uses stack buffer + to_chars instead of std::to_string to avoid a heap allocation per call.
+    void append_int_value(int64_t value) {
+        char buf[21];
+        auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), value);
+        m_json_string.append(buf, static_cast<size_t>(ptr - buf));
+        m_json_string += ',';
+    }
+
+    void append_double_value(double value) {
+        char buf[32];
+        auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), value);
+        m_json_string.append(buf, static_cast<size_t>(ptr - buf));
+        m_json_string += ',';
     }
 
     void append_value_from_column(clp_s::BaseColumnReader* column, uint64_t cur_message) {
@@ -152,12 +165,6 @@ public:
     }
 
 private:
-    void append_escaped_key(std::string_view const key) {
-        m_json_string.push_back('"');
-        m_json_string.append(key);
-        m_json_string.append("\":");
-    }
-
     std::string m_json_string;
     std::vector<Op> m_op_list;
     std::vector<std::string> m_special_keys;

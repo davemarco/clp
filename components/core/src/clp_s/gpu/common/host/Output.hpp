@@ -1,38 +1,38 @@
 #ifndef CLP_S_GPU_COMMON_HOST_OUTPUT_HPP
 #define CLP_S_GPU_COMMON_HOST_OUTPUT_HPP
 
-// Host-facing API for emitting GPU bitmap scan matches.
-
 #include <cstddef>
-#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "../../../SchemaReader.hpp"
-#include "../../../ThreadPool.hpp"
 #include "../../../search/OutputHandler.hpp"
 
 namespace clp_s::gpu {
+
+// Per-schema work item for batched serialization (GPU and CpuBitmap paths).
+struct SchemaWork {
+    std::unique_ptr<SchemaReader> reader;
+    std::vector<size_t> match_indices;  // Empty when all rows are matches (GPU path).
+    std::vector<std::string> chunk_outputs;
+};
+
 /**
- * Writes matching rows (one per line) for rows flagged in the bitmap.
+ * Serializes collected schema work via a single taskflow graph and writes output.
+ * If match_indices is non-empty, only those rows are serialized; otherwise all rows.
  *
- * @param reader Schema reader for the current ERT.
- * @param bitmap Packed uint32_t bitmap (1 bit per row).
- * @param output_handler Output handler to write results.
- * @param error Error message on failure.
- * @param num_threads Number of threads for parallel serialization.
- * @param thread_pool Thread pool (may be nullptr for single-threaded).
- * @return 0 on success, non-zero on failure.
+ * @param schema_work Per-schema readers, match indices, and output buffers.
+ * @param num_threads Number of worker threads for the taskflow executor.
+ * @param output_handler Output handler to write serialized results.
+ * @return true on success, false on flush failure.
  */
-int emit_bitmap_matches(
-        SchemaReader& reader,
-        uint32_t const* bitmap,
-        size_t num_rows,
-        search::OutputHandler& output_handler,
-        std::string& error,
-        size_t num_threads = 1,
-        clp_s::ThreadPool* thread_pool = nullptr
+bool serialize_and_write_schema_work(
+        std::vector<SchemaWork>& schema_work,
+        size_t num_threads,
+        search::OutputHandler& output_handler
 );
+
 }  // namespace clp_s::gpu
 
 #endif  // CLP_S_GPU_COMMON_HOST_OUTPUT_HPP

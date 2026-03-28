@@ -9,7 +9,6 @@
 
 #include <cuda_runtime.h>
 #include <spdlog/spdlog.h>
-
 #include "../../clp/type_utils.hpp"
 #include "../SchemaTree.hpp"
 #include "../Utils.hpp"
@@ -288,108 +287,71 @@ bool Output::filter() {
             break;
     }
 
-    // ── Per-schema loop ─────────────────────────────────────────────────────
-    size_t batch_idx = 0;
-    for (int32_t const schema_id : matched_schemas) {
-        switch (m_scan_mode) {
-            case ScanMode::None: {
-                if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
-                    continue;
-                }
-
-                auto const schema_table_start = SearchTiming::Clock::now();
-                auto& reader = m_archive_reader->read_schema_table(
-                        schema_id,
-                        m_output_handler->should_output_metadata(),
-                        m_should_marshal_records
-                );
-                timing.add_ert_decompress(
-                        SearchTiming::Clock::now() - schema_table_start
-                );
-                reader.initialize_filter(&m_query_runner);
-
-                auto const scan_start = SearchTiming::Clock::now();
-                if (m_output_handler->should_output_metadata()) {
-                    epochtime_t timestamp{};
-                    int64_t log_event_idx{};
-                    while (reader.get_next_message_with_metadata(
-                            message, timestamp, log_event_idx, &m_query_runner
-                    )) {
-                        m_output_handler->write(message, timestamp, archive_id, log_event_idx);
-                    }
-                } else {
-                    while (reader.get_next_message(message, &m_query_runner)) {
-                        m_output_handler->write(message);
-                    }
-                }
-                timing.add_scan(
-                        SearchTiming::Clock::now() - scan_start,
-                        reader.get_num_messages()
-                );
+    // ── Per-mode serialization ──────────────────────────────────────────────
+    switch (m_scan_mode) {
+        case ScanMode::Gpu: {
+            if (gpu_gather_results.empty()) {
                 break;
             }
+            auto const serialize_start = SearchTiming::Clock::now();
 
-            case ScanMode::Gpu: {
-                if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
-                    continue;
-                }
-                auto const& gather_result = gpu_gather_results[batch_idx++];
-                if (0 == gather_result.num_matches) {
-                    continue;
-                }
+            std::vector<clp_s::gpu::SchemaWork> schema_work;
+            {
+                size_t gi = 0;
+                for (int32_t const schema_id : matched_schemas) {
+                    if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
+                        continue;
+                    }
+                    auto const& gather_result = gpu_gather_results[gi++];
+                    if (0 == gather_result.num_matches) {
+                        continue;
+                    }
 
-                auto const serialize_start = SearchTiming::Clock::now();
-                auto& reader = m_archive_reader->init_schema_table(
-                        schema_id, false, m_should_marshal_records, true
-                );
-                reader.reset_read_state(gather_result.num_matches);
-                try {
-                    reader.load(
-                            gpu_host_buf,
-                            gather_result.host_offset,
-                            gather_result.size
+                    auto reader = m_archive_reader->create_schema_reader(
+                            schema_id, false, m_should_marshal_records, true
                     );
-                } catch (std::exception const& e) {
-                    SPDLOG_ERROR(
-                            "schema {}: encoded buffer load failed ({} matches, "
-                            "buf_size={}): {}",
-                            schema_id,
-                            gather_result.num_matches,
-                            gather_result.size,
-                            e.what()
-                    );
-                    return false;
-                }
-                if (m_num_threads > 1 && m_thread_pool) {
-                    std::vector<std::string> outputs;
-                    reader.serialize_range_parallel(
-                            m_num_threads,
-                            m_thread_pool.get(),
-                            outputs
-                    );
-                    for (auto& chunk : outputs) {
-                        m_output_handler->write(chunk);
+                    reader->reset_read_state(gather_result.num_matches);
+                    try {
+                        reader->load(
+                                gpu_host_buf,
+                                gather_result.host_offset,
+                                gather_result.size
+                        );
+                    } catch (std::exception const& e) {
+                        SPDLOG_ERROR(
+                                "schema {}: encoded buffer load failed ({} matches, "
+                                "buf_size={}): {}",
+                                schema_id,
+                                gather_result.num_matches,
+                                gather_result.size,
+                                e.what()
+                        );
+                        return false;
                     }
-                } else {
-                    std::string msg;
-                    while (reader.get_next_message(msg)) {
-                        m_output_handler->write(msg);
-                    }
+                    schema_work.push_back({std::move(reader), {}, {}});
                 }
-                timing.add_serialization(
-                        SearchTiming::Clock::now() - serialize_start
-                );
-                break;
             }
 
-            case ScanMode::CpuBitmap: {
+            if (false == clp_s::gpu::serialize_and_write_schema_work(
+                        schema_work, m_num_threads, *m_output_handler))
+            {
+                return false;
+            }
+            timing.add_serialization(SearchTiming::Clock::now() - serialize_start);
+            break;
+        }
+
+        case ScanMode::CpuBitmap: {
+            if (m_output_handler->should_output_metadata()) {
+                SPDLOG_ERROR("Column scan does not support metadata output yet.");
+                return false;
+            }
+
+            std::vector<clp_s::gpu::SchemaWork> schema_work;
+
+            for (int32_t const schema_id : matched_schemas) {
                 if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
                     continue;
-                }
-
-                if (m_output_handler->should_output_metadata()) {
-                    SPDLOG_ERROR("Column scan does not support metadata output yet.");
-                    return false;
                 }
 
                 auto const schema_setup_start = SearchTiming::Clock::now();
@@ -402,19 +364,22 @@ bool Output::filter() {
                 if (0 != clp_s::gpu::compute_column_descs_from_metadata(
                             *m_schema_tree, schema, schema_meta, column_descs, col_error))
                 {
-                    SPDLOG_ERROR("schema {}: {} — archive must be compressed with"
-                                 " --structurize-clp-strings --structurize-arrays",
-                                 schema_id, col_error);
+                    SPDLOG_ERROR(
+                            "schema {}: {} — archive must be compressed with"
+                            " --structurize-clp-strings --structurize-arrays",
+                            schema_id,
+                            col_error
+                    );
                     return false;
                 }
 
-                auto& reader = m_archive_reader->init_schema_table(
+                auto reader = m_archive_reader->create_schema_reader(
                         schema_id, false, m_should_marshal_records, true
                 );
                 size_t const batch_offset = cpu_batch_offsets.at(schema_meta.stream_id)
                                             + schema_meta.stream_offset;
-                reader.load(cpu_batch_buffer, batch_offset, schema_meta.uncompressed_size);
-                reader.initialize_filter(&m_query_runner);
+                reader->load(cpu_batch_buffer, batch_offset, schema_meta.uncompressed_size);
+                reader->initialize_filter(&m_query_runner);
 
                 timing.add_ert_decompress(SearchTiming::Clock::now() - schema_setup_start);
 
@@ -438,18 +403,14 @@ bool Output::filter() {
                     return false;
                 }
 
-                size_t const num_rows = reader.get_num_messages();
+                size_t const num_rows = reader->get_num_messages();
 
-                // Use a reusable packed bitmap buffer to avoid per-schema allocation
                 size_t const num_words = clp_s::gpu::bitmap_num_words(num_rows);
-                static std::vector<uint32_t> reuse_bitmap;
-                if (reuse_bitmap.size() < num_words) {
-                    reuse_bitmap.resize(num_words);
-                }
+                std::vector<uint32_t> bitmap(num_words);
 
                 auto scan_err = clp_s::gpu::run_cpu_scan_to_bitmap_clauses(
-                        reader, clauses, column_descs,
-                        reuse_bitmap.data(), num_rows,
+                        *reader, clauses, column_descs,
+                        bitmap.data(), num_rows,
                         m_num_threads, m_thread_pool.get()
                 );
                 if (clp_s::gpu::ScanCompatError::None != scan_err) {
@@ -459,48 +420,77 @@ bool Output::filter() {
                     );
                     return false;
                 }
-                auto matches = clp_s::gpu::bitmap_popcount(
-                        reuse_bitmap.data(), num_words
+
+                timing.add_scan(SearchTiming::Clock::now() - scan_start, num_rows);
+
+                auto match_indices = clp_s::gpu::bitmap_extract_indices(
+                        bitmap.data(), num_rows
                 );
-                timing.add_scan(
-                        SearchTiming::Clock::now() - scan_start,
-                        num_rows
-                );
-                if (0 != matches) {
-                    auto const serialize_start = SearchTiming::Clock::now();
-                    std::string error_message;
-                    if (0
-                        != clp_s::gpu::emit_bitmap_matches(
-                                reader,
-                                reuse_bitmap.data(),
-                                num_rows,
-                                *m_output_handler,
-                                error_message,
-                                m_num_threads,
-                                m_thread_pool.get()
-                        ))
-                    {
-                        SPDLOG_ERROR("Bitmap scan output failed: {}", error_message);
-                        return false;
-                    }
-                    timing.add_serialization(
-                            SearchTiming::Clock::now() - serialize_start
+
+                if (false == match_indices.empty()) {
+                    schema_work.push_back(
+                            {std::move(reader), std::move(match_indices), {}}
                     );
                 }
-                break;
             }
+
+            if (false == schema_work.empty()) {
+                auto const serialize_start = SearchTiming::Clock::now();
+                if (false == clp_s::gpu::serialize_and_write_schema_work(
+                            schema_work, m_num_threads, *m_output_handler))
+                {
+                    return false;
+                }
+                timing.add_serialization(SearchTiming::Clock::now() - serialize_start);
+            }
+            break;
         }
 
-        // Flush after every schema that produces output
-        auto ecode = m_output_handler->flush();
-        if (ErrorCode::ErrorCodeSuccess != ecode) {
-            SPDLOG_ERROR(
-                    "Failed to flush output handler, error={}.",
-                    clp::enum_to_underlying_type(ecode)
-            );
-            return false;
+        case ScanMode::None: {
+            for (int32_t const schema_id : matched_schemas) {
+                if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
+                    continue;
+                }
+
+                auto const schema_table_start = SearchTiming::Clock::now();
+                auto& reader = m_archive_reader->read_schema_table(
+                        schema_id,
+                        m_output_handler->should_output_metadata(),
+                        m_should_marshal_records
+                );
+                timing.add_ert_decompress(SearchTiming::Clock::now() - schema_table_start);
+                reader.initialize_filter(&m_query_runner);
+
+                auto const scan_start = SearchTiming::Clock::now();
+                if (m_output_handler->should_output_metadata()) {
+                    epochtime_t timestamp{};
+                    int64_t log_event_idx{};
+                    while (reader.get_next_message_with_metadata(
+                            message, timestamp, log_event_idx, &m_query_runner
+                    )) {
+                        m_output_handler->write(message, timestamp, archive_id, log_event_idx);
+                    }
+                } else {
+                    while (reader.get_next_message(message, &m_query_runner)) {
+                        m_output_handler->write(message);
+                    }
+                }
+                timing.add_scan(
+                        SearchTiming::Clock::now() - scan_start, reader.get_num_messages()
+                );
+
+                auto ecode = m_output_handler->flush();
+                if (ErrorCode::ErrorCodeSuccess != ecode) {
+                    SPDLOG_ERROR(
+                            "Failed to flush output handler, error={}.",
+                            clp::enum_to_underlying_type(ecode)
+                    );
+                    return false;
+                }
+            }
+            break;
         }
-    }  // end schema loop
+    }
 
 
     auto ecode = m_output_handler->finish();

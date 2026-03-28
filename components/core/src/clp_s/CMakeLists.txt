@@ -287,6 +287,7 @@ if(CLP_BUILD_CLP_S_ARCHIVEWRITER)
         add_library(clp_s::archive_writer ALIAS clp_s_archive_writer)
         target_compile_features(clp_s_archive_writer PRIVATE cxx_std_20)
         target_include_directories(clp_s_archive_writer PUBLIC ../)
+        target_include_directories(clp_s_archive_writer SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/cross_dependencies/dependencies/taskflow)
         target_link_libraries(
                 clp_s_archive_writer
                 PUBLIC
@@ -398,6 +399,7 @@ if(CLP_BUILD_CLP_S_JSONCONSTRUCTOR)
         add_library(clp_s::json_constructor ALIAS clp_s_json_constructor)
         target_compile_features(clp_s_json_constructor PRIVATE cxx_std_20)
         target_include_directories(clp_s_json_constructor PUBLIC ../)
+        target_include_directories(clp_s_json_constructor SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/cross_dependencies/dependencies/taskflow)
         target_link_libraries(
                 clp_s_json_constructor
                 PUBLIC
@@ -456,6 +458,7 @@ if(CLP_BUILD_EXECUTABLES)
         )
         target_compile_features(clp-s PRIVATE cxx_std_20)
         target_include_directories(clp-s PRIVATE ../)
+        target_include_directories(clp-s SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/cross_dependencies/dependencies/taskflow)
         target_link_libraries(
                 clp-s
                 PRIVATE

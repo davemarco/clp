@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace clp_s::gpu {
 
@@ -82,6 +83,27 @@ inline void bitmap_invert(uint32_t* bitmap, size_t num_rows) {
     if (tail_bits != 0) {
         bitmap[num_words - 1] &= (1u << tail_bits) - 1;
     }
+}
+
+/**
+ * Extracts the indices of all set bits in a packed bitmap.
+ */
+inline std::vector<size_t> bitmap_extract_indices(uint32_t const* bitmap, size_t num_rows) {
+    size_t const num_words = bitmap_num_words(num_rows);
+    std::vector<size_t> indices;
+    indices.reserve(num_rows / 10);  // Assume ~10% selectivity
+    for (size_t w = 0; w < num_words; ++w) {
+        uint32_t word = bitmap[w];
+        while (word != 0) {
+            int bit = __builtin_ctz(word);
+            size_t row = w * 32 + static_cast<size_t>(bit);
+            if (row < num_rows) {
+                indices.push_back(row);
+            }
+            word &= word - 1;
+        }
+    }
+    return indices;
 }
 
 }  // namespace clp_s::gpu

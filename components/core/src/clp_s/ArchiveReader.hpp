@@ -264,6 +264,18 @@ public:
         return get_header().has_deprecated_timestamp_format();
     }
 
+    /**
+     * Creates a new SchemaReader initialized for the given schema. Unlike init_schema_table(),
+     * the returned reader is independently owned — multiple readers for different schemas can
+     * coexist simultaneously.
+     */
+    std::unique_ptr<SchemaReader> create_schema_reader(
+            int32_t schema_id,
+            bool should_extract_timestamp,
+            bool should_marshal_records,
+            bool use_absolute_readers = false
+    );
+
 private:
     /**
      * Reads a dictionary, using parallel chunk decompression when metadata is available.

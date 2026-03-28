@@ -16,6 +16,8 @@
 #include "SchemaTree.hpp"
 #include "StructuredClpStringReader.hpp"
 #include "ThreadPool.hpp"
+#include <taskflow/taskflow.hpp>
+
 #include "search/Projection.hpp"
 #include "ZstdDecompressor.hpp"
 
@@ -57,6 +59,8 @@ public:
         OperationFailed(ErrorCode error_code, char const* const filename, int line_number)
                 : TraceableException(error_code, filename, line_number) {}
     };
+
+    static constexpr size_t cEstimatedBytesPerRow = 256;
 
     struct SchemaMetadata {
         uint64_t stream_id;
@@ -210,42 +214,25 @@ public:
     void reset_read_state(uint64_t num_messages);
 
     /**
-     * Serializes the message at the given index for random-access output (e.g. bitmap scan).
-     * Ensures the serializer is initialized and sets m_cur_message so that structured CLP
-     * string fields decode the correct row. Appends a trailing newline.
-     * @param message_index
-     * @return The serialized JSON string.
+     * Adds serialization tasks to an existing taskflow graph, splitting rows
+     * into @p num_chunks chunks. Each chunk serializes its row range into a separate string.
+     * Each chunk gets its own clone of the serializer and SCLP map since
+     * generate_json_message mutates them and chunks run on different threads.
+     * The caller runs the taskflow after adding tasks from all schemas.
+     *
+     * If @p indices is empty, serializes all rows [0, num_messages).
+     * Otherwise, serializes only the rows at the given indices.
+     *
+     * @param num_chunks Number of chunks to split rows into.
+     * @param taskflow The taskflow graph to add tasks to.
+     * @param[out] chunk_outputs Vector of strings, one per chunk. Resized to num_chunks.
+     * @param indices Row indices to serialize. Empty means all rows.
      */
-    [[nodiscard]] auto serialize_message_at(uint64_t message_index) -> std::string;
-
-    /**
-     * Serializes all messages in parallel across multiple threads. Each thread gets its own
-     * copies of the JsonSerializer and StructuredClpStringReader map to avoid shared state.
-     * Requires absolute-mode column readers (no cursor state) for thread safety.
-     * @param num_threads
-     * @param thread_pool
-     * @param per_thread_output Output vector, one string per thread containing all serialized
-     * messages for that thread's partition.
-     */
-    void serialize_range_parallel(
-            size_t num_threads,
-            ThreadPool* thread_pool,
-            std::vector<std::string>& per_thread_output
-    );
-
-    /**
-     * Serializes only the rows flagged in the bitmap, in parallel across threads.
-     * @param bitmap One byte per row (1=match, 0=non-match).
-     * @param num_threads Number of threads to use.
-     * @param thread_pool Thread pool for parallel execution.
-     * @param per_thread_output Output vector, one string per thread.
-     */
-    void serialize_bitmap_parallel(
-            uint32_t const* bitmap,
-            size_t num_rows,
-            size_t num_threads,
-            ThreadPool* thread_pool,
-            std::vector<std::string>& per_thread_output
+    void add_serialization_tasks(
+            size_t num_chunks,
+            tf::Taskflow& taskflow,
+            std::vector<std::string>& chunk_outputs,
+            std::span<size_t const> indices = {}
     );
     /*** GPU integration end ***/
 
@@ -365,20 +352,12 @@ private:
             uint64_t message_index
     );
 
-    /**
-     * Shared implementation for serialize_range_parallel and serialize_bitmap_parallel.
-     * Partitions the given row indices across threads and serializes in parallel.
-     * @param indices Row indices to serialize.
-     * @param num_threads Number of threads to use.
-     * @param thread_pool Thread pool for parallel execution.
-     * @param per_thread_output Output vector, one string per thread.
-     */
-    void serialize_indices_parallel(
-            std::span<size_t const> indices,
-            size_t num_threads,
-            ThreadPool* thread_pool,
-            std::vector<std::string>& per_thread_output
-    );
+    struct PerChunkState {
+        std::vector<JsonSerializer> serializers;
+        std::vector<std::unordered_map<int32_t, StructuredClpStringReader>> sclp_maps;
+    };
+
+    auto make_per_chunk_state(size_t num_chunks) -> std::shared_ptr<PerChunkState>;
 
     /**
      * Merges the current local schema tree with the section of the global schema tree corresponding
