@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -89,62 +90,6 @@ bool Output::filter() {
         return true;
     }
 
-    auto const var_dict_start = SearchTiming::Clock::now();
-    m_archive_reader->read_variable_dictionary();
-    timing.add_dict_load(
-            DictionaryType::Variable,
-            SearchTiming::Clock::now() - var_dict_start,
-            m_archive_reader->get_variable_dictionary()->get_num_entries()
-    );
-
-    auto const log_dict_start = SearchTiming::Clock::now();
-    m_archive_reader->read_log_type_dictionary();
-    timing.add_dict_load(
-            DictionaryType::LogType,
-            SearchTiming::Clock::now() - log_dict_start,
-            m_archive_reader->get_log_type_dictionary()->get_entries().size()
-    );
-
-    if (has_array) {
-        if (has_array_search) {
-            auto const array_dict_start = SearchTiming::Clock::now();
-            m_archive_reader->read_array_dictionary();
-            timing.add_dict_load(
-                    DictionaryType::Array,
-                    SearchTiming::Clock::now() - array_dict_start,
-                    m_archive_reader->get_array_dictionary()->get_entries().size()
-            );
-        } else {
-            auto const array_dict_start = SearchTiming::Clock::now();
-            m_archive_reader->read_array_dictionary(true);
-            timing.add_dict_load(
-                    DictionaryType::Array,
-                    SearchTiming::Clock::now() - array_dict_start,
-                    m_archive_reader->get_array_dictionary()->get_entries().size()
-            );
-        }
-    }
-    auto const string_query_plan_start = SearchTiming::Clock::now();
-    m_query_runner.global_init();
-    timing.add_string_query_plan(
-            SearchTiming::Clock::now() - string_query_plan_start
-    );
-
-    if (m_scan_mode != ScanMode::None && m_query_runner.is_using_heuristic()) {
-        SPDLOG_ERROR(
-                "GPU/bitmap scan modes require --schema-path to use the non-heuristic parser."
-        );
-        return false;
-    }
-
-    m_archive_reader->open_packed_streams();
-
-    // Matched schemas are already sorted by stream_id (archive writer groups
-    // schemas into streams in iteration order, which SchemaMatch preserves).
-
-    std::string message;
-    auto const archive_id = m_archive_reader->get_archive_id();
-
     auto const archive_codec = static_cast<ArchiveCompressionType>(
             m_archive_reader->get_header().compression_type
     );
@@ -163,41 +108,134 @@ bool Output::filter() {
     std::shared_ptr<char[]> gpu_host_buf;
     std::vector<clp_s::gpu::BatchGatherResult> gpu_gather_results;
 
+    // ── GPU mode: overlapped decompression ──────────────────────────────────
+    // ERT compressed I/O runs first (sequential, no contention), then GPU
+    // compute (H2D + decompress + prefix-sum) overlaps with dictionary loading.
+    SearchTiming::Clock::time_point overlap_start{};
+    std::future<std::unordered_map<size_t, size_t>> gpu_decompress_future;
+
+    // Prefix-sum runs in the async thread after decompression (no dict dependency).
+    auto run_gpu_prefix_sum = [&](std::unordered_map<size_t, size_t>& offsets) {
+            auto const ps_start = SearchTiming::Clock::now();
+            clp_s::gpu::run_gpu_prefix_sum_schemas(
+                    *m_archive_reader, *m_schema_tree, matched_schemas,
+                    offsets, device_buffer
+            );
+            clp_s::gpu::sync_default_stream();
+            timing.add_prefix_sum(SearchTiming::Clock::now() - ps_start);
+    };
+
+    if (m_scan_mode == ScanMode::Gpu) {
+        m_archive_reader->open_packed_streams_for_bulk_read();
+        clp_s::gpu::wait_for_cuda_warmup();
+
+        if (m_gpu_direct) {
+            auto const& archive_path = m_archive_reader->get_archive_path();
+            if (InputSource::Filesystem != archive_path.source) {
+                SPDLOG_ERROR("--gpu-direct requires a local filesystem archive, not a network path");
+                return false;
+            }
+        }
+
+        if (m_gpu_direct) {
+            // GDS: I/O goes directly to GPU, overlap the whole thing
+            overlap_start = SearchTiming::Clock::now();
+            gpu_decompress_future = std::async(std::launch::async, [&]()
+                    -> std::unordered_map<size_t, size_t>
+            {
+                auto offsets = clp_s::gpu::decompress_matched_streams_gpu_gds(
+                        *m_archive_reader, matched_schemas, archive_codec,
+                        decompress_ctx, device_buffer, timing
+                );
+                if (false == offsets.empty()) {
+                    run_gpu_prefix_sum(offsets);
+                }
+                return offsets;
+            });
+        } else {
+            // Phase 1: sequential disk I/O (no contention with dict loading)
+            clp_s::gpu::GpuDecompressIoState gpu_io_state;
+            clp_s::gpu::read_compressed_streams_to_host(
+                    *m_archive_reader, matched_schemas, timing, gpu_io_state
+            );
+
+            // Phase 2: async GPU compute (H2D + decompress + prefix-sum)
+            overlap_start = SearchTiming::Clock::now();
+            gpu_decompress_future = std::async(std::launch::async, [&, io = std::move(gpu_io_state)]()
+                    mutable -> std::unordered_map<size_t, size_t>
+            {
+                auto offsets = clp_s::gpu::decompress_streams_gpu_from_host(
+                        io, archive_codec,
+                        decompress_ctx, device_buffer, timing
+                );
+                if (false == offsets.empty()) {
+                    run_gpu_prefix_sum(offsets);
+                }
+                return offsets;
+            });
+        }
+    }
+
+    // ── Dictionary loading (all modes) ───────────────────────────────────────
+    // For GPU mode this runs concurrently with the async decompression above.
+    auto const var_dict_start = SearchTiming::Clock::now();
+    m_archive_reader->read_variable_dictionary();
+    timing.add_dict_load(
+            DictionaryType::Variable,
+            SearchTiming::Clock::now() - var_dict_start,
+            m_archive_reader->get_variable_dictionary()->get_num_entries()
+    );
+
+    auto const log_dict_start = SearchTiming::Clock::now();
+    m_archive_reader->read_log_type_dictionary();
+    timing.add_dict_load(
+            DictionaryType::LogType,
+            SearchTiming::Clock::now() - log_dict_start,
+            m_archive_reader->get_log_type_dictionary()->get_entries().size()
+    );
+
+    if (has_array) {
+        auto const array_dict_start = SearchTiming::Clock::now();
+        m_archive_reader->read_array_dictionary(!has_array_search);
+        timing.add_dict_load(
+                DictionaryType::Array,
+                SearchTiming::Clock::now() - array_dict_start,
+                m_archive_reader->get_array_dictionary()->get_entries().size()
+        );
+    }
+    auto const string_query_plan_start = SearchTiming::Clock::now();
+    m_query_runner.global_init();
+    timing.add_string_query_plan(
+            SearchTiming::Clock::now() - string_query_plan_start
+    );
+
+    if (m_scan_mode != ScanMode::None && m_query_runner.is_using_heuristic()) {
+        SPDLOG_ERROR(
+                "GPU/bitmap scan modes require --schema-path to use the non-heuristic parser."
+        );
+        return false;
+    }
+
+    if (m_scan_mode != ScanMode::Gpu) {
+        m_archive_reader->open_packed_streams();
+    }
+
+    // Matched schemas are already sorted by stream_id (archive writer groups
+    // schemas into streams in iteration order, which SchemaMatch preserves).
+
+    std::string message;
+    auto const archive_id = m_archive_reader->get_archive_id();
+
     switch (m_scan_mode) {
         case ScanMode::Gpu: {
-            clp_s::gpu::wait_for_cuda_warmup();
-
-            // 1. Decompress all matched streams to GPU
-            if (m_gpu_direct) {
-                auto const& archive_path = m_archive_reader->get_archive_path();
-                if (InputSource::Filesystem != archive_path.source) {
-                    SPDLOG_ERROR("--gpu-direct requires a local filesystem archive, not a network path");
-                    return false;
-                }
-                stream_batch_offsets = clp_s::gpu::decompress_matched_streams_gpu_gds(
-                        *m_archive_reader, matched_schemas, archive_codec,
-                        decompress_ctx, device_buffer, timing
-                );
-            } else {
-                stream_batch_offsets = clp_s::gpu::decompress_matched_streams_gpu(
-                        *m_archive_reader, matched_schemas, archive_codec,
-                        decompress_ctx, device_buffer, timing
-                );
-            }
+            // Wait for async GPU decompression + prefix-sum to complete
+            stream_batch_offsets = gpu_decompress_future.get();
+            timing.add_overlap_wall(SearchTiming::Clock::now() - overlap_start);
             if (stream_batch_offsets.empty()) {
                 return false;
             }
 
-            // 2. Prefix-sum all delta/timestamp columns
-            auto const gpu_prefix_sum_start = SearchTiming::Clock::now();
-            clp_s::gpu::run_gpu_prefix_sum_schemas(
-                    *m_archive_reader, *m_schema_tree, matched_schemas,
-                    stream_batch_offsets, device_buffer
-            );
-            clp_s::gpu::sync_default_stream();
-            timing.add_prefix_sum(SearchTiming::Clock::now() - gpu_prefix_sum_start);
-
-            // 3. Batched scan: collect per-schema info, then scan into bitmap
+            // Batched scan: collect per-schema info, then scan into bitmap
             if (m_output_handler->should_output_metadata()) {
                 SPDLOG_ERROR("Column scan does not support metadata output yet.");
                 return false;
@@ -241,7 +279,7 @@ bool Output::filter() {
             clp_s::gpu::sync_default_stream();
             timing.add_scan(SearchTiming::Clock::now() - scan_start, total_bitmap_rows);
 
-            // 4. Batched gather + single D2H transfer
+            // Batched gather + single D2H transfer
             if (false == batched_schemas.empty()) {
                 auto const gather_start = SearchTiming::Clock::now();
                 std::string gather_error;

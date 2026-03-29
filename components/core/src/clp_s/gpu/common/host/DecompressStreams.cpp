@@ -91,60 +91,79 @@ std::unordered_map<size_t, size_t> decompress_matched_streams_gpu(
         DeviceBuffer& device_buffer,
         clp_s::SearchTiming& timing
 ) {
-    auto const all_stream_ids = collect_unique_stream_ids(archive_reader, matched_schemas);
+    GpuDecompressIoState io_state;
+    read_compressed_streams_to_host(archive_reader, matched_schemas, timing, io_state);
+    return decompress_streams_gpu_from_host(
+            io_state, archive_codec, decompress_ctx, device_buffer, timing
+    );
+}
 
-    // Single pass over metadata: collect compressed sizes
-    size_t const num_streams = all_stream_ids.size();
-    std::vector<clp_s::PackedStreamReader::PackedStreamMetadata const*> stream_metas(num_streams);
-    size_t total_compressed = 0;
+void read_compressed_streams_to_host(
+        clp_s::ArchiveReader& archive_reader,
+        std::vector<int32_t> const& matched_schemas,
+        clp_s::SearchTiming& timing,
+        GpuDecompressIoState& io_state
+) {
+    io_state.all_stream_ids = collect_unique_stream_ids(archive_reader, matched_schemas);
+
+    size_t const num_streams = io_state.all_stream_ids.size();
+    io_state.stream_metas.resize(num_streams);
+    io_state.total_compressed = 0;
     for (size_t i = 0; i < num_streams; ++i) {
-        auto const& meta = archive_reader.get_packed_stream_metadata(all_stream_ids[i]);
-        stream_metas[i] = &meta;
-        total_compressed += meta.compressed_size;
+        auto const& meta
+                = archive_reader.get_packed_stream_metadata(io_state.all_stream_ids[i]);
+        io_state.stream_metas[i] = &meta;
+        io_state.total_compressed += meta.compressed_size;
     }
 
-    // Get a pinned host buffer for O_DIRECT read + fast H2D DMA
-    void* pinned_ptr = nullptr;
-    get_compressed_buffer(total_compressed, pinned_ptr);
+    get_compressed_buffer(io_state.total_compressed, io_state.pinned_ptr);
 
-    // Read all compressed streams from disk into pinned memory (O_DIRECT when possible)
-    std::vector<size_t> stream_offsets_in_buf;
-    std::vector<size_t> compressed_sizes;
     auto const io_start = clp_s::SearchTiming::Clock::now();
-    total_compressed = archive_reader.read_streams_compressed_bulk(
-            all_stream_ids,
-            static_cast<char*>(pinned_ptr),
-            total_compressed,
-            stream_offsets_in_buf,
-            compressed_sizes
+    io_state.total_compressed = archive_reader.read_streams_compressed_bulk(
+            io_state.all_stream_ids,
+            static_cast<char*>(io_state.pinned_ptr),
+            io_state.total_compressed,
+            io_state.stream_offsets_in_buf,
+            io_state.compressed_sizes
     );
     timing.add_compressed_io(clp_s::SearchTiming::Clock::now() - io_start);
+}
 
-    // Copy from pinned host memory to device — single DMA, no staging copy
+std::unordered_map<size_t, size_t> decompress_streams_gpu_from_host(
+        GpuDecompressIoState const& io_state,
+        clp_s::ArchiveCompressionType archive_codec,
+        NvcompDecompressContext& decompress_ctx,
+        DeviceBuffer& device_buffer,
+        clp_s::SearchTiming& timing
+) {
+    size_t const num_streams = io_state.all_stream_ids.size();
+
     auto const h2d_start = clp_s::SearchTiming::Clock::now();
     void* d_compressed = nullptr;
-    auto cuda_status = decompress_ctx.get_compressed_buffer(total_compressed, d_compressed);
+    auto cuda_status
+            = decompress_ctx.get_compressed_buffer(io_state.total_compressed, d_compressed);
     if (cudaSuccess != cuda_status) {
         SPDLOG_ERROR("alloc compressed buffer failed: {}", cudaGetErrorString(cuda_status));
         return {};
     }
-    cuda_status = cudaMemcpy(d_compressed, pinned_ptr, total_compressed,
-                             cudaMemcpyHostToDevice);
+    cuda_status = cudaMemcpy(
+            d_compressed, io_state.pinned_ptr, io_state.total_compressed,
+            cudaMemcpyHostToDevice
+    );
     if (cudaSuccess != cuda_status) {
         SPDLOG_ERROR("H2D copy failed: {}", cudaGetErrorString(cuda_status));
         return {};
     }
     timing.add_h2d_transfer(clp_s::SearchTiming::Clock::now() - h2d_start);
 
-    // Build batch inputs from cached metadata
     auto const decompress_start = clp_s::SearchTiming::Clock::now();
     std::vector<NvcompDecompressContext::StreamInput> batch_inputs;
     batch_inputs.reserve(num_streams);
     for (size_t i = 0; i < num_streams; ++i) {
-        auto const& meta = *stream_metas[i];
+        auto const& meta = *io_state.stream_metas[i];
         batch_inputs.push_back({
-                static_cast<char*>(d_compressed) + stream_offsets_in_buf[i],
-                compressed_sizes[i],
+                static_cast<char*>(d_compressed) + io_state.stream_offsets_in_buf[i],
+                io_state.compressed_sizes[i],
                 &meta.chunk_compressed_sizes,
                 meta.chunk_size,
                 meta.uncompressed_size,
@@ -161,7 +180,7 @@ std::unordered_map<size_t, size_t> decompress_matched_streams_gpu(
     }
     timing.add_ert_decompress(clp_s::SearchTiming::Clock::now() - decompress_start);
 
-    return build_offset_map(all_stream_ids, offsets);
+    return build_offset_map(io_state.all_stream_ids, offsets);
 }
 
 std::unordered_map<size_t, size_t> decompress_matched_streams_gpu_gds(

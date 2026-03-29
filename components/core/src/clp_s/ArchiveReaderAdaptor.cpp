@@ -323,6 +323,21 @@ std::unique_ptr<clp::ReaderInterface> ArchiveReaderAdaptor::checkout_reader_for_
     return std::make_unique<clp::BoundedReader>(m_reader.get(), next_file_offset);
 }
 
+size_t ArchiveReaderAdaptor::get_section_file_offset(std::string_view section) const {
+    if (!m_single_file_archive) {
+        return 0;
+    }
+    auto it = std::find_if(
+            m_archive_file_info.files.begin(),
+            m_archive_file_info.files.end(),
+            [&](ArchiveFileInfo const& info) { return info.n == section; }
+    );
+    if (m_archive_file_info.files.end() == it) {
+        throw OperationFailed(ErrorCodeBadParam, __FILENAME__, __LINE__);
+    }
+    return m_files_section_offset + it->o;
+}
+
 bool ArchiveReaderAdaptor::has_section(std::string_view section) const {
     if (m_single_file_archive) {
         return std::any_of(

@@ -102,6 +102,16 @@ public:
      */
     [[nodiscard]] bool has_section(std::string_view section) const;
 
+    /**
+     * Returns the absolute file offset where a given section begins, without checking out a reader.
+     * For multi-file archives this is always 0 (each section is its own file).
+     * For single-file archives this is the offset within the archive file.
+     * @param section
+     * @return byte offset of the section
+     * @throw OperationFailed if the section is not found (single-file archives only)
+     */
+    [[nodiscard]] size_t get_section_file_offset(std::string_view section) const;
+
 private:
     /**
      * Tries to read an ArchiveFileInfo packet from the archive metadata.

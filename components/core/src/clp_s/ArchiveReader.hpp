@@ -57,6 +57,12 @@ public:
     void open_packed_streams();
 
     /**
+     * Lightweight initialization for bulk-read GPU paths. Computes the tables section begin offset
+     * without checking out a reader, allowing dictionary sections to be loaded concurrently.
+     */
+    void open_packed_streams_for_bulk_read();
+
+    /**
      * Reads the variable dictionary from the archive.
      * @param lazy
      * @return the variable dictionary reader

@@ -32,6 +32,7 @@ struct SearchRunData {
     std::chrono::nanoseconds scan{};
     std::chrono::nanoseconds serialization{};
     uint64_t scanned_messages{0};
+    std::chrono::nanoseconds overlap_wall{};
     std::chrono::nanoseconds wall_clock{};
 };
 
@@ -118,6 +119,11 @@ public:
      */
     void add_serialization(std::chrono::nanoseconds duration);
     /**
+     * Sets the wall-clock time of the overlap region (async GPU decompress + dict loading).
+     * Savings = (dict_total + gpu_total) - overlap_wall.
+     */
+    void add_overlap_wall(std::chrono::nanoseconds duration);
+    /**
      * Sets the total wall-clock time for the entire program.
      *
      * @param duration Wall-clock duration from program start to end of search.
@@ -157,6 +163,7 @@ private:
     std::chrono::nanoseconds m_scan{};
     std::chrono::nanoseconds m_serialization{};
     uint64_t m_scanned_messages{0};
+    std::chrono::nanoseconds m_overlap_wall{};
     std::chrono::nanoseconds m_wall_clock{};
 
     std::vector<RunData> m_runs{};
@@ -206,6 +213,7 @@ public:
     void add_total_search(std::chrono::nanoseconds) {}
     void add_scan(std::chrono::nanoseconds, uint64_t) {}
     void add_serialization(std::chrono::nanoseconds) {}
+    void add_overlap_wall(std::chrono::nanoseconds) {}
     void set_wall_clock(std::chrono::nanoseconds) {}
     void log_totals() const {}
     void collect_run(size_t) {}

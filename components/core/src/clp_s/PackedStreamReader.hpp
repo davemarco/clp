@@ -54,6 +54,14 @@ public:
     void open_packed_streams(std::shared_ptr<ArchiveReaderAdaptor> adaptor);
 
     /**
+     * Lightweight initialization for bulk-read paths (GPU decompression) that open their own file
+     * handles via direct_io::ParallelReader. Sets m_adaptor and m_begin_offset without checking
+     * out a reader from the adaptor, allowing dictionary sections to be checked out concurrently.
+     * @param adaptor a reader adaptor for the archive
+     */
+    void open_for_bulk_read(std::shared_ptr<ArchiveReaderAdaptor> adaptor);
+
+    /**
      * Closes the file reader for the tables section.
      */
     void close();

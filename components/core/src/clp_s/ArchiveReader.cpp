@@ -198,6 +198,10 @@ void ArchiveReader::open_packed_streams() {
     m_stream_reader.open_packed_streams(m_archive_reader_adaptor);
 }
 
+void ArchiveReader::open_packed_streams_for_bulk_read() {
+    m_stream_reader.open_for_bulk_read(m_archive_reader_adaptor);
+}
+
 SchemaReader& ArchiveReader::read_schema_table(
         int32_t schema_id,
         bool should_extract_timestamp,

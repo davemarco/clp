@@ -31,6 +31,7 @@ void SearchTiming::reset() {
     m_scan = {};
     m_serialization = {};
     m_scanned_messages = 0;
+    m_overlap_wall = {};
 }
 
 size_t SearchTiming::dict_index(DictionaryType type) {
@@ -101,6 +102,10 @@ void SearchTiming::add_serialization(std::chrono::nanoseconds duration) {
     m_serialization += duration;
 }
 
+void SearchTiming::add_overlap_wall(std::chrono::nanoseconds duration) {
+    m_overlap_wall += duration;
+}
+
 void SearchTiming::set_wall_clock(std::chrono::nanoseconds duration) {
     m_wall_clock = duration;
 }
@@ -153,6 +158,7 @@ void write_run_json(
     json << "\"scan_ms\":" << to_ms(run.scan) << ",";
     json << "\"serialization_ms\":" << to_ms(run.serialization) << ",";
     json << "\"scanned_messages\":" << run.scanned_messages << ",";
+    json << "\"overlap_wall_ms\":" << to_ms(run.overlap_wall) << ",";
     json << "\"total_search_ms\":" << to_ms(run.total_search) << ",";
     json << "\"wall_clock_ms\":" << to_ms(run.wall_clock);
     json << "}";
@@ -193,6 +199,19 @@ void SearchTiming::log_totals() const {
             m_scanned_messages
     );
     SPDLOG_INFO("Serialization: {:.3f}ms", to_ms(m_serialization));
+    if (m_overlap_wall.count() > 0) {
+        auto const dict_total = m_dict_stats[0].decompress + m_dict_stats[1].decompress
+                                + m_dict_stats[2].decompress + m_string_query_plan;
+        auto const gpu_compute = m_h2d_transfer + m_ert_decompress + m_prefix_sum;
+        auto const savings = dict_total + gpu_compute - m_overlap_wall;
+        SPDLOG_INFO(
+                "Overlap wall: {:.3f}ms (dict={:.3f}ms gpu_compute={:.3f}ms savings={:.3f}ms)",
+                to_ms(m_overlap_wall),
+                to_ms(dict_total),
+                to_ms(gpu_compute),
+                to_ms(savings)
+        );
+    }
     SPDLOG_INFO("Total search: {:.3f}ms", to_ms(m_total_search));
     SPDLOG_INFO("Wall clock: {:.3f}ms", to_ms(m_wall_clock));
 }
@@ -212,6 +231,7 @@ void SearchTiming::collect_run(size_t run_index) {
     run.scan = m_scan;
     run.serialization = m_serialization;
     run.scanned_messages = m_scanned_messages;
+    run.overlap_wall = m_overlap_wall;
     run.wall_clock = m_wall_clock;
     m_runs.push_back(run);
 }

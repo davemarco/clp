@@ -66,12 +66,25 @@ void PackedStreamReader::open_packed_streams(std::shared_ptr<ArchiveReaderAdapto
     }
 }
 
+void PackedStreamReader::open_for_bulk_read(std::shared_ptr<ArchiveReaderAdaptor> adaptor) {
+    switch (m_state) {
+        case PackedStreamReaderState::MetadataRead:
+            m_state = PackedStreamReaderState::PackedStreamsOpened;
+            break;
+        case PackedStreamReaderState::Uninitialized:
+        default:
+            throw OperationFailed(ErrorCodeNotReady, __FILE__, __LINE__);
+    }
+    m_adaptor = std::move(adaptor);
+    m_begin_offset = m_adaptor->get_section_file_offset(constants::cArchiveTablesFile);
+}
+
 void PackedStreamReader::close() {
     bool needs_checkin{false};
     switch (m_state) {
         case PackedStreamReaderState::PackedStreamsOpened:
         case PackedStreamReaderState::ReadingPackedStreams:
-            needs_checkin = true;
+            needs_checkin = (nullptr != m_packed_stream_reader);
             break;
         default:
             needs_checkin = false;
