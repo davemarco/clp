@@ -3,12 +3,17 @@
 #include <vector>
 
 #include <cuda_runtime.h>
+#include <nvcomp/deflate.h>
 #include <nvcomp/gdeflate.h>
 #include <nvcomp/zstd.h>
 #include <cstdio>
 
 namespace clp_s::gpu {
 namespace {
+// Force hardware (DE) backend for deflate — requires Blackwell or newer.
+constexpr nvcompBatchedDeflateDecompressOpts_t cDeflateDecompressOpts
+        = {NVCOMP_DECOMPRESS_BACKEND_HARDWARE, 0, {0}};
+
 /**
  * Helper to free a device pointer via stream-ordered free and log on failure.
  */
@@ -51,11 +56,33 @@ cudaError_t grow_buffer(void*& ptr, size_t& cap, size_t needed, AllocFn alloc_fn
 
 // -- NvcompDecompressContext --------------------------------------------------
 
+NvcompDecompressContext::NvcompDecompressContext() {
+#if CUDART_VERSION >= 12080
+    // Create a DE-compatible memory pool for compressed/decompressed data buffers.
+    // This allows the Blackwell Decompression Engine to access these allocations.
+    cudaMemPoolProps pool_props = {};
+    pool_props.allocType = cudaMemAllocationTypePinned;
+    pool_props.location.type = cudaMemLocationTypeDevice;
+    pool_props.location.id = 0;
+    pool_props.usage = cudaMemPoolCreateUsageHwDecompress;
+    auto err = cudaMemPoolCreate(&m_de_pool, &pool_props);
+    if (cudaSuccess != err) {
+        fprintf(stderr,
+                "[gpu] DE pool create failed (%s), falling back to default pool\n",
+                cudaGetErrorString(err));
+        m_de_pool = nullptr;
+    }
+#endif
+}
+
 NvcompDecompressContext::~NvcompDecompressContext() {
     safe_free_async(m_d_compressed, "ctx_compressed");
     safe_free_async(m_d_decompressed, "ctx_decompressed");
     safe_free_async(m_d_arrays_base, "ctx_arrays");
     safe_free_async(m_d_temp, "ctx_temp");
+    if (m_de_pool) {
+        cudaMemPoolDestroy(m_de_pool);
+    }
 }
 
 cudaError_t NvcompDecompressContext::ensure_device(void*& ptr, size_t& cap, size_t needed) {
@@ -66,7 +93,20 @@ cudaError_t NvcompDecompressContext::ensure_device(void*& ptr, size_t& cap, size
     );
 }
 
-cudaError_t NvcompDecompressContext::ensure_arrays(size_t num_chunks) {
+cudaError_t NvcompDecompressContext::ensure_device_de(void*& ptr, size_t& cap, size_t needed) {
+    if (!m_de_pool) {
+        return ensure_device(ptr, cap, needed);
+    }
+    return grow_buffer(
+            ptr, cap, needed,
+            [this](void** p, size_t s) {
+                return cudaMallocFromPoolAsync(p, s, m_de_pool, 0);
+            },
+            [](void* p) { cudaFreeAsync(p, 0); }
+    );
+}
+
+cudaError_t NvcompDecompressContext::ensure_arrays_de(size_t num_chunks) {
     if (num_chunks <= m_d_arrays_cap) {
         return cudaSuccess;
     }
@@ -88,7 +128,14 @@ cudaError_t NvcompDecompressContext::ensure_arrays(size_t num_chunks) {
     size_t const status_bytes = num_chunks * sizeof(nvcompStatus_t);
     size_t const total = 2 * ptr_bytes + 3 * size_bytes + status_bytes;
 
-    auto s = cudaMallocAsync(&m_d_arrays_base, total, 0);
+    // DE requires decomp_sizes (device_uncompressed_chunk_bytes) to be DE-compliant,
+    // so allocate the entire arrays block from the DE pool.
+    cudaError_t s;
+    if (m_de_pool) {
+        s = cudaMallocFromPoolAsync(&m_d_arrays_base, total, m_de_pool, 0);
+    } else {
+        s = cudaMallocAsync(&m_d_arrays_base, total, 0);
+    }
     if (cudaSuccess != s) {
         return s;
     }
@@ -112,7 +159,7 @@ cudaError_t NvcompDecompressContext::ensure_arrays(size_t num_chunks) {
 }
 
 cudaError_t NvcompDecompressContext::get_compressed_buffer(size_t needed, void*& out_ptr) {
-    auto status = ensure_device(m_d_compressed, m_d_compressed_cap, needed);
+    auto status = ensure_device_de(m_d_compressed, m_d_compressed_cap, needed);
     if (cudaSuccess != status) {
         return status;
     }
@@ -128,7 +175,7 @@ cudaError_t NvcompDecompressContext::upload_metadata_and_decompress(
         size_t total_chunks,
         uint32_t chunk_size,
         size_t total_uncompressed,
-        bool use_gdeflate,
+        ArchiveCompressionType codec,
         char const* log_prefix
 ) {
     cudaStream_t const cuda_stream = 0;
@@ -155,9 +202,14 @@ cudaError_t NvcompDecompressContext::upload_metadata_and_decompress(
     // Get temp workspace size
     size_t temp_bytes = 0;
     nvcompStatus_t nvcomp_status;
-    if (use_gdeflate) {
+    if (ArchiveCompressionType::Gdeflate == codec) {
         nvcomp_status = nvcompBatchedGdeflateDecompressGetTempSizeAsync(
                 total_chunks, chunk_size, nvcompBatchedGdeflateDecompressDefaultOpts,
+                &temp_bytes, total_uncompressed
+        );
+    } else if (ArchiveCompressionType::Deflate == codec) {
+        nvcomp_status = nvcompBatchedDeflateDecompressGetTempSizeAsync(
+                total_chunks, chunk_size, cDeflateDecompressOpts,
                 &temp_bytes, total_uncompressed
         );
     } else {
@@ -178,13 +230,22 @@ cudaError_t NvcompDecompressContext::upload_metadata_and_decompress(
     }
 
     // Launch decompression
-    if (use_gdeflate) {
+    if (ArchiveCompressionType::Gdeflate == codec) {
         nvcomp_status = nvcompBatchedGdeflateDecompressAsync(
                 reinterpret_cast<void const* const*>(m_d_comp_ptrs),
                 m_d_comp_sizes, m_d_decomp_sizes, m_d_actual_sizes,
                 total_chunks, m_d_temp, temp_bytes,
                 reinterpret_cast<void* const*>(m_d_decomp_ptrs),
                 nvcompBatchedGdeflateDecompressDefaultOpts,
+                static_cast<nvcompStatus_t*>(m_d_statuses), cuda_stream
+        );
+    } else if (ArchiveCompressionType::Deflate == codec) {
+        nvcomp_status = nvcompBatchedDeflateDecompressAsync(
+                reinterpret_cast<void const* const*>(m_d_comp_ptrs),
+                m_d_comp_sizes, m_d_decomp_sizes, m_d_actual_sizes,
+                total_chunks, m_d_temp, temp_bytes,
+                reinterpret_cast<void* const*>(m_d_decomp_ptrs),
+                cDeflateDecompressOpts,
                 static_cast<nvcompStatus_t*>(m_d_statuses), cuda_stream
         );
     } else {
@@ -221,8 +282,6 @@ cudaError_t NvcompDecompressContext::decompress_batch(
         return cudaErrorInvalidValue;
     }
 
-    bool const use_gdeflate = ArchiveCompressionType::Gdeflate == codec;
-
     // Compute totals across all streams
     size_t total_uncompressed = 0;
     size_t total_chunks = 0;
@@ -233,13 +292,14 @@ cudaError_t NvcompDecompressContext::decompress_batch(
         total_chunks += streams[s].chunk_compressed_sizes->size();
     }
 
-    // Ensure decompressed output buffer and metadata arrays
-    auto status = ensure_device(m_d_decompressed, m_d_decompressed_cap, total_uncompressed);
+    // Ensure decompressed output buffer and metadata arrays.
+    // DE requires compressed, decompressed, AND uncompressed-size buffers to be DE-compliant.
+    auto status = ensure_device_de(m_d_decompressed, m_d_decompressed_cap, total_uncompressed);
     if (cudaSuccess != status) {
         fprintf(stderr, "[gpu] batch alloc decompressed err=%s\n", cudaGetErrorString(status));
         return status;
     }
-    status = ensure_arrays(total_chunks);
+    status = ensure_arrays_de(total_chunks);
     if (cudaSuccess != status) {
         fprintf(stderr, "[gpu] batch alloc arrays err=%s\n", cudaGetErrorString(status));
         return status;
@@ -278,7 +338,7 @@ cudaError_t NvcompDecompressContext::decompress_batch(
     uint32_t const chunk_size = streams[0].chunk_size;
     status = upload_metadata_and_decompress(
             h_comp_ptrs, h_comp_sizes, h_decomp_ptrs, h_decomp_sizes,
-            total_chunks, chunk_size, total_uncompressed, use_gdeflate, "batch"
+            total_chunks, chunk_size, total_uncompressed, codec, "batch"
     );
     if (cudaSuccess != status) {
         return status;

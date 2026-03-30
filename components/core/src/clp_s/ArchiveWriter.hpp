@@ -20,6 +20,7 @@
 #include "SchemaMap.hpp"
 #include "SchemaTree.hpp"
 #include "ChunkedCompressorWrapper.hpp"
+#include "ChunkedDeflateCompressor.hpp"
 #include "ChunkedGdeflateCompressor.hpp"
 #include "ChunkedZstdCompressor.hpp"
 #include "SchemaWriter.hpp"
@@ -399,6 +400,7 @@ private:
     FileWriter m_tables_file_writer;
     FileWriter m_table_metadata_file_writer;
     ChunkedZstdCompressor m_tables_compressor_zstd;
+    ChunkedDeflateCompressor m_tables_compressor_deflate;
     ChunkedGdeflateCompressor m_tables_compressor_gdeflate;
     std::optional<ChunkedCompressorWrapper> m_tables_compressor;
     ArchiveCompressionType m_compression_codec{ArchiveCompressionType::Zstd};

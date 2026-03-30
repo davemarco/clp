@@ -203,6 +203,7 @@ ErrorCode ArchiveReaderAdaptor::try_read_header(clp::ReaderInterface& reader) {
 
     switch (static_cast<ArchiveCompressionType>(m_archive_header.compression_type)) {
         case ArchiveCompressionType::Zstd:
+        case ArchiveCompressionType::Deflate:
         case ArchiveCompressionType::Gdeflate:
             break;
         default:

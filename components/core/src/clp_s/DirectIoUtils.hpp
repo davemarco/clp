@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 
@@ -49,48 +50,46 @@ inline bool pread_direct(
         size_t count,
         size_t file_offset
 ) {
-    off_t const aligned_offset = static_cast<off_t>(file_offset)
-                                 & ~static_cast<off_t>(kDirectAlign - 1);
-    size_t const prefix = file_offset - static_cast<size_t>(aligned_offset);
-    size_t const aligned_data_len = (count + prefix) & ~(kDirectAlign - 1);
+    size_t const aligned_start = (file_offset + kDirectAlign - 1) & ~(kDirectAlign - 1);
+    size_t const end = file_offset + count;
+    size_t const aligned_end = end & ~(kDirectAlign - 1);
 
-    if (aligned_data_len < kDirectAlign) {
+    // Too small for O_DIRECT — just use normal pread.
+    if (aligned_end <= aligned_start) {
         return pread_exact(fallback_fd, dest, count, static_cast<off_t>(file_offset));
     }
 
-    bool read_ok = false;
-    if (0 == prefix) {
-        read_ok = pread_exact(direct_fd, dest, aligned_data_len, aligned_offset);
-    } else {
-        char* aligned_tmp = nullptr;
-        if (0 != posix_memalign(
-                    reinterpret_cast<void**>(&aligned_tmp), kDirectAlign, aligned_data_len))
-        {
-            return pread_exact(fallback_fd, dest, count, static_cast<off_t>(file_offset));
+    size_t const head = aligned_start - file_offset;
+    size_t const mid = aligned_end - aligned_start;
+    size_t const tail = end - aligned_end;
+    char* const mid_dest = dest + head;
+    bool const buf_aligned = (reinterpret_cast<uintptr_t>(mid_dest) % kDirectAlign) == 0;
+
+    // Head: pread unaligned prefix on normal fd.
+    if (head > 0) {
+        if (!pread_exact(fallback_fd, dest, head, static_cast<off_t>(file_offset))) {
+            return false;
         }
-        read_ok = pread_exact(direct_fd, aligned_tmp, aligned_data_len, aligned_offset);
-        if (read_ok) {
-            size_t const from_direct = aligned_data_len - prefix;
-            std::memcpy(dest, aligned_tmp + prefix, std::min(from_direct, count));
-        }
-        free(aligned_tmp);
     }
 
-    if (!read_ok) {
-        return pread_exact(fallback_fd, dest, count, static_cast<off_t>(file_offset));
-    }
-
-    size_t const direct_bytes = (0 == prefix) ? aligned_data_len : (aligned_data_len - prefix);
-    if (direct_bytes < count) {
-        if (!pread_exact(
-                    fallback_fd,
-                    dest + direct_bytes,
-                    count - direct_bytes,
-                    static_cast<off_t>(file_offset + direct_bytes)))
+    // Middle: O_DIRECT if buffer is aligned, otherwise normal fd.
+    int const mid_fd = buf_aligned ? direct_fd : fallback_fd;
+    if (!pread_exact(mid_fd, mid_dest, mid, static_cast<off_t>(aligned_start))) {
+        // O_DIRECT failed — retry on normal fd.
+        if (mid_fd != fallback_fd
+            && !pread_exact(fallback_fd, mid_dest, mid, static_cast<off_t>(aligned_start)))
         {
             return false;
         }
     }
+
+    // Tail: pread unaligned suffix on normal fd.
+    if (tail > 0) {
+        if (!pread_exact(fallback_fd, dest + head + mid, tail, static_cast<off_t>(aligned_end))) {
+            return false;
+        }
+    }
+
     return true;
 }
 

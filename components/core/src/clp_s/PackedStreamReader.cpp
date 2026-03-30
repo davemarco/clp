@@ -144,7 +144,6 @@ void PackedStreamReader::read_stream_parallel(
         size_t& buf_size,
         size_t num_threads
 ) {
-    bool const is_gdeflate = ArchiveCompressionType::Gdeflate == m_compression_codec;
     auto const& meta = m_stream_metadata.at(stream_id);
     auto const& chunk_compressed_sizes = meta.chunk_compressed_sizes;
     size_t const num_chunks = chunk_compressed_sizes.size();
@@ -175,7 +174,7 @@ void PackedStreamReader::read_stream_parallel(
     }
 
     // Step 4: Decompress chunks in parallel with taskflow work-stealing
-    decompress_chunks_taskflow(chunks, num_threads, is_gdeflate);
+    decompress_chunks_taskflow(chunks, num_threads, m_compression_codec);
 }
 
 void PackedStreamReader::read_chunk_metadata(ArchiveReaderAdaptor& adaptor) {

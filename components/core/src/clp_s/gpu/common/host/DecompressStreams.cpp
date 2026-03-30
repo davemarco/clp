@@ -316,8 +316,6 @@ bool decompress_matched_streams_cpu(
         }
     }
 
-    bool const is_gdeflate = (archive_codec == clp_s::ArchiveCompressionType::Gdeflate);
-
     // Build chunk descriptors from cached metadata (single pass).
     std::vector<size_t> offsets(num_streams);
     std::vector<clp_s::ChunkInfo> chunks(total_chunks);
@@ -343,7 +341,7 @@ bool decompress_matched_streams_cpu(
         }
     }
 
-    clp_s::decompress_chunks_taskflow(chunks, num_threads, is_gdeflate);
+    clp_s::decompress_chunks_taskflow(chunks, num_threads, archive_codec);
     timing.add_ert_decompress(clp_s::SearchTiming::Clock::now() - decompress_start);
 
     out_buffer = std::move(host_buffer);

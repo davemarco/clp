@@ -294,7 +294,7 @@ void DictionaryReader<DictionaryIdType, EntryType>::read_entries_parallel(
         compressed_off += chunk_compressed_sizes[i];
     }
 
-    decompress_chunks_taskflow(chunks, num_threads, false /* dictionaries always use Zstd */);
+    decompress_chunks_taskflow(chunks, num_threads, ArchiveCompressionType::Zstd);
 
     // Keep buffer alive for zero-copy lookups via offset table.
     m_decompressed_buf = std::move(decompressed_buf);

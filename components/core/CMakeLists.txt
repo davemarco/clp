@@ -366,6 +366,9 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/ArchiveReaderAdaptor.hpp
     src/clp_s/ArchiveWriter.cpp
     src/clp_s/ArchiveWriter.hpp
+    src/clp_s/ChunkedCompressorWrapper.hpp
+    src/clp_s/ChunkedDeflateCompressor.cpp
+    src/clp_s/ChunkedDeflateCompressor.hpp
     src/clp_s/ChunkedGdeflateCompressor.cpp
     src/clp_s/ChunkedGdeflateCompressor.hpp
     src/clp_s/ChunkedZstdCompressor.cpp
@@ -421,14 +424,12 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/gpu/common/host/ErtInfo.cpp
     src/clp_s/gpu/common/host/ErtInfo.hpp
     src/clp_s/gpu/common/host/ErtInfoTypes.hpp
+    src/clp_s/gpu/common/host/Output.cpp
+    src/clp_s/gpu/common/host/Output.hpp
     src/clp_s/gpu/common/host/ScanRequest.cpp
     src/clp_s/gpu/common/host/ScanRequest.hpp
     src/clp_s/gpu/common/host/ScanRequestTypeUtils.hpp
     src/clp_s/gpu/common/host/ScanRequestTypes.hpp
-    src/clp_s/gpu/bitmap/host/Scan.cpp
-    src/clp_s/gpu/bitmap/host/Scan.hpp
-    src/clp_s/gpu/bitmap/host/Output.cpp
-    src/clp_s/gpu/bitmap/host/Output.hpp
     src/clp_s/gpu/cpu_baseline/host/Scan.cpp
     src/clp_s/gpu/cpu_baseline/host/Scan.hpp
     src/clp_s/gpu/encoded_buffer/host/Scan.cpp
@@ -805,6 +806,7 @@ if(CLP_ENABLE_TESTS)
             ${CLP_SQLITE3_INCLUDE_DIRECTORY}
             )
     target_include_directories(unitTest SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/cross_dependencies/dependencies/taskflow)
+    target_include_directories(unitTest SYSTEM PRIVATE ${LIBDEFLATE_INCLUDE_DIR})
     target_link_libraries(unitTest
             PRIVATE
             absl::flat_hash_map
@@ -839,6 +841,7 @@ if(CLP_ENABLE_TESTS)
             clp::string_utils
             ystdlib::containers
             ystdlib::error_handling
+            ${LIBDEFLATE_LIBRARY}
             nvcomp::nvcomp_cpu_static
             ${zstd_TARGET}
             )

@@ -9,6 +9,7 @@
 
 #include <zstd.h>
 
+#include "archive_constants.hpp"
 #include "Compressor.hpp"
 #include "FileWriter.hpp"
 #include "TraceableException.hpp"
@@ -30,7 +31,7 @@ public:
     };
 
     static constexpr int cDefaultCompressionLevel = 3;
-    static constexpr size_t cDefaultChunkSize = 65536;  // 64 KB
+    static constexpr size_t cDefaultChunkSize = cDefaultCompressionChunkSize;
 
     // Constructor
     ChunkedZstdCompressor();

@@ -7,6 +7,7 @@
 #include <variant>
 #include <vector>
 
+#include "ChunkedDeflateCompressor.hpp"
 #include "ChunkedGdeflateCompressor.hpp"
 #include "ChunkedZstdCompressor.hpp"
 #include "FileWriter.hpp"
@@ -21,6 +22,9 @@ namespace clp_s {
 class ChunkedCompressorWrapper {
 public:
     explicit ChunkedCompressorWrapper(ChunkedZstdCompressor& c)
+            : m_compressor{&c} {}
+
+    explicit ChunkedCompressorWrapper(ChunkedDeflateCompressor& c)
             : m_compressor{&c} {}
 
     explicit ChunkedCompressorWrapper(ChunkedGdeflateCompressor& c)
@@ -86,7 +90,8 @@ public:
     }
 
 private:
-    std::variant<ChunkedZstdCompressor*, ChunkedGdeflateCompressor*> m_compressor;
+    std::variant<ChunkedZstdCompressor*, ChunkedDeflateCompressor*, ChunkedGdeflateCompressor*>
+            m_compressor;
 };
 
 }  // namespace clp_s

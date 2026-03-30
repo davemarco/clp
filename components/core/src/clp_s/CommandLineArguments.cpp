@@ -271,7 +271,7 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                     po::value<std::string>(&compression_codec_str)
                         ->value_name("CODEC")
                         ->default_value("zstd"),
-                    "Compression codec for table data: zstd (default) or gdeflate."
+                    "Compression codec for table data: zstd (default), deflate, or gdeflate."
             )(
                     "disable-log-order",
                     po::bool_switch(&m_disable_log_order),
@@ -348,12 +348,14 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
 
             if ("zstd" == compression_codec_str) {
                 m_compression_codec = ArchiveCompressionType::Zstd;
+            } else if ("deflate" == compression_codec_str) {
+                m_compression_codec = ArchiveCompressionType::Deflate;
             } else if ("gdeflate" == compression_codec_str) {
                 m_compression_codec = ArchiveCompressionType::Gdeflate;
             } else {
                 throw std::invalid_argument(
                         "Invalid --compression-codec '" + compression_codec_str
-                        + "'. Valid options: zstd, gdeflate"
+                        + "'. Valid options: zstd, deflate, gdeflate"
                 );
             }
         } else if ((char)Command::Extract == command_input) {

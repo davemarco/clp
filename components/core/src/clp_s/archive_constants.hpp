@@ -66,8 +66,11 @@ constexpr char cArchiveId[]{"archive_id"};
 namespace clp_s {
 enum class ArchiveCompressionType : uint16_t {
     Zstd = 0,
+    Deflate = 1,
     Gdeflate = 3,
 };
+
+constexpr size_t cDefaultCompressionChunkSize = 65536;  // 64 KB
 }  // namespace clp_s
 
 #endif  // CLP_S_ARCHIVE_CONSTANTS_HPP

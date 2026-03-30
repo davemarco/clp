@@ -2,7 +2,11 @@
 
 #include <cub/device/device_scan.cuh>
 #include <cub/device/device_segmented_reduce.cuh>
+#if CUDART_VERSION >= 13000
+#include <thrust/iterator/transform_iterator.h>
+#else
 #include <cub/iterator/transform_input_iterator.cuh>
+#endif
 
 #include "../../common/host/BitmapUtils.hpp"
 
@@ -62,9 +66,15 @@ cudaError_t count_bitmap_matches_batched(
     // __popc counts set bits in one hardware instruction, then CUB sums those counts.
     // This reduces 186M per-bit reads to 5.8M per-word reads (32x less work).
     // Tail words have garbage bits pre-cleared to 0, so popcount is safe without masking.
+#if CUDART_VERSION >= 13000
+    auto d_in = thrust::transform_iterator<BitPopcount, uint32_t const*>(
+            device_bitmap, BitPopcount{}
+    );
+#else
     auto d_in = cub::TransformInputIterator<uint64_t, BitPopcount, uint32_t const*>(
             device_bitmap, BitPopcount{}
     );
+#endif
 
     // CUB two-pass: first call queries temp storage size, second call runs the reduce.
     size_t temp_bytes = 0;
@@ -127,9 +137,15 @@ cudaError_t bitmap_to_row_ids(
 
     // Pass 1: Exclusive prefix-sum of per-word popcounts.
     // offsets[i] = total set bits in words 0..i-1 = write position for word i.
+#if CUDART_VERSION >= 13000
+    auto d_popcounts = thrust::transform_iterator<BitPopcount, uint32_t const*>(
+            device_bitmap, BitPopcount{}
+    );
+#else
     auto d_popcounts = cub::TransformInputIterator<uint32_t, BitPopcount, uint32_t const*>(
             device_bitmap, BitPopcount{}
     );
+#endif
 
     // CUB two-pass: query temp size, allocate, run.
     size_t temp_bytes = 0;

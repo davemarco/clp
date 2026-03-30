@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "archive_constants.hpp"
 #include "ErrorCode.hpp"
 
 namespace clp_s {
@@ -26,13 +27,13 @@ struct ChunkInfo {
  *
  * @param chunks Per-chunk src/dst descriptors.
  * @param num_threads Number of worker threads for the taskflow executor.
- * @param is_gdeflate If true, uses gdeflate CPU decompressor instead of zstd.
+ * @param codec Compression codec used (Zstd, Deflate, or Gdeflate).
  * @throws TraceableException on decompression failure.
  */
 void decompress_chunks_taskflow(
         std::vector<ChunkInfo> const& chunks,
         size_t num_threads,
-        bool is_gdeflate
+        ArchiveCompressionType codec
 );
 
 /**

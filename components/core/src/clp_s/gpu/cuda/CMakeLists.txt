@@ -27,6 +27,20 @@ add_library(clp_s_gpu
 find_package(CUDAToolkit REQUIRED)
 target_compile_features(clp_s_gpu PRIVATE cxx_std_20)
 target_link_libraries(clp_s_gpu PRIVATE CUDA::cudart CUDA::cuFile nvcomp::nvcomp)
+# On CUDA 13+, CUB/Thrust moved into CCCL. Use -I (not -isystem) to shadow
+# any system-installed CUB at /usr/include/cub.
+# The IS_DIRECTORY check acts as the version guard: the cccl directory only
+# exists in CUDA 13+, so this block is safely skipped on older toolkits.
+cmake_path(GET CUDAToolkit_BIN_DIR PARENT_PATH _cuda_root)
+set(_cccl "${_cuda_root}/targets/x86_64-linux/include/cccl")
+if(IS_DIRECTORY "${_cccl}")
+    target_compile_options(clp_s_gpu PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:-I${_cccl}/cub>
+            $<$<COMPILE_LANGUAGE:CUDA>:-I${_cccl}/thrust>
+            $<$<COMPILE_LANGUAGE:CUDA>:-I${_cccl}/libcudacxx/include>
+            $<$<COMPILE_LANGUAGE:CUDA>:-I${_cccl}>
+    )
+endif()
 target_include_directories(
         clp_s_gpu PRIVATE
         ${GPU_BASE}/common/cuda

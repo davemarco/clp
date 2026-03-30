@@ -1,5 +1,8 @@
 find_package(nvcomp REQUIRED PATHS "${NVCOMP_DIR}/lib/cmake/nvcomp")
 
+find_library(LIBDEFLATE_LIBRARY NAMES deflate REQUIRED)
+find_path(LIBDEFLATE_INCLUDE_DIR NAMES libdeflate.h REQUIRED)
+
 add_subdirectory(indexer)
 add_subdirectory(log_converter)
 add_subdirectory(search)
@@ -239,6 +242,8 @@ set(
         ArchiveWriter.cpp
         ArchiveWriter.hpp
         ChunkedCompressorWrapper.hpp
+        ChunkedDeflateCompressor.cpp
+        ChunkedDeflateCompressor.hpp
         ChunkedGdeflateCompressor.cpp
         ChunkedGdeflateCompressor.hpp
         ChunkedZstdCompressor.cpp
@@ -288,6 +293,7 @@ if(CLP_BUILD_CLP_S_ARCHIVEWRITER)
         target_compile_features(clp_s_archive_writer PRIVATE cxx_std_20)
         target_include_directories(clp_s_archive_writer PUBLIC ../)
         target_include_directories(clp_s_archive_writer SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/cross_dependencies/dependencies/taskflow)
+        target_include_directories(clp_s_archive_writer SYSTEM PRIVATE ${LIBDEFLATE_INCLUDE_DIR})
         target_link_libraries(
                 clp_s_archive_writer
                 PUBLIC
@@ -304,6 +310,7 @@ if(CLP_BUILD_CLP_S_ARCHIVEWRITER)
                 PRIVATE
                 Boost::url
                 ${CURL_LIBRARIES}
+                ${LIBDEFLATE_LIBRARY}
                 fmt::fmt
                 spdlog::spdlog
         )
@@ -362,6 +369,7 @@ if(CLP_BUILD_CLP_S_ARCHIVEREADER)
         target_compile_features(clp_s_archive_reader PRIVATE cxx_std_20)
         target_include_directories(clp_s_archive_reader PUBLIC ../)
         target_include_directories(clp_s_archive_reader SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/cross_dependencies/dependencies/taskflow)
+        target_include_directories(clp_s_archive_reader SYSTEM PRIVATE ${LIBDEFLATE_INCLUDE_DIR})
         target_link_libraries(
                 clp_s_archive_reader
                 PUBLIC
@@ -378,6 +386,7 @@ if(CLP_BUILD_CLP_S_ARCHIVEREADER)
                 Boost::url
                 clp_s::clp_dependencies
                 ${CURL_LIBRARIES}
+                ${LIBDEFLATE_LIBRARY}
                 fmt::fmt
                 spdlog::spdlog
         )

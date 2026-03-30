@@ -26,7 +26,7 @@ namespace clp_s::gpu {
  */
 class NvcompDecompressContext {
 public:
-    NvcompDecompressContext() = default;
+    NvcompDecompressContext();
     ~NvcompDecompressContext();
 
     NvcompDecompressContext(NvcompDecompressContext const&) = delete;
@@ -89,10 +89,17 @@ private:
     void* m_d_temp{nullptr};
     size_t m_d_temp_cap{0};
 
+    // DE-compatible memory pool for compressed/decompressed data buffers.
+    // Allocations from this pool are usable by the Blackwell Decompression Engine.
+    cudaMemPool_t m_de_pool{nullptr};
+
     // Grows a single device buffer if needed; no-op if cap >= needed.
     cudaError_t ensure_device(void*& ptr, size_t& cap, size_t needed);
+    // Same as ensure_device but allocates from the DE-compatible pool.
+    cudaError_t ensure_device_de(void*& ptr, size_t& cap, size_t needed);
     // Grows the single allocation backing all 6 nvcomp metadata arrays.
-    cudaError_t ensure_arrays(size_t num_chunks);
+    // Uses DE pool when available (DE requires decomp_sizes to be DE-compliant).
+    cudaError_t ensure_arrays_de(size_t num_chunks);
     /**
      * Shared implementation for the upload-metadata / get-temp / launch / sync
      * steps used by both decompress_batch() and decompress_batch_device().
@@ -106,7 +113,7 @@ private:
             size_t total_chunks,
             uint32_t chunk_size,
             size_t total_uncompressed,
-            bool use_gdeflate,
+            ArchiveCompressionType codec,
             char const* log_prefix
     );
 };

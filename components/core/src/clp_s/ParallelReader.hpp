@@ -9,8 +9,11 @@
 namespace clp_s::direct_io {
 
 /**
- * Parallel I/O reader that splits reads across taskflow threads.
- * All threads share a single fd pair; pread is thread-safe.
+ * Parallel I/O reader using pread with per-thread file descriptors.
+ * Each taskflow thread opens its own O_DIRECT + normal fd pair to
+ * eliminate any kernel-level fd contention.  Aligned portions of each
+ * read go through the O_DIRECT fd; unaligned head/tail bytes use the
+ * normal fd.
  */
 class ParallelReader {
 public:
@@ -21,10 +24,12 @@ public:
     };
 
     /**
+     * @param path        File to read.
+     * @param num_threads Number of taskflow worker threads (default 16).
      * @throw std::runtime_error if the file cannot be opened.
      */
     explicit ParallelReader(char const* path, size_t num_threads = 16);
-    ~ParallelReader();
+    ~ParallelReader() = default;
 
     ParallelReader(ParallelReader const&) = delete;
     ParallelReader& operator=(ParallelReader const&) = delete;
@@ -32,11 +37,8 @@ public:
     bool read_batch(char* dest_buf, std::vector<ReadRequest> const& requests);
 
 private:
-    static constexpr size_t cDirectAlign = 4096;
-
+    std::string m_path;
     size_t m_num_threads;
-    int m_direct_fd{-1};
-    int m_normal_fd{-1};
 };
 
 }  // namespace clp_s::direct_io

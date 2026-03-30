@@ -1,11 +1,13 @@
-#ifndef CLP_S_CHUNKEDGDEFLATECOMPRESSOR_HPP
-#define CLP_S_CHUNKEDGDEFLATECOMPRESSOR_HPP
+#ifndef CLP_S_CHUNKEDDEFLATECOMPRESSOR_HPP
+#define CLP_S_CHUNKEDDEFLATECOMPRESSOR_HPP
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <libdeflate.h>
 
 #include "archive_constants.hpp"
 #include "Compressor.hpp"
@@ -15,11 +17,10 @@
 namespace clp_s {
 
 /**
- * A Gdeflate compressor that splits input into fixed-size chunks and compresses each chunk using
- * nvcomp's gdeflate CPU API. Produces output compatible with nvcomp batched GPU decompression.
- * Note: the CPU API has a max chunk size of 64KB.
+ * A Deflate compressor that splits input into fixed-size chunks and compresses each chunk using
+ * libdeflate's raw deflate API. Produces output compatible with nvcomp batched GPU decompression.
  */
-class ChunkedGdeflateCompressor : public Compressor {
+class ChunkedDeflateCompressor : public Compressor {
 public:
     class OperationFailed : public TraceableException {
     public:
@@ -29,11 +30,11 @@ public:
 
     static constexpr size_t cDefaultChunkSize = cDefaultCompressionChunkSize;
 
-    ChunkedGdeflateCompressor();
-    ~ChunkedGdeflateCompressor() override = default;
+    ChunkedDeflateCompressor();
+    ~ChunkedDeflateCompressor() override;
 
-    ChunkedGdeflateCompressor(ChunkedGdeflateCompressor const&) = delete;
-    ChunkedGdeflateCompressor& operator=(ChunkedGdeflateCompressor const&) = delete;
+    ChunkedDeflateCompressor(ChunkedDeflateCompressor const&) = delete;
+    ChunkedDeflateCompressor& operator=(ChunkedDeflateCompressor const&) = delete;
 
     void write(char const* data, size_t data_length);
 
@@ -60,7 +61,8 @@ private:
     void compress_current_chunk(size_t bytes_in_chunk);
 
     FileWriter* m_compressed_stream_file_writer{nullptr};
-    int m_compression_level{6};
+    struct libdeflate_compressor* m_libdeflate_compressor{nullptr};
+    int m_compression_level{3};
     size_t m_chunk_size{cDefaultChunkSize};
 
     std::unique_ptr<char[]> m_chunk_buffer;
@@ -74,4 +76,4 @@ private:
 
 }  // namespace clp_s
 
-#endif  // CLP_S_CHUNKEDGDEFLATECOMPRESSOR_HPP
+#endif  // CLP_S_CHUNKEDDEFLATECOMPRESSOR_HPP

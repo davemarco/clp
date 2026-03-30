@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <spdlog/spdlog.h>
 #include <taskflow/taskflow.hpp>
 
 #include "DirectIoUtils.hpp"
@@ -15,34 +16,14 @@
 
 namespace clp_s::direct_io {
 
-namespace {
-bool pread_auto(int direct_fd, int normal_fd, char* dest, size_t size, size_t file_offset) {
-    constexpr size_t cAlign = 4096;
-    bool aligned = (reinterpret_cast<uintptr_t>(dest) % cAlign) == 0
-                   && (file_offset % cAlign) == 0;
-    if (direct_fd >= 0 && aligned) {
-        return pread_direct(direct_fd, normal_fd, dest, size, file_offset);
-    }
-    return pread_exact(normal_fd, dest, size, static_cast<off_t>(file_offset));
-}
-}  // namespace
-
 ParallelReader::ParallelReader(char const* path, size_t num_threads)
-        : m_num_threads(num_threads) {
-    m_normal_fd = open(path, O_RDONLY);
-    if (m_normal_fd < 0) {
+        : m_path(path),
+          m_num_threads(num_threads) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
         throw std::runtime_error(std::string("Failed to open file: ") + path);
     }
-    m_direct_fd = open(path, O_RDONLY | O_DIRECT);
-}
-
-ParallelReader::~ParallelReader() {
-    if (m_direct_fd >= 0) {
-        ::close(m_direct_fd);
-    }
-    if (m_normal_fd >= 0) {
-        ::close(m_normal_fd);
-    }
+    ::close(fd);
 }
 
 bool ParallelReader::read_batch(char* dest_buf, std::vector<ReadRequest> const& requests) {
@@ -55,20 +36,26 @@ bool ParallelReader::read_batch(char* dest_buf, std::vector<ReadRequest> const& 
         total_size += r.size;
     }
 
-    // Sequential path: single thread or tiny read.
-    if (m_num_threads <= 1 || total_size <= cDirectAlign) {
+    // Sequential fallback for trivial workloads.
+    if (m_num_threads <= 1 || total_size <= kDirectAlign) {
+        DirectIoFdPair fds(m_path.c_str());
+        if (!fds.is_valid()) {
+            return false;
+        }
         for (auto const& r : requests) {
-            if (!pread_auto(m_direct_fd, m_normal_fd, dest_buf + r.buf_offset, r.size, r.file_offset)) {
+            if (!fds.read(dest_buf + r.buf_offset, r.size, r.file_offset)) {
                 return false;
             }
         }
         return true;
     }
 
-    // Split each request into aligned sub-chunks. Never split across request
-    // boundaries since requests may not be contiguous on disk.
-    size_t const num_threads = std::min(m_num_threads, total_size / cDirectAlign);
-    size_t const target_chunk = (total_size / num_threads / cDirectAlign) * cDirectAlign;
+    // Split each request into chunks for parallel dispatch.
+    // Never split across request boundaries (requests may not be contiguous).
+    size_t const num_threads
+            = std::min(m_num_threads, std::max<size_t>(1, total_size / kDirectAlign));
+    size_t const target_chunk
+            = std::max(kDirectAlign, (total_size / num_threads / kDirectAlign) * kDirectAlign);
 
     std::vector<ReadRequest> chunks;
     chunks.reserve(num_threads + requests.size());
@@ -79,9 +66,7 @@ bool ParallelReader::read_batch(char* dest_buf, std::vector<ReadRequest> const& 
         size_t file_off = req.file_offset;
 
         while (remaining > 0) {
-            size_t sz = (remaining > target_chunk + cDirectAlign)
-                                ? target_chunk
-                                : remaining;
+            size_t sz = (remaining > target_chunk + kDirectAlign) ? target_chunk : remaining;
             chunks.push_back({sz, file_off, buf_off});
             remaining -= sz;
             buf_off += sz;
@@ -89,20 +74,58 @@ bool ParallelReader::read_batch(char* dest_buf, std::vector<ReadRequest> const& 
         }
     }
 
-    // Parallel pread via taskflow — all threads share the same fd pair.
+    // Distribute chunks evenly across threads.
+    size_t const num_chunks = chunks.size();
+    size_t const chunks_per_thread = (num_chunks + num_threads - 1) / num_threads;
+    size_t const actual_tasks = (num_chunks + chunks_per_thread - 1) / chunks_per_thread;
+
     auto& executor = clp_s::get_taskflow_executor(num_threads);
     tf::Taskflow taskflow;
     std::atomic<bool> has_error{false};
+    std::string const& path = m_path;
 
-    for (size_t i = 0; i < chunks.size(); ++i) {
-        taskflow.emplace([this, dest_buf, &chunks, &has_error, i]() {
+    for (size_t t = 0; t < actual_tasks; ++t) {
+        size_t const begin = t * chunks_per_thread;
+        size_t const end = std::min(begin + chunks_per_thread, num_chunks);
+
+        taskflow.emplace([dest_buf, &chunks, &has_error, begin, end, &path]() {
             if (has_error.load(std::memory_order_relaxed)) {
                 return;
             }
-            auto const& c = chunks[i];
-            if (!pread_auto(m_direct_fd, m_normal_fd, dest_buf + c.buf_offset, c.size, c.file_offset)) {
+
+            // Each thread opens its own fd pair — no sharing.
+            int direct_fd = open(path.c_str(), O_RDONLY | O_DIRECT);
+            int normal_fd = open(path.c_str(), O_RDONLY);
+            if (normal_fd < 0) {
                 has_error.store(true, std::memory_order_relaxed);
+                if (direct_fd >= 0) {
+                    ::close(direct_fd);
+                }
+                return;
             }
+
+            for (size_t i = begin; i < end; ++i) {
+                if (has_error.load(std::memory_order_relaxed)) {
+                    break;
+                }
+                auto const& c = chunks[i];
+                if (!pread_direct(
+                            direct_fd,
+                            normal_fd,
+                            dest_buf + c.buf_offset,
+                            c.size,
+                            c.file_offset
+                    ))
+                {
+                    has_error.store(true, std::memory_order_relaxed);
+                    break;
+                }
+            }
+
+            if (direct_fd >= 0) {
+                ::close(direct_fd);
+            }
+            ::close(normal_fd);
         });
     }
 

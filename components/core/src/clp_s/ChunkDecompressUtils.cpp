@@ -2,6 +2,7 @@
 
 #include <atomic>
 
+#include <libdeflate.h>
 #include <nvcomp/native/gdeflate_cpu.h>
 #include <taskflow/taskflow.hpp>
 #include <taskflow/algorithm/scan.hpp>
@@ -15,12 +16,16 @@ namespace {
 struct ZstdDCtxDeleter {
     void operator()(ZSTD_DCtx* ctx) const { ZSTD_freeDCtx(ctx); }
 };
+
+struct LibdeflateDecompressorDeleter {
+    void operator()(struct libdeflate_decompressor* d) const { libdeflate_free_decompressor(d); }
+};
 }  // namespace
 
 void decompress_chunks_taskflow(
         std::vector<ChunkInfo> const& chunks,
         size_t num_threads,
-        bool is_gdeflate
+        ArchiveCompressionType codec
 ) {
     if (chunks.empty()) {
         return;
@@ -37,7 +42,7 @@ void decompress_chunks_taskflow(
                 return;
             }
             auto const& chunk = chunks[j];
-            if (is_gdeflate) {
+            if (ArchiveCompressionType::Gdeflate == codec) {
                 void const* in_ptr = chunk.src;
                 size_t in_bytes = chunk.src_size;
                 void* out_ptr = chunk.dst;
@@ -47,6 +52,26 @@ void decompress_chunks_taskflow(
                         &in_ptr, &in_bytes, 1, &out_ptr, &out_buf_bytes, &out_bytes
                 );
                 if (0 == out_bytes) {
+                    has_error.store(true, std::memory_order_relaxed);
+                }
+            } else if (ArchiveCompressionType::Deflate == codec) {
+                thread_local std::unique_ptr<
+                        struct libdeflate_decompressor,
+                        LibdeflateDecompressorDeleter>
+                        tl_decompressor{libdeflate_alloc_decompressor()};
+                if (!tl_decompressor) {
+                    has_error.store(true, std::memory_order_relaxed);
+                    return;
+                }
+                enum libdeflate_result res = libdeflate_deflate_decompress(
+                        tl_decompressor.get(),
+                        chunk.src,
+                        chunk.src_size,
+                        chunk.dst,
+                        chunk.dst_cap,
+                        nullptr
+                );
+                if (LIBDEFLATE_SUCCESS != res) {
                     has_error.store(true, std::memory_order_relaxed);
                 }
             } else {

@@ -582,6 +582,8 @@ std::shared_ptr<char[]> ArchiveReader::read_stream(size_t stream_id, bool reuse_
 
     if (m_num_threads > 1
         || ArchiveCompressionType::Gdeflate
+                   == static_cast<ArchiveCompressionType>(get_header().compression_type)
+        || ArchiveCompressionType::Deflate
                    == static_cast<ArchiveCompressionType>(get_header().compression_type))
     {
         m_stream_reader.read_stream_parallel(

@@ -437,6 +437,8 @@ std::tuple<size_t, size_t, size_t> ArchiveWriter::store_tables() {
     // Initialize the codec-appropriate wrapper once, then use it uniformly below.
     if (ArchiveCompressionType::Gdeflate == m_compression_codec) {
         m_tables_compressor.emplace(m_tables_compressor_gdeflate);
+    } else if (ArchiveCompressionType::Deflate == m_compression_codec) {
+        m_tables_compressor.emplace(m_tables_compressor_deflate);
     } else {
         m_tables_compressor.emplace(m_tables_compressor_zstd);
     }
