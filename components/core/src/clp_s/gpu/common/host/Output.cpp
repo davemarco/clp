@@ -12,12 +12,12 @@
 
 namespace clp_s::gpu {
 
-bool serialize_and_write_schema_work(
-        std::vector<SchemaWork>& schema_work,
+bool serialize_and_write_schema_results(
+        std::vector<SchemaMatchResult>& schema_results,
         size_t num_threads,
         search::OutputHandler& output_handler
 ) {
-    if (schema_work.empty()) {
+    if (schema_results.empty()) {
         return true;
     }
 
@@ -25,7 +25,13 @@ bool serialize_and_write_schema_work(
     size_t const num_workers = std::max<size_t>(num_threads, 1);
     tf::Taskflow taskflow;
 
-    for (auto& sw : schema_work) {
+    auto write_fn = [&output_handler](std::string_view chunk) {
+        if (!chunk.empty()) {
+            output_handler.write(chunk);
+        }
+    };
+
+    for (auto& sw : schema_results) {
         size_t const num_items = sw.match_indices.empty()
                                          ? sw.reader->get_num_messages()
                                          : sw.match_indices.size();
@@ -37,29 +43,13 @@ bool serialize_and_write_schema_work(
                     num_workers, (num_items + cMinRowsPerChunk - 1) / cMinRowsPerChunk
             );
         }
-        sw.reader->add_serialization_tasks(
-                num_chunks, taskflow, sw.chunk_outputs, sw.match_indices
+        sw.reader->add_serialize_and_write_tasks(
+                num_chunks, taskflow, write_fn, sw.match_indices
         );
     }
-
-    auto& executor = clp_s::get_taskflow_executor(num_workers);
+    auto& executor = clp_s::get_cpu_executor(num_workers);
     executor.run(taskflow).wait();
-
-    for (auto& sw : schema_work) {
-        for (auto& chunk : sw.chunk_outputs) {
-            if (false == chunk.empty()) {
-                output_handler.write(chunk);
-            }
-        }
-        auto ecode = output_handler.flush();
-        if (ErrorCode::ErrorCodeSuccess != ecode) {
-            SPDLOG_ERROR(
-                    "Failed to flush output handler, error={}.",
-                    static_cast<int>(ecode)
-            );
-            return false;
-        }
-    }
     return true;
 }
+
 }  // namespace clp_s::gpu

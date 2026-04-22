@@ -993,7 +993,6 @@ void QueryRunner::populate_string_queries(std::shared_ptr<Expression> const& exp
                 return;
             }
 
-            // search on log type dictionary
             clp::epochtime_t placeholder_timestamp{};
             m_string_query_map.emplace(
                     query_string,
@@ -1005,11 +1004,12 @@ void QueryRunner::populate_string_queries(std::shared_ptr<Expression> const& exp
                             placeholder_timestamp,
                             m_ignore_case,
                             [this]() -> log_surgeon::lexers::ByteLexer& {
-                                if (false == m_lexer.has_value()) {
-                                    m_lexer.emplace();
-                                    clp::load_lexer_from_file(m_schema_path, *m_lexer);
+                                static std::optional<log_surgeon::lexers::ByteLexer> s_lexer;
+                                if (!s_lexer.has_value()) {
+                                    s_lexer.emplace();
+                                    clp::load_lexer_from_file(m_schema_path, *s_lexer);
                                 }
-                                return *m_lexer;
+                                return *s_lexer;
                             },
                             m_use_heuristic
                     )

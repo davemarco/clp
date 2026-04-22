@@ -41,7 +41,9 @@ public:
         std::cout << archive_id << ": " << log_event_idx << ": " << timestamp << " " << message;
     }
 
-    void write(std::string_view message) override { std::cout << message; }
+    void write(std::string_view message) override {
+        ::fwrite(message.data(), 1, message.size(), stdout);
+    }
 };
 
 /**

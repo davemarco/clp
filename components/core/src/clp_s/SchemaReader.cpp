@@ -326,10 +326,10 @@ auto SchemaReader::make_per_chunk_state(size_t num_chunks)
     return shared;
 }
 
-void SchemaReader::add_serialization_tasks(
+void SchemaReader::add_serialize_and_write_tasks(
         size_t num_chunks,
         tf::Taskflow& taskflow,
-        std::vector<std::string>& chunk_outputs,
+        std::function<void(std::string_view)> write_fn,
         std::span<size_t const> indices
 ) {
     if (false == m_serializer_initialized) {
@@ -340,16 +340,13 @@ void SchemaReader::add_serialization_tasks(
     size_t const num_items = use_indices ? indices.size()
                                          : static_cast<size_t>(m_num_messages);
     if (0 == num_items) {
-        chunk_outputs.clear();
         return;
     }
 
     num_chunks = std::min(num_chunks, num_items);
-    chunk_outputs.resize(num_chunks);
 
     auto shared = make_per_chunk_state(num_chunks);
 
-    // Copy indices into shared storage so they outlive this function scope.
     std::shared_ptr<std::vector<size_t>> shared_indices;
     if (use_indices) {
         shared_indices = std::make_shared<std::vector<size_t>>(indices.begin(), indices.end());
@@ -362,12 +359,18 @@ void SchemaReader::add_serialization_tasks(
         size_t const start = c * items_per_chunk + std::min(c, remainder);
         size_t const count = items_per_chunk + (c < remainder ? 1 : 0);
 
-        taskflow.emplace([this, c, start, count, &chunk_outputs, shared, shared_indices,
-                          use_indices]() {
+        taskflow.emplace([this, c, start, count, shared, shared_indices,
+                          use_indices, write_fn]() {
             auto& serializer = shared->serializers[c];
             auto& sclp_map = shared->sclp_maps[c];
-            auto& output = chunk_outputs[c];
-            output.reserve(count * cEstimatedBytesPerRow);
+            // Thread-local buffer: capacity survives across runs, avoiding
+            // repeated heap allocation/fragmentation on hot paths.
+            thread_local std::string output;
+            output.clear();
+            size_t const estimated = count * cEstimatedBytesPerRow;
+            if (output.capacity() < estimated) {
+                output.reserve(estimated);
+            }
 
             for (size_t i = start; i < start + count; ++i) {
                 size_t sclp_index = 0;
@@ -376,6 +379,7 @@ void SchemaReader::add_serialization_tasks(
                 output += serializer.get_serialized_string();
                 output += '\n';
             }
+            write_fn(output);
         });
     }
 }

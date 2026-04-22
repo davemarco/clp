@@ -23,6 +23,7 @@ struct SearchRunData {
     std::array<SearchDictStats, 3> dict_stats{};
     std::chrono::nanoseconds table_metadata_load{};
     std::chrono::nanoseconds string_query_plan{};
+    std::chrono::nanoseconds dict_io{};
     std::chrono::nanoseconds compressed_io{};
     std::chrono::nanoseconds h2d_transfer{};
     std::chrono::nanoseconds prefix_sum{};
@@ -83,11 +84,7 @@ public:
      * @param duration Time spent planning string queries.
      */
     void add_string_query_plan(std::chrono::nanoseconds duration);
-    /**
-     * Adds elapsed time spent reading compressed stream data from disk.
-     *
-     * @param duration Time spent reading compressed data.
-     */
+    void add_dict_io(std::chrono::nanoseconds duration);
     void add_compressed_io(std::chrono::nanoseconds duration);
     /**
      * Adds elapsed time spent copying compressed data from host to device.
@@ -148,6 +145,7 @@ private:
     std::array<DictStats, 3> m_dict_stats{};
     std::chrono::nanoseconds m_table_metadata_load{};
     std::chrono::nanoseconds m_string_query_plan{};
+    std::chrono::nanoseconds m_dict_io{};
     std::chrono::nanoseconds m_compressed_io{};
     std::chrono::nanoseconds m_h2d_transfer{};
     std::chrono::nanoseconds m_prefix_sum{};
@@ -198,6 +196,7 @@ public:
     void add_dict_load(DictionaryType, std::chrono::nanoseconds, size_t) {}
     void add_table_metadata_load(std::chrono::nanoseconds) {}
     void add_string_query_plan(std::chrono::nanoseconds) {}
+    void add_dict_io(std::chrono::nanoseconds) {}
     void add_compressed_io(std::chrono::nanoseconds) {}
     void add_h2d_transfer(std::chrono::nanoseconds) {}
     void add_prefix_sum(std::chrono::nanoseconds) {}

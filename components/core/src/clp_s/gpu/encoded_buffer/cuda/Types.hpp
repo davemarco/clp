@@ -14,7 +14,7 @@ namespace clp_s::gpu {
  */
 struct DeviceContext {
     DeviceBuffer ert;                  ///< Borrowed pointer to device-resident ERT (not owned).
-    DeviceBufferGuard bitmap;          ///< 1-byte-per-row scan result bitmap.
+    DeviceBufferGuard bitmap;          ///< 1-bit-per-row packed scan result bitmap.
     DeviceBufferGuard row_ids;         ///< Compacted row indices of matching rows.
     DeviceBufferGuard encoded_buffer;  ///< Final packed column output buffer.
 

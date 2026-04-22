@@ -47,6 +47,7 @@ Instructions to compile using local linux without sudo
     -DCROSS_COMPILE:BOOL=ON \
     -DNVCOMP_DIR=/path/to/nvcomp \
     -DCMAKE_CUDA_COMPILER=/path/to/nvcc \
+    -DCLP_S_SEARCH_TIMING=ON \
     ../
   ```
 

@@ -13,6 +13,12 @@
 namespace clp_s::gpu {
 
 /**
+ * Enable hardware decompression engine (DE) for deflate.
+ * Must be called before any decompression. Requires Blackwell or newer.
+ */
+void set_use_hardware_decompression(bool enable);
+
+/**
  * Persistent context for nvcomp batched decompression.
  *
  * Holds all device memory (compressed input buffer, decompressed output buffer,
@@ -46,15 +52,17 @@ public:
 
     /**
      * Decompresses multiple streams in a single nvcomp batch call.
-     * compressed_buf in each StreamInput must already be on the GPU.
-     * Callers are responsible for getting compressed data onto the device
-     * (e.g. via cudaMemcpy, or GDS cuFileRead into get_compressed_buffer()).
-     * Synchronizes the CUDA stream before returning — output is ready on return.
+     * Does NOT synchronize — caller must sync via cudaEvent or
+     * cudaStreamSynchronize before reading the output.
+     *
+     * @param cuda_stream CUDA stream to run decompression on.
+     * @param d_decompressed Device pointer to pre-allocated output buffer.
      */
-    cudaError_t decompress_batch(
+    cudaError_t decompress_batch_async(
             std::vector<StreamInput> const& streams,
             ArchiveCompressionType codec,
-            DeviceBuffer& out_view,
+            cudaStream_t cuda_stream,
+            void* d_decompressed,
             std::vector<size_t>& stream_offsets
     );
 
@@ -63,7 +71,7 @@ public:
      * returns a device pointer to it. Used by GDS to write directly into the
      * context's buffer, avoiding a separate allocation.
      * The returned pointer is valid until the next get_compressed_buffer()
-     * or decompress_batch() call.
+     * or decompress_batch_async() call.
      */
     cudaError_t get_compressed_buffer(size_t needed, void*& out_ptr);
 
@@ -89,21 +97,27 @@ private:
     void* m_d_temp{nullptr};
     size_t m_d_temp_cap{0};
 
+    // Pinned host buffers for metadata upload (avoids pageable→sync fallback)
+    void* m_h_metadata{nullptr};
+    size_t m_h_metadata_cap{0};  // in chunks
+
+    // Pre-allocated metadata vectors (avoids heap alloc per decompress call)
+    std::vector<void const*> m_h_comp_ptrs;
+    std::vector<size_t> m_h_comp_sizes;
+    std::vector<void*> m_h_decomp_ptrs;
+    std::vector<size_t> m_h_decomp_sizes;
+
     // DE-compatible memory pool for compressed/decompressed data buffers.
     // Allocations from this pool are usable by the Blackwell Decompression Engine.
     cudaMemPool_t m_de_pool{nullptr};
 
-    // Grows a single device buffer if needed; no-op if cap >= needed.
-    cudaError_t ensure_device(void*& ptr, size_t& cap, size_t needed);
-    // Same as ensure_device but allocates from the DE-compatible pool.
-    cudaError_t ensure_device_de(void*& ptr, size_t& cap, size_t needed);
+    // Grows a single device buffer if needed; uses DE pool when available.
+    cudaError_t ensure_device(void*& ptr, size_t& cap, size_t needed, cudaStream_t stream = 0);
     // Grows the single allocation backing all 6 nvcomp metadata arrays.
-    // Uses DE pool when available (DE requires decomp_sizes to be DE-compliant).
-    cudaError_t ensure_arrays_de(size_t num_chunks);
+    cudaError_t ensure_arrays(size_t num_chunks, cudaStream_t stream = 0);
     /**
-     * Shared implementation for the upload-metadata / get-temp / launch / sync
-     * steps used by both decompress_batch() and decompress_batch_device().
-     * Caller must have already populated h_comp_ptrs/sizes and h_decomp_ptrs/sizes.
+     * Uploads chunk metadata to device and launches nvcomp decompression.
+     * Does not sync — caller must sync the stream before reading output.
      */
     cudaError_t upload_metadata_and_decompress(
             std::vector<void const*> const& h_comp_ptrs,
@@ -114,7 +128,8 @@ private:
             uint32_t chunk_size,
             size_t total_uncompressed,
             ArchiveCompressionType codec,
-            char const* log_prefix
+            char const* log_prefix,
+            cudaStream_t cuda_stream = 0
     );
 };
 

@@ -1,29 +1,19 @@
 #ifndef CLP_S_SEARCH_OUTPUT_HPP
 #define CLP_S_SEARCH_OUTPUT_HPP
 
-#include <map>
-#include <set>
-#include <stack>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
 
 #include "../ArchiveReader.hpp"
 #include "../CommandLineArguments.hpp"
-#include "../ThreadPool.hpp"
-#include "../SchemaReader.hpp"
 #include "../SchemaTree.hpp"
-#include "../StructuredClpStringReader.hpp"
-#include "../Utils.hpp"
 #include "ast/Expression.hpp"
-#include "ast/StringLiteral.hpp"
 #include "OutputHandler.hpp"
 #include "QueryRunner.hpp"
 #include "SchemaMatch.hpp"
 #include "../gpu/common/cuda/NvcompDecompress.hpp"
 #include "../gpu/encoded_buffer/host/Scan.hpp"
-#include "../gpu/common/host/DecompressStreams.hpp"
+#include "../AioEventLoop.hpp"
+#include "../gpu/common/host/Pipeline.hpp"
 
 namespace clp_s::search {
 
@@ -44,12 +34,16 @@ public:
            ScanMode scan_mode,
            std::string schema_path,
            size_t num_threads = 1,
-           bool gpu_direct = false,
+           size_t aio_queue_depth = 32,
+           direct_io::AioEventLoop* shared_aio = nullptr,
            gpu::NvcompDecompressContext* shared_decompress_ctx = nullptr,
            gpu::DeviceBuffer* shared_device_buffer = nullptr,
            gpu::CpuDecompressBuffer* shared_cpu_buffer = nullptr,
            gpu::DeviceBuffer* shared_batch_bitmap = nullptr,
-           gpu::GatherBuffers* shared_gather_buffers = nullptr)
+           gpu::GatherBuffers* shared_gather_buffers = nullptr,
+           size_t batch_mb = 0,
+           size_t cuda_streams = 16,
+           size_t pipeline_threads = 0)
             : m_query_runner(match, expr, archive_reader, ignore_case, std::move(schema_path)),
               m_archive_reader(archive_reader),
               m_schema_tree(m_archive_reader->get_schema_tree()),
@@ -59,13 +53,16 @@ public:
               m_should_marshal_records(m_output_handler->should_marshal_records()),
               m_scan_mode(scan_mode),
               m_num_threads(num_threads),
-              m_thread_pool(num_threads > 1 ? std::make_unique<ThreadPool>(num_threads) : nullptr),
-              m_gpu_direct(gpu_direct),
+              m_aio_queue_depth(aio_queue_depth),
+              m_shared_aio(shared_aio),
               m_shared_decompress_ctx(shared_decompress_ctx),
               m_shared_device_buffer(shared_device_buffer),
               m_shared_cpu_buffer(shared_cpu_buffer),
               m_shared_batch_bitmap(shared_batch_bitmap),
-              m_shared_gather_buffers(shared_gather_buffers) {}
+              m_shared_gather_buffers(shared_gather_buffers),
+              m_batch_mb(batch_mb),
+              m_cuda_streams(cuda_streams),
+              m_pipeline_threads(pipeline_threads) {}
 
     /**
      * Filters messages within the archive and outputs the filtered messages to the configured
@@ -85,13 +82,16 @@ private:
     bool m_should_marshal_records{true};
     ScanMode m_scan_mode;
     size_t m_num_threads{1};
-    std::unique_ptr<ThreadPool> m_thread_pool;
-    bool m_gpu_direct{false};
+    size_t m_aio_queue_depth{32};
+    direct_io::AioEventLoop* m_shared_aio{nullptr};
     gpu::NvcompDecompressContext* m_shared_decompress_ctx{nullptr};
     gpu::DeviceBuffer* m_shared_device_buffer{nullptr};
     gpu::CpuDecompressBuffer* m_shared_cpu_buffer{nullptr};
     gpu::DeviceBuffer* m_shared_batch_bitmap{nullptr};
     gpu::GatherBuffers* m_shared_gather_buffers{nullptr};
+    size_t m_batch_mb{0};
+    size_t m_cuda_streams{16};
+    size_t m_pipeline_threads{16};
 };
 }  // namespace clp_s::search
 

@@ -10,8 +10,6 @@ set(
         ../DictionaryWriter.cpp
         ../DictionaryWriter.hpp
         ../SearchTiming.hpp
-        ../gpu/common/host/DecompressStreams.cpp
-        ../gpu/common/host/DecompressStreams.hpp
         ../gpu/common/host/ErtInfo.cpp
         ../gpu/common/host/ErtInfo.hpp
         ../gpu/common/host/ErtInfoTypes.hpp
@@ -19,6 +17,8 @@ set(
         ../gpu/common/host/ScanRequest.hpp
         ../gpu/common/host/Output.cpp
         ../gpu/common/host/Output.hpp
+        ../gpu/common/host/Pipeline.cpp
+        ../gpu/common/host/Pipeline.hpp
         ../gpu/cpu_baseline/host/Scan.cpp
         ../gpu/cpu_baseline/host/Scan.hpp
         ../gpu/encoded_buffer/host/Scan.cpp

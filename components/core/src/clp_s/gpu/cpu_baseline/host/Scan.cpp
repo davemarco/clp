@@ -386,7 +386,7 @@ void run_cpu_prefix_sum_schemas(
         std::shared_ptr<char[]> const& cpu_batch_buffer,
         size_t num_threads
 ) {
-    auto& tf_executor = clp_s::get_taskflow_executor(num_threads);
+    auto& tf_executor = clp_s::get_cpu_executor(num_threads);
     tf::Taskflow taskflow;
 
     for (int32_t const schema_id : matched_schemas) {

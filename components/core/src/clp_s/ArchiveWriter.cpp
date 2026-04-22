@@ -23,6 +23,7 @@ void ArchiveWriter::open(ArchiveWriterOption const& option) {
     m_single_file_archive = option.single_file_archive;
     m_min_table_size = option.min_table_size;
     m_chunk_size = option.chunk_size;
+    m_dict_chunk_size = option.dict_chunk_size;
     m_compression_codec = option.compression_codec;
     m_archives_dir = option.archives_dir;
     m_authoritative_timestamp = option.authoritative_timestamp;
@@ -52,15 +53,15 @@ void ArchiveWriter::open(ArchiveWriterOption const& option) {
 
     std::string var_dict_path = m_archive_path + constants::cArchiveVarDictFile;
     m_var_dict = std::make_shared<VariableDictionaryWriter>();
-    m_var_dict->open(var_dict_path, m_compression_level, UINT64_MAX, m_chunk_size);
+    m_var_dict->open(var_dict_path, m_compression_level, UINT64_MAX, m_dict_chunk_size);
 
     std::string log_dict_path = m_archive_path + constants::cArchiveLogDictFile;
     m_log_dict = std::make_shared<LogTypeDictionaryWriter>();
-    m_log_dict->open(log_dict_path, m_compression_level, UINT64_MAX, m_chunk_size);
+    m_log_dict->open(log_dict_path, m_compression_level, UINT64_MAX, m_dict_chunk_size);
 
     std::string array_dict_path = m_archive_path + constants::cArchiveArrayDictFile;
     m_array_dict = std::make_shared<LogTypeDictionaryWriter>();
-    m_array_dict->open(array_dict_path, m_compression_level, UINT64_MAX, m_chunk_size);
+    m_array_dict->open(array_dict_path, m_compression_level, UINT64_MAX, m_dict_chunk_size);
 }
 
 auto ArchiveWriter::close(bool is_split) -> ArchiveStats {

@@ -18,7 +18,8 @@ namespace clp_s::gpu {
 cudaError_t copy_id_list_to_device(
         ColumnPredicate const& pred,
         DeviceBufferGuard& guard,
-        uint64_t const*& out_d_id_list
+        uint64_t const*& out_d_id_list,
+        cudaStream_t stream
 ) {
     out_d_id_list = nullptr;
     if ((pred.column_type != ColumnType::VarString && pred.column_type != ColumnType::Int64InList)
@@ -27,17 +28,18 @@ cudaError_t copy_id_list_to_device(
         return cudaSuccess;
     }
     size_t const bytes = pred.id_list.size() * sizeof(uint64_t);
-    cudaError_t status = cudaMallocAsync(&guard.buf.ptr, bytes, 0);
+    cudaError_t status = cudaMallocAsync(&guard.buf.ptr, bytes, stream);
     if (cudaSuccess != status) {
         return status;
     }
     guard.buf.size = bytes;
+    guard.stream = stream;
     status = cudaMemcpyAsync(
             guard.buf.ptr,
             pred.id_list.data(),
             bytes,
             cudaMemcpyHostToDevice,
-            0
+            stream
     );
     if (cudaSuccess != status) {
         return status;
@@ -46,18 +48,18 @@ cudaError_t copy_id_list_to_device(
     return cudaSuccess;
 }
 
-cudaError_t alloc_initialized_bitmap(size_t num_rows, MergeOp merge_op, DeviceBuffer& out_bitmap) {
+cudaError_t alloc_initialized_bitmap(size_t num_rows, MergeOp merge_op, DeviceBuffer& out_bitmap, cudaStream_t stream) {
     size_t const bytes = bitmap_num_bytes(num_rows);
     out_bitmap = {};
-    cudaError_t status = cudaMallocAsync(&out_bitmap.ptr, bytes, 0);
+    cudaError_t status = cudaMallocAsync(&out_bitmap.ptr, bytes, stream);
     if (cudaSuccess != status) {
         return status;
     }
     out_bitmap.size = bytes;
     if (MergeOp::And == merge_op) {
-        return memset_bitmap_ones(static_cast<uint32_t*>(out_bitmap.ptr), num_rows);
+        return memset_bitmap_ones(static_cast<uint32_t*>(out_bitmap.ptr), num_rows, stream);
     }
-    return cudaMemsetAsync(out_bitmap.ptr, 0x00, bytes, 0);
+    return cudaMemsetAsync(out_bitmap.ptr, 0x00, bytes, stream);
 }
 
 cudaError_t scan_predicate_into_bitmap(
@@ -67,7 +69,8 @@ cudaError_t scan_predicate_into_bitmap(
         uint64_t const* d_id_list,
         size_t num_ids,
         MergeOp merge_op,
-        uint32_t* device_bitmap
+        uint32_t* device_bitmap,
+        cudaStream_t stream
 ) {
     if (nullptr == device_ert_base || 0 == col.length || nullptr == device_bitmap) {
         return cudaSuccess;
@@ -82,7 +85,7 @@ cudaError_t scan_predicate_into_bitmap(
         case ColumnType::DeltaInt64:
         case ColumnType::DateString:
         case ColumnType::Timestamp:
-            scan_cmp_kernel<int64_t><<<blocks, threads_per_block>>>(
+            scan_cmp_kernel<int64_t><<<blocks, threads_per_block, 0, stream>>>(
                     device_ert_base,
                     col.primary_offset_bytes,
                     col.length,
@@ -95,7 +98,7 @@ cudaError_t scan_predicate_into_bitmap(
             break;
         case ColumnType::Double:
         case ColumnType::FormattedDouble:
-            scan_cmp_kernel<double><<<blocks, threads_per_block>>>(
+            scan_cmp_kernel<double><<<blocks, threads_per_block, 0, stream>>>(
                     device_ert_base,
                     col.primary_offset_bytes,
                     col.length,
@@ -107,7 +110,7 @@ cudaError_t scan_predicate_into_bitmap(
             );
             break;
         case ColumnType::Boolean:
-            scan_cmp_kernel<uint8_t><<<blocks, threads_per_block>>>(
+            scan_cmp_kernel<uint8_t><<<blocks, threads_per_block, 0, stream>>>(
                     device_ert_base,
                     col.primary_offset_bytes,
                     col.length,
@@ -121,7 +124,7 @@ cudaError_t scan_predicate_into_bitmap(
         case ColumnType::Int64InList:
         case ColumnType::VarString: {
             bool const negate = (pred.op == GpuFilterOp::NEQ);
-            scan_in_list_kernel<<<blocks, threads_per_block>>>(
+            scan_in_list_kernel<<<blocks, threads_per_block, 0, stream>>>(
                     device_ert_base,
                     col.primary_offset_bytes,
                     col.length,
@@ -141,12 +144,12 @@ cudaError_t scan_predicate_into_bitmap(
     return cudaGetLastError();
 }
 
-cudaError_t memset_bitmap_ones(uint32_t* device_bitmap, size_t num_rows) {
+cudaError_t memset_bitmap_ones(uint32_t* device_bitmap, size_t num_rows, cudaStream_t stream) {
     if (0 == num_rows || nullptr == device_bitmap) {
         return cudaSuccess;
     }
     size_t const bytes = bitmap_num_bytes(num_rows);
-    auto status = cudaMemsetAsync(device_bitmap, 0xFF, bytes, 0);
+    auto status = cudaMemsetAsync(device_bitmap, 0xFF, bytes, stream);
     if (cudaSuccess != status) {
         return status;
     }
@@ -156,22 +159,34 @@ cudaError_t memset_bitmap_ones(uint32_t* device_bitmap, size_t num_rows) {
     }
     size_t const last_word = bitmap_num_words(num_rows) - 1;
     uint32_t const mask = (1u << tail_bits) - 1;
-    mask_bitmap_tail_kernel<<<1, 1>>>(device_bitmap, last_word, mask);
+    mask_bitmap_tail_kernel<<<1, 1, 0, stream>>>(device_bitmap, last_word, mask);
     return cudaGetLastError();
 }
 
-cudaError_t invert_device_bitmap(uint32_t* device_bitmap, size_t num_rows) {
+cudaError_t invert_device_bitmap(uint32_t* device_bitmap, size_t num_rows, cudaStream_t stream) {
     if (0 == num_rows || nullptr == device_bitmap) {
         return cudaSuccess;
     }
     size_t const num_words = bitmap_num_words(num_rows);
     constexpr int threads_per_block = 256;
     int blocks = static_cast<int>((num_words + threads_per_block - 1) / threads_per_block);
-    invert_bitmap_kernel<<<blocks, threads_per_block>>>(device_bitmap, num_words);
-    return cudaGetLastError();
+    invert_bitmap_kernel<<<blocks, threads_per_block, 0, stream>>>(device_bitmap, num_words);
+    auto status = cudaGetLastError();
+    if (cudaSuccess != status) {
+        return status;
+    }
+    // Mask tail bits in the last word so that garbage bits beyond num_rows stay cleared.
+    size_t const tail_bits = num_rows & 31;
+    if (0 != tail_bits) {
+        size_t const last_word = num_words - 1;
+        uint32_t const mask = (1u << tail_bits) - 1;
+        mask_bitmap_tail_kernel<<<1, 1, 0, stream>>>(device_bitmap, last_word, mask);
+        return cudaGetLastError();
+    }
+    return cudaSuccess;
 }
 
-cudaError_t merge_device_bitmaps(uint32_t* dst, uint32_t const* src, size_t num_rows, MergeOp op) {
+cudaError_t merge_device_bitmaps(uint32_t* dst, uint32_t const* src, size_t num_rows, MergeOp op, cudaStream_t stream) {
     if (0 == num_rows || nullptr == dst || nullptr == src) {
         return cudaSuccess;
     }
@@ -179,9 +194,9 @@ cudaError_t merge_device_bitmaps(uint32_t* dst, uint32_t const* src, size_t num_
     constexpr int threads_per_block = 256;
     int blocks = static_cast<int>((num_words + threads_per_block - 1) / threads_per_block);
     if (MergeOp::And == op) {
-        and_merge_bitmap_kernel<<<blocks, threads_per_block>>>(dst, src, num_words);
+        and_merge_bitmap_kernel<<<blocks, threads_per_block, 0, stream>>>(dst, src, num_words);
     } else {
-        or_merge_bitmap_kernel<<<blocks, threads_per_block>>>(dst, src, num_words);
+        or_merge_bitmap_kernel<<<blocks, threads_per_block, 0, stream>>>(dst, src, num_words);
     }
     return cudaGetLastError();
 }
@@ -191,7 +206,8 @@ cudaError_t scan_sclp_to_device_bitmap(
         SclpFilter const& info,
         std::span<ColumnDesc const> columns,
         size_t num_rows,
-        uint32_t* device_out_bitmap
+        uint32_t* device_out_bitmap,
+        cudaStream_t stream
 ) {
     size_t const bytes = bitmap_num_bytes(num_rows);
     if (0 == num_rows || nullptr == device_out_bitmap) {
@@ -201,13 +217,13 @@ cudaError_t scan_sclp_to_device_bitmap(
     // No subqueries means no work — just set the answer directly.
     if (info.subqueries.empty()) {
         if (info.is_negated) {
-            return memset_bitmap_ones(device_out_bitmap, num_rows);
+            return memset_bitmap_ones(device_out_bitmap, num_rows, stream);
         }
-        return cudaMemsetAsync(device_out_bitmap, 0x00, bytes, 0);
+        return cudaMemsetAsync(device_out_bitmap, 0x00, bytes, stream);
     }
 
     // Initialize output to all 0s (OR identity for subquery merging)
-    cudaError_t status = cudaMemsetAsync(device_out_bitmap, 0, bytes, 0);
+    cudaError_t status = cudaMemsetAsync(device_out_bitmap, 0, bytes, stream);
     if (cudaSuccess != status) {
         return status;
     }
@@ -219,15 +235,16 @@ cudaError_t scan_sclp_to_device_bitmap(
 
     // Allocate temp bitmap for per-subquery AND scan
     DeviceBufferGuard temp_guard;
-    status = cudaMallocAsync(&temp_guard.buf.ptr, bytes, 0);
+    status = cudaMallocAsync(&temp_guard.buf.ptr, bytes, stream);
     if (cudaSuccess != status) {
         return status;
     }
     temp_guard.buf.size = bytes;
+    temp_guard.stream = stream;
     auto* temp_bitmap = static_cast<uint32_t*>(temp_guard.buf.ptr);
 
     for (auto const& sq : info.subqueries) {
-        status = memset_bitmap_ones(temp_bitmap, num_rows);
+        status = memset_bitmap_ones(temp_bitmap, num_rows, stream);
         if (cudaSuccess != status) {
             return status;
         }
@@ -238,10 +255,11 @@ cudaError_t scan_sclp_to_device_bitmap(
         DeviceBufferGuard logtype_ids_guard;
         if (false == sq.possible_logtype_ids.empty()) {
             size_t const bytes = sq.possible_logtype_ids.size() * sizeof(int64_t);
-            status = copy_to_device(sq.possible_logtype_ids.data(), bytes, logtype_ids_guard.buf);
+            status = copy_to_device(sq.possible_logtype_ids.data(), bytes, logtype_ids_guard.buf, stream);
             if (cudaSuccess != status) {
                 return status;
             }
+            logtype_ids_guard.stream = stream;
         }
 
         // Copy per-var data; indexed by var position for use in the launch phase.
@@ -257,22 +275,26 @@ cudaError_t scan_sclp_to_device_bitmap(
                 status = copy_to_device(
                         var_predicate.wildcard_pattern.data(),
                         bytes,
-                        var_guards[i].buf
+                        var_guards[i].buf,
+                        stream
                 );
                 if (cudaSuccess != status) {
                     return status;
                 }
+                var_guards[i].stream = stream;
                 d_var_ptrs[i] = var_guards[i].buf.ptr;
             } else if (var_predicate.possible_encoded_values.size() > 1) {
                 size_t const bytes = var_predicate.possible_encoded_values.size() * sizeof(int64_t);
                 status = copy_to_device(
                         var_predicate.possible_encoded_values.data(),
                         bytes,
-                        var_guards[i].buf
+                        var_guards[i].buf,
+                        stream
                 );
                 if (cudaSuccess != status) {
                     return status;
                 }
+                var_guards[i].stream = stream;
                 d_var_ptrs[i] = var_guards[i].buf.ptr;
             }
             // Int64 case (single precise value): no copy; d_var_ptrs[i] remains nullptr.
@@ -291,7 +313,8 @@ cudaError_t scan_sclp_to_device_bitmap(
                     static_cast<uint64_t const*>(logtype_ids_guard.buf.ptr),
                     sq.possible_logtype_ids.size(),
                     MergeOp::And,
-                    temp_bitmap
+                    temp_bitmap,
+                    stream
             );
             if (cudaSuccess != status) {
                 return status;
@@ -319,7 +342,7 @@ cudaError_t scan_sclp_to_device_bitmap(
                 int blocks = static_cast<int>(
                         (var_col->length + threads_per_block - 1) / threads_per_block
                 );
-                scan_encoded_var_wildcard_kernel<<<blocks, threads_per_block>>>(
+                scan_encoded_var_wildcard_kernel<<<blocks, threads_per_block, 0, stream>>>(
                         device_ert_base,
                         var_col->primary_offset_bytes,
                         var_col->length,
@@ -343,7 +366,8 @@ cudaError_t scan_sclp_to_device_bitmap(
                         static_cast<uint64_t const*>(d_var_ptrs[i]),
                         var_count,
                         MergeOp::And,
-                        temp_bitmap
+                        temp_bitmap,
+                        stream
                 );
             }
             if (cudaSuccess != status) {
@@ -352,7 +376,7 @@ cudaError_t scan_sclp_to_device_bitmap(
         }
 
         // OR-merge temp_bitmap into sclp_bitmap (device_out_bitmap)
-        status = merge_device_bitmaps(device_out_bitmap, temp_bitmap, num_rows, MergeOp::Or);
+        status = merge_device_bitmaps(device_out_bitmap, temp_bitmap, num_rows, MergeOp::Or, stream);
         if (cudaSuccess != status) {
             return status;
         }
@@ -360,7 +384,7 @@ cudaError_t scan_sclp_to_device_bitmap(
 
     // If negated, invert the final bitmap
     if (info.is_negated) {
-        status = invert_device_bitmap(device_out_bitmap, num_rows);
+        status = invert_device_bitmap(device_out_bitmap, num_rows, stream);
         if (cudaSuccess != status) {
             return status;
         }
@@ -373,7 +397,10 @@ cudaError_t prefix_sum_columns_batched(
         char* device_ert_base,
         size_t const* offset_bytes_array,
         size_t const* num_rows_array,
-        size_t num_columns
+        size_t num_columns,
+        void*& d_temp,
+        size_t& d_temp_cap,
+        cudaStream_t stream
 ) {
     if (0 == num_columns || nullptr == device_ert_base) {
         return cudaSuccess;
@@ -397,15 +424,24 @@ cudaError_t prefix_sum_columns_batched(
     auto status = cub::DeviceScan::InclusiveSum(
             nullptr, temp_bytes,
             static_cast<int64_t*>(nullptr), static_cast<int64_t*>(nullptr),
-            static_cast<int>(max_rows), 0
+            static_cast<int>(max_rows), stream
     );
     if (cudaSuccess != status) {
         return status;
     }
-    void* d_temp = nullptr;
-    status = cudaMallocAsync(&d_temp, temp_bytes, 0);
-    if (cudaSuccess != status) {
-        return status;
+
+    // Grow-only: reuse existing allocation if large enough.
+    if (temp_bytes > d_temp_cap) {
+        if (d_temp) {
+            cudaFreeAsync(d_temp, stream);
+        }
+        status = cudaMallocAsync(&d_temp, temp_bytes, stream);
+        if (cudaSuccess != status) {
+            d_temp = nullptr;
+            d_temp_cap = 0;
+            return status;
+        }
+        d_temp_cap = temp_bytes;
     }
 
     // Run all scans reusing the same temp buffer.
@@ -414,19 +450,17 @@ cudaError_t prefix_sum_columns_batched(
             continue;
         }
         auto* values = reinterpret_cast<int64_t*>(device_ert_base + offset_bytes_array[i]);
-        size_t reuse_temp = temp_bytes;
+        size_t reuse_temp = d_temp_cap;
         status = cub::DeviceScan::InclusiveSum(
                 d_temp, reuse_temp,
                 values, values,
-                static_cast<int>(num_rows_array[i]), 0
+                static_cast<int>(num_rows_array[i]), stream
         );
         if (cudaSuccess != status) {
-            cudaFreeAsync(d_temp, 0);
             return status;
         }
     }
 
-    cudaFreeAsync(d_temp, 0);
     return cudaSuccess;
 }
 }  // namespace clp_s::gpu

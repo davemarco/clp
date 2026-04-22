@@ -10,6 +10,7 @@
 
 #include <mongocxx/instance.hpp>
 #include <nlohmann/json.hpp>
+#include <nvtx3/nvToolsExt.h>
 #include <spdlog/sinks/stdout_sinks.h>
 #include <spdlog/spdlog.h>
 
@@ -36,10 +37,9 @@
 #include "search/EvaluateTimestampIndex.hpp"
 #include "search/kql/kql.hpp"
 #include "gpu/common/cuda/CudaWarmup.hpp"
-#include "gpu/common/cuda/GdsReader.hpp"
 #include "gpu/common/cuda/NvcompDecompress.hpp"
 #include "gpu/common/cuda/Transfer.hpp"
-#include "gpu/common/host/DecompressStreams.hpp"
+#include "AioEventLoop.hpp"
 #include "search/Output.hpp"
 #include "SearchTiming.hpp"
 #include "Utils.hpp"
@@ -87,7 +87,8 @@ bool search_archive(
         clp_s::gpu::DeviceBuffer* shared_device_buffer,
         clp_s::gpu::CpuDecompressBuffer* shared_cpu_buffer,
         clp_s::gpu::DeviceBuffer* shared_batch_bitmap,
-        clp_s::gpu::GatherBuffers* shared_gather_buffers
+        clp_s::gpu::GatherBuffers* shared_gather_buffers,
+        clp_s::direct_io::AioEventLoop* shared_aio
 );
 
 bool compress(CommandLineArguments const& command_line_arguments) {
@@ -113,6 +114,7 @@ bool compress(CommandLineArguments const& command_line_arguments) {
     option.max_document_size = command_line_arguments.get_max_document_size();
     option.min_table_size = command_line_arguments.get_minimum_table_size();
     option.chunk_size = command_line_arguments.get_chunk_size();
+    option.dict_chunk_size = command_line_arguments.get_dict_chunk_size();
     option.compression_codec = command_line_arguments.get_compression_codec();
     option.compression_level = command_line_arguments.get_compression_level();
     option.timestamp_key = command_line_arguments.get_timestamp_key();
@@ -146,7 +148,8 @@ bool search_archive(
         clp_s::gpu::DeviceBuffer* shared_device_buffer,
         clp_s::gpu::CpuDecompressBuffer* shared_cpu_buffer,
         clp_s::gpu::DeviceBuffer* shared_batch_bitmap,
-        clp_s::gpu::GatherBuffers* shared_gather_buffers
+        clp_s::gpu::GatherBuffers* shared_gather_buffers,
+        clp_s::direct_io::AioEventLoop* shared_aio
 ) {
     auto const& query = command_line_arguments.get_query();
 
@@ -312,12 +315,16 @@ bool search_archive(
             command_line_arguments.get_scan_mode(),
             command_line_arguments.get_schema_path(),
             command_line_arguments.get_num_threads(),
-            command_line_arguments.get_gpu_direct_storage(),
+            command_line_arguments.get_aio_queue_depth(),
+            shared_aio,
             shared_decompress_ctx,
             shared_device_buffer,
             shared_cpu_buffer,
             shared_batch_bitmap,
-            shared_gather_buffers
+            shared_gather_buffers,
+            command_line_arguments.get_batch_mb(),
+            command_line_arguments.get_cuda_streams(),
+            command_line_arguments.get_pipeline_threads()
     );
     return output.filter();
 }
@@ -388,9 +395,10 @@ int main(int argc, char const* argv[]) {
         if (command_line_arguments.get_scan_mode()
             == CommandLineArguments::ScanMode::Gpu)
         {
-            clp_s::gpu::launch_cuda_warmup(
-                    command_line_arguments.get_gpu_direct_storage()
+            clp_s::gpu::set_use_hardware_decompression(
+                    command_line_arguments.get_use_hardware_decompression()
             );
+            clp_s::gpu::launch_cuda_warmup();
         }
         /*** GPU integration end ***/
 
@@ -435,6 +443,12 @@ int main(int argc, char const* argv[]) {
         clp_s::DictDecompressBuffer shared_log_dict_buf;
         clp_s::DictDecompressBuffer shared_array_dict_buf;
 
+        // Shared AIO context — persists across archives and repeat runs.
+        auto shared_aio = std::make_unique<clp_s::direct_io::AioEventLoop>(
+                command_line_arguments.get_aio_queue_depth(),
+                command_line_arguments.get_aio_threads()
+        );
+
         // Build cache eviction paths once (used between repeat runs)
         std::vector<std::string> cache_paths;
         if (drop_caches) {
@@ -456,6 +470,7 @@ int main(int argc, char const* argv[]) {
             archive_reader->set_dict_decompress_buffers(
                     &shared_var_dict_buf, &shared_log_dict_buf, &shared_array_dict_buf
             );
+            archive_reader->set_shared_aio(shared_aio.get());
             for (auto const& input_path : command_line_arguments.get_input_paths()) {
                 if (std::string::npos != input_path.path.find(clp::ir::cIrFileExtension)) {
                     auto const result{clp_s::search_kv_ir_stream(
@@ -508,6 +523,7 @@ int main(int argc, char const* argv[]) {
                     SPDLOG_ERROR("Failed to open archive - {}", e.what());
                     return 1;
                 }
+                nvtxRangePush("archive");
                 if (false
                     == search_archive(
                             command_line_arguments,
@@ -518,11 +534,14 @@ int main(int argc, char const* argv[]) {
                             &shared_device_buffer,
                             &shared_cpu_buffer,
                             &shared_batch_bitmap.buf,
-                            &shared_gather_buffers
+                            &shared_gather_buffers,
+                            shared_aio.get()
                     ))
                 {
+                    nvtxRangePop();
                     return 1;
                 }
+                nvtxRangePop();
                 archive_reader->close();
             }
 
@@ -536,10 +555,6 @@ int main(int argc, char const* argv[]) {
         }
 
         timing.log_all_runs(command_line_arguments.get_timing_output_path());
-
-        if (command_line_arguments.get_gpu_direct_storage()) {
-            clp_s::gpu::gds_driver_close();
-        }
     }
 
     return 0;

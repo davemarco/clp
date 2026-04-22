@@ -182,6 +182,7 @@ JsonParser::JsonParser(JsonParserOption const& option)
     m_archive_options.single_file_archive = option.single_file_archive;
     m_archive_options.min_table_size = option.min_table_size;
     m_archive_options.chunk_size = option.chunk_size;
+    m_archive_options.dict_chunk_size = option.dict_chunk_size;
     m_archive_options.compression_codec = option.compression_codec;
     m_archive_options.id = m_generator();
     m_archive_options.authoritative_timestamp = m_timestamp_column;

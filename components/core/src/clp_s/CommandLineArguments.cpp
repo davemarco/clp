@@ -229,7 +229,12 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                     "chunk-size",
                     po::value<size_t>(&m_chunk_size)->value_name("CHUNK_SIZE")->
                         default_value(m_chunk_size),
-                    "Uncompressed chunk size (B) for zstd chunked compression (default 64 KB)."
+                    "Uncompressed chunk size (B) for ERT zstd chunked compression (default 64 KB)."
+            )(
+                    "dict-chunk-size",
+                    po::value<size_t>(&m_dict_chunk_size)->value_name("DICT_CHUNK_SIZE")->
+                        default_value(m_dict_chunk_size),
+                    "Uncompressed chunk size (B) for dictionary zstd chunked compression (default 512 KB)."
             )(
                     "max-document-size",
                     po::value<size_t>(&m_max_document_size)->value_name("DOC_SIZE")->
@@ -584,6 +589,40 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 po::bool_switch(&m_gpu_direct_storage),
                 "Use GPUDirect Storage to load compressed data directly to GPU memory,"
                 " bypassing CPU staging (requires GDS-capable hardware and local NVMe)"
+            )(
+                "hw-decompress",
+                po::bool_switch(&m_use_hardware_decompression),
+                "Use hardware decompression engine (DE) for deflate — requires Blackwell or newer"
+            )(
+                "aio-queue-depth",
+                po::value<size_t>(&m_aio_queue_depth)
+                    ->default_value(m_aio_queue_depth)
+                    ->value_name("DEPTH"),
+                "Maximum number of libaio iocbs in flight per thread (default 32)"
+            )(
+                "aio-threads",
+                po::value<size_t>(&m_aio_threads)
+                    ->default_value(m_aio_threads)
+                    ->value_name("N"),
+                "Number of libaio threads, each with its own io_context (default 16)"
+            )(
+                "batch-mb",
+                po::value<size_t>(&m_batch_mb)
+                    ->default_value(m_batch_mb)
+                    ->value_name("MB"),
+                "Target batch size in MB for GPU pipeline (0 = one stream per batch, default 0)"
+            )(
+                "cuda-streams",
+                po::value<size_t>(&m_cuda_streams)
+                    ->default_value(m_cuda_streams)
+                    ->value_name("N"),
+                "Maximum number of CUDA streams for GPU pipeline (default 16)"
+            )(
+                "pipeline-threads",
+                po::value<size_t>(&m_pipeline_threads)
+                    ->default_value(m_pipeline_threads)
+                    ->value_name("N"),
+                "Taskflow scheduler threads for GPU pipeline (default 16)"
             )(
                 "repeat",
                 po::value<size_t>(&m_repeat_count)

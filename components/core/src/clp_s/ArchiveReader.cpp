@@ -133,7 +133,9 @@ void ArchiveReader::read_metadata() {
     m_table_metadata_decompressor.close();
     m_archive_reader_adaptor->checkin_reader_for_section(constants::cArchiveTableMetadataFile);
 
-    m_stream_reader.read_chunk_metadata(*m_archive_reader_adaptor);
+    if (m_archive_reader_adaptor->has_section(constants::cArchiveTableChunkMetadataFile)) {
+        m_stream_reader.read_chunk_metadata(*m_archive_reader_adaptor);
+    }
 
     // Read dictionary chunk metadata for parallel decompression (if present).
     if (m_archive_reader_adaptor->has_section(constants::cArchiveDictChunkMetadataFile)) {
@@ -483,18 +485,6 @@ void ArchiveReader::read_stream_compressed(
         size_t& buf_size
 ) {
     m_stream_reader.read_stream_compressed(stream_id, buf, buf_size);
-}
-
-size_t ArchiveReader::read_streams_compressed_bulk(
-        std::vector<size_t> const& stream_ids,
-        char* dest_buf,
-        size_t dest_buf_size,
-        std::vector<size_t>& stream_offsets,
-        std::vector<size_t>& stream_sizes
-) {
-    return m_stream_reader.read_streams_compressed_bulk(
-            stream_ids, dest_buf, dest_buf_size, stream_offsets, stream_sizes
-    );
 }
 
 SchemaReader& ArchiveReader::init_schema_table(

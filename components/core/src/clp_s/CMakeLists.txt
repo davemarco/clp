@@ -330,9 +330,9 @@ set(
         DictionaryEntry.cpp
         DictionaryEntry.hpp
         DictionaryReader.hpp
+        AioEventLoop.cpp
+        AioEventLoop.hpp
         DirectIoUtils.hpp
-        ParallelReader.cpp
-        ParallelReader.hpp
         ChunkDecompressUtils.cpp
         ChunkDecompressUtils.hpp
         ErrorCode.hpp
@@ -383,6 +383,7 @@ if(CLP_BUILD_CLP_S_ARCHIVEREADER)
                 nvcomp::nvcomp_cpu_static
                 ystdlib::error_handling
                 PRIVATE
+                aio
                 Boost::url
                 clp_s::clp_dependencies
                 ${CURL_LIBRARIES}

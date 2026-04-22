@@ -28,6 +28,7 @@
 #include "TimestampDictionaryWriter.hpp"
 
 namespace clp_s {
+
 struct ArchiveWriterOption {
     boost::uuids::uuid id;
     std::string archives_dir;
@@ -38,6 +39,7 @@ struct ArchiveWriterOption {
     std::vector<std::string> authoritative_timestamp;
     std::string authoritative_timestamp_namespace;
     size_t chunk_size{ChunkedZstdCompressor::cDefaultChunkSize};
+    size_t dict_chunk_size{constants::cDefaultDictChunkSize};
     ArchiveCompressionType compression_codec{ArchiveCompressionType::Zstd};
 };
 
@@ -386,6 +388,7 @@ private:
     bool m_single_file_archive{};
     size_t m_min_table_size{};
     size_t m_chunk_size{ChunkedZstdCompressor::cDefaultChunkSize};
+    size_t m_dict_chunk_size{constants::cDefaultDictChunkSize};
 
     std::vector<std::string> m_authoritative_timestamp;
     std::string m_authoritative_timestamp_namespace;

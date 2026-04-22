@@ -401,8 +401,8 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/JsonParser.hpp
     src/clp_s/OutputHandlerImpl.cpp
     src/clp_s/OutputHandlerImpl.hpp
-    src/clp_s/ParallelReader.cpp
-    src/clp_s/ParallelReader.hpp
+    src/clp_s/AioEventLoop.cpp
+    src/clp_s/AioEventLoop.hpp
     src/clp_s/PackedStreamReader.cpp
     src/clp_s/PackedStreamReader.hpp
     src/clp_s/RangeIndexWriter.cpp
@@ -419,13 +419,13 @@ set(SOURCE_FILES_clp_s_unitTest
     src/clp_s/SchemaTree.hpp
     src/clp_s/SchemaWriter.cpp
     src/clp_s/SchemaWriter.hpp
-    src/clp_s/gpu/common/host/DecompressStreams.cpp
-    src/clp_s/gpu/common/host/DecompressStreams.hpp
     src/clp_s/gpu/common/host/ErtInfo.cpp
     src/clp_s/gpu/common/host/ErtInfo.hpp
     src/clp_s/gpu/common/host/ErtInfoTypes.hpp
     src/clp_s/gpu/common/host/Output.cpp
     src/clp_s/gpu/common/host/Output.hpp
+    src/clp_s/gpu/common/host/Pipeline.cpp
+    src/clp_s/gpu/common/host/Pipeline.hpp
     src/clp_s/gpu/common/host/ScanRequest.cpp
     src/clp_s/gpu/common/host/ScanRequest.hpp
     src/clp_s/gpu/common/host/ScanRequestTypeUtils.hpp
@@ -809,6 +809,7 @@ if(CLP_ENABLE_TESTS)
     target_include_directories(unitTest SYSTEM PRIVATE ${LIBDEFLATE_INCLUDE_DIR})
     target_link_libraries(unitTest
             PRIVATE
+            aio
             absl::flat_hash_map
             Boost::filesystem
             Boost::iostreams

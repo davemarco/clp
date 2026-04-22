@@ -40,14 +40,15 @@ cudaError_t launch_gather_fixed(
         size_t column_offset_bytes,
         uint32_t const* device_row_ids,
         uint64_t num_matches,
-        char* device_output
+        char* device_output,
+        cudaStream_t stream = 0
 ) {
     if (0 == num_matches) {
         return cudaSuccess;
     }
     constexpr int threads_per_block = 256;
     auto blocks = static_cast<int>((num_matches + threads_per_block - 1) / threads_per_block);
-    gather_fixed<T><<<blocks, threads_per_block>>>(
+    gather_fixed<T><<<blocks, threads_per_block, 0, stream>>>(
             device_ert_base,
             column_offset_bytes,
             device_row_ids,

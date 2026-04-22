@@ -62,28 +62,70 @@ public:
      * @return the variable dictionary reader
      */
     std::shared_ptr<VariableDictionaryReader> read_variable_dictionary(bool lazy = false) {
-        read_dictionary(*m_var_dict, m_var_dict_chunk_meta, lazy, m_var_dict_buf);
+        m_var_dict->read_entries(lazy);
         return m_var_dict;
     }
 
-    /**
-     * Reads the log type dictionary from the archive.
-     * @param lazy
-     * @return the log type dictionary reader
-     */
     std::shared_ptr<LogTypeDictionaryReader> read_log_type_dictionary(bool lazy = false) {
-        read_dictionary(*m_log_dict, m_log_dict_chunk_meta, lazy, m_log_dict_buf);
+        m_log_dict->read_entries(lazy);
         return m_log_dict;
     }
 
-    /**
-     * Reads the array dictionary from the archive.
-     * @param lazy
-     * @return the array dictionary reader
-     */
     std::shared_ptr<LogTypeDictionaryReader> read_array_dictionary(bool lazy = false) {
-        read_dictionary(*m_array_dict, m_array_dict_chunk_meta, lazy, m_array_dict_buf);
+        m_array_dict->read_entries(lazy);
         return m_array_dict;
+    }
+
+    /**
+     * Builds AIO read requests for all chunked dictionaries.
+     * Fds are owned by the DictionaryReader members — valid until close().
+     * Non-chunked dicts are read synchronously (tiny, no AIO needed).
+     */
+    std::vector<direct_io::AioEventLoop::ReadRequest> prepare_dictionary_reads(
+            bool has_array, bool has_array_search
+    ) {
+        std::vector<direct_io::AioEventLoop::ReadRequest> requests;
+        requests.push_back(m_var_dict->prepare_compressed_read(
+                m_var_dict_chunk_meta.total_compressed, m_var_dict_buf
+        ));
+        requests.push_back(m_log_dict->prepare_compressed_read(
+                m_log_dict_chunk_meta.total_compressed, m_log_dict_buf
+        ));
+        if (has_array && has_array_search) {
+            requests.push_back(m_array_dict->prepare_compressed_read(
+                    m_array_dict_chunk_meta.total_compressed, m_array_dict_buf
+            ));
+        } else if (has_array) {
+            m_array_dict->read_entries(true);
+        }
+        return requests;
+    }
+
+    /**
+     * Decompresses all chunked dictionaries from pre-read buffers.
+     * Called after prepare_dictionary_reads() + AIO completes.
+     */
+    void decompress_dictionaries(bool has_array, bool has_array_search) {
+        m_var_dict->decompress_from_buffer(
+                m_var_dict_chunk_meta.chunk_size,
+                m_var_dict_chunk_meta.chunk_compressed_sizes,
+                m_var_dict_chunk_meta.total_compressed,
+                m_num_threads, m_var_dict_buf
+        );
+        m_log_dict->decompress_from_buffer(
+                m_log_dict_chunk_meta.chunk_size,
+                m_log_dict_chunk_meta.chunk_compressed_sizes,
+                m_log_dict_chunk_meta.total_compressed,
+                m_num_threads, m_log_dict_buf
+        );
+        if (has_array && has_array_search) {
+            m_array_dict->decompress_from_buffer(
+                    m_array_dict_chunk_meta.chunk_size,
+                    m_array_dict_chunk_meta.chunk_compressed_sizes,
+                    m_array_dict_chunk_meta.total_compressed,
+                    m_num_threads, m_array_dict_buf
+            );
+        }
     }
 
     /**
@@ -161,17 +203,6 @@ public:
     );
 
     /**
-     * Reads compressed data for multiple streams in a single I/O operation.
-     */
-    size_t read_streams_compressed_bulk(
-            std::vector<size_t> const& stream_ids,
-            char* dest_buf,
-            size_t dest_buf_size,
-            std::vector<size_t>& stream_offsets,
-            std::vector<size_t>& stream_sizes
-    );
-
-    /**
      * @return the schema metadata for the given schema_id
      */
     SchemaReader::SchemaMetadata const& get_schema_metadata(int32_t schema_id) const {
@@ -239,7 +270,8 @@ public:
 
     void set_num_threads(size_t num_threads) { m_num_threads = num_threads; }
 
-    void set_thread_pool(ThreadPool* pool) { m_thread_pool = pool; }
+    [[nodiscard]] size_t get_num_threads() const { return m_num_threads; }
+
 
     void set_dict_decompress_buffers(
             DictDecompressBuffer* var_buf,
@@ -249,6 +281,14 @@ public:
         m_var_dict_buf = var_buf;
         m_log_dict_buf = log_buf;
         m_array_dict_buf = array_buf;
+    }
+
+    void set_shared_aio(direct_io::AioEventLoop* aio) { m_shared_aio = aio; }
+
+    [[nodiscard]] bool has_chunked_dicts() const {
+        return m_var_dict_chunk_meta.has_chunks
+               || m_log_dict_chunk_meta.has_chunks
+               || m_array_dict_chunk_meta.has_chunks;
     }
 
     /**
@@ -277,28 +317,7 @@ public:
     );
 
 private:
-    /**
-     * Reads a dictionary, using parallel chunk decompression when metadata is available.
-     */
-    template <typename DictReader>
-    void read_dictionary(
-            DictReader& dict,
-            DictChunkMetadata const& meta,
-            bool lazy,
-            DictDecompressBuffer*& buf
-    ) {
-        if (meta.has_chunks && false == lazy) {
-            dict.read_entries_parallel(
-                    meta.chunk_size,
-                    meta.chunk_compressed_sizes,
-                    meta.total_compressed,
-                    m_num_threads,
-                    buf
-            );
-        } else {
-            dict.read_entries(lazy);
-        }
-    }
+
 
     /**
      * Initializes a schema reader passed by reference to become a reader for a given schema.
@@ -382,7 +401,6 @@ private:
     size_t m_cur_stream_id{0ULL};
     int32_t m_log_event_idx_column_id{-1};
     size_t m_num_threads{1};
-    ThreadPool* m_thread_pool{nullptr};
 
     // Per-dict-type reusable buffers (persist across archives and repeat runs).
     // Separate buffers so in-place modifications (e.g., prefix-sum on var dict)
@@ -390,6 +408,7 @@ private:
     DictDecompressBuffer* m_var_dict_buf{nullptr};
     DictDecompressBuffer* m_log_dict_buf{nullptr};
     DictDecompressBuffer* m_array_dict_buf{nullptr};
+    direct_io::AioEventLoop* m_shared_aio{nullptr};
 };
 }  // namespace clp_s
 

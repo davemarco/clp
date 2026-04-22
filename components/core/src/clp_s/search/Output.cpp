@@ -7,7 +7,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <cuda_runtime.h>
 #include <spdlog/spdlog.h>
 #include "../../clp/type_utils.hpp"
 #include "../SchemaTree.hpp"
@@ -17,31 +16,11 @@
 #include "../gpu/common/cuda/CudaWarmup.hpp"
 #include "../gpu/common/host/ErtInfo.hpp"
 #include "../gpu/common/host/Output.hpp"
+#include "../gpu/common/host/Pipeline.hpp"
 #include "../gpu/encoded_buffer/host/Scan.hpp"
-#include "../gpu/cpu_baseline/host/Scan.hpp"
-#include "ast/AndExpr.hpp"
-#include "ast/ColumnDescriptor.hpp"
 #include "ast/Expression.hpp"
-#include "ast/FilterExpr.hpp"
-#include "ast/FilterOperation.hpp"
-#include "ast/Literal.hpp"
-#include "ast/OrExpr.hpp"
 #include "EvaluateTimestampIndex.hpp"
 #include "../SearchTiming.hpp"
-
-using clp_s::search::ast::AndExpr;
-using clp_s::search::ast::ColumnDescriptor;
-using clp_s::search::ast::DescriptorList;
-using clp_s::search::ast::Expression;
-using clp_s::search::ast::FilterExpr;
-using clp_s::search::ast::FilterOperation;
-using clp_s::search::ast::Literal;
-using clp_s::search::ast::literal_type_bitmask_t;
-using clp_s::search::ast::LiteralType;
-using clp_s::search::ast::OpList;
-using clp_s::search::ast::OrExpr;
-
-#define eval(op, a, b) (((op) == FilterOperation::EQ) ? ((a) == (b)) : ((a) != (b)))
 
 namespace clp_s::search {
 using ScanMode = CommandLineArguments::ScanMode;
@@ -49,11 +28,6 @@ using ScanMode = CommandLineArguments::ScanMode;
 bool Output::filter() {
     auto& timing = SearchTiming::instance();
     SearchTiming::Scope timing_guard{timing, m_archive_reader->get_archive_id()};
-
-    // Share thread pool with archive reader for parallel decompression
-    if (m_thread_pool) {
-        m_archive_reader->set_thread_pool(m_thread_pool.get());
-    }
 
     std::vector<int32_t> matched_schemas;
     bool has_array = false;
@@ -89,364 +63,94 @@ bool Output::filter() {
         return true;
     }
 
-    auto const var_dict_start = SearchTiming::Clock::now();
-    m_archive_reader->read_variable_dictionary();
-    timing.add_dict_load(
-            DictionaryType::Variable,
-            SearchTiming::Clock::now() - var_dict_start,
-            m_archive_reader->get_variable_dictionary()->get_num_entries()
-    );
+    // Pipeline paths handle dict loading internally to overlap with ERT I/O.
+    // None loads dicts sequentially here.
+    bool const use_pipeline = m_scan_mode == ScanMode::Gpu
+                              || m_scan_mode == ScanMode::CpuBitmap;
 
-    auto const log_dict_start = SearchTiming::Clock::now();
-    m_archive_reader->read_log_type_dictionary();
-    timing.add_dict_load(
-            DictionaryType::LogType,
-            SearchTiming::Clock::now() - log_dict_start,
-            m_archive_reader->get_log_type_dictionary()->get_entries().size()
-    );
-
-    if (has_array) {
-        if (has_array_search) {
-            auto const array_dict_start = SearchTiming::Clock::now();
-            m_archive_reader->read_array_dictionary();
-            timing.add_dict_load(
-                    DictionaryType::Array,
-                    SearchTiming::Clock::now() - array_dict_start,
-                    m_archive_reader->get_array_dictionary()->get_entries().size()
+    if (!use_pipeline) {
+        // None: sequential dict loading (non-chunked only).
+        if (m_archive_reader->has_chunked_dicts()) {
+            SPDLOG_ERROR(
+                    "Chunked dictionaries require --scan gpu or --scan cpu-bitmap. "
+                    "Re-compress without --dict-chunk-size for --scan none."
             );
-        } else {
-            auto const array_dict_start = SearchTiming::Clock::now();
-            m_archive_reader->read_array_dictionary(true);
-            timing.add_dict_load(
-                    DictionaryType::Array,
-                    SearchTiming::Clock::now() - array_dict_start,
-                    m_archive_reader->get_array_dictionary()->get_entries().size()
-            );
+            return false;
         }
-    }
-    auto const string_query_plan_start = SearchTiming::Clock::now();
-    m_query_runner.global_init();
-    timing.add_string_query_plan(
-            SearchTiming::Clock::now() - string_query_plan_start
-    );
 
-    if (m_scan_mode != ScanMode::None && m_query_runner.is_using_heuristic()) {
-        SPDLOG_ERROR(
-                "GPU/bitmap scan modes require --schema-path to use the non-heuristic parser."
+        auto const dict_start = SearchTiming::Clock::now();
+        m_archive_reader->read_variable_dictionary();
+        m_archive_reader->read_log_type_dictionary();
+        if (has_array) {
+            m_archive_reader->read_array_dictionary(!has_array_search);
+        }
+        timing.add_dict_io(SearchTiming::Clock::now() - dict_start);
+
+        auto const string_query_plan_start = SearchTiming::Clock::now();
+        m_query_runner.global_init();
+        timing.add_string_query_plan(
+                SearchTiming::Clock::now() - string_query_plan_start
         );
-        return false;
-    }
 
-    m_archive_reader->open_packed_streams();
+        m_archive_reader->open_packed_streams();
+    }
 
     // Matched schemas are already sorted by stream_id (archive writer groups
     // schemas into streams in iteration order, which SchemaMatch preserves).
-
-    std::string message;
-    auto const archive_id = m_archive_reader->get_archive_id();
 
     auto const archive_codec = static_cast<ArchiveCompressionType>(
             m_archive_reader->get_header().compression_type
     );
 
-    // ── Mode-specific pre-loop setup ─────────────────────────────────────────
-    // Shared GPU contexts (reused across archives when provided).
-    clp_s::gpu::NvcompDecompressContext local_decompress_ctx;
-    clp_s::gpu::DeviceBuffer local_device_buffer{};
-    auto& decompress_ctx = m_shared_decompress_ctx ? *m_shared_decompress_ctx : local_decompress_ctx;
-    auto& device_buffer = m_shared_device_buffer ? *m_shared_device_buffer : local_device_buffer;
-
-    std::unordered_map<size_t, size_t> stream_batch_offsets;
-    std::vector<clp_s::gpu::SchemaScanInfo> batched_schemas;
-    std::shared_ptr<char[]> cpu_batch_buffer;
-    std::unordered_map<size_t, size_t> cpu_batch_offsets;
-    std::shared_ptr<char[]> gpu_host_buf;
-    std::vector<clp_s::gpu::BatchGatherResult> gpu_gather_results;
+    if (m_scan_mode != ScanMode::None && m_output_handler->should_output_metadata()) {
+        SPDLOG_ERROR("Column scan does not support metadata output yet.");
+        return false;
+    }
 
     switch (m_scan_mode) {
         case ScanMode::Gpu: {
             clp_s::gpu::wait_for_cuda_warmup();
-
-            // 1. Decompress all matched streams to GPU
-            if (m_gpu_direct) {
-                auto const& archive_path = m_archive_reader->get_archive_path();
-                if (InputSource::Filesystem != archive_path.source) {
-                    SPDLOG_ERROR("--gpu-direct requires a local filesystem archive, not a network path");
-                    return false;
-                }
-                stream_batch_offsets = clp_s::gpu::decompress_matched_streams_gpu_gds(
-                        *m_archive_reader, matched_schemas, archive_codec,
-                        decompress_ctx, device_buffer, timing
-                );
-            } else {
-                stream_batch_offsets = clp_s::gpu::decompress_matched_streams_gpu(
-                        *m_archive_reader, matched_schemas, archive_codec,
-                        decompress_ctx, device_buffer, timing
-                );
-            }
-            if (stream_batch_offsets.empty()) {
-                return false;
-            }
-
-            // 2. Prefix-sum all delta/timestamp columns
-            auto const gpu_prefix_sum_start = SearchTiming::Clock::now();
-            clp_s::gpu::run_gpu_prefix_sum_schemas(
-                    *m_archive_reader, *m_schema_tree, matched_schemas,
-                    stream_batch_offsets, device_buffer
-            );
-            clp_s::gpu::sync_default_stream();
-            timing.add_prefix_sum(SearchTiming::Clock::now() - gpu_prefix_sum_start);
-
-            // 3. Batched scan: collect per-schema info, then scan into bitmap
-            if (m_output_handler->should_output_metadata()) {
-                SPDLOG_ERROR("Column scan does not support metadata output yet.");
-                return false;
-            }
-
-            auto const scan_start = SearchTiming::Clock::now();
-            size_t total_bitmap_words = 0;
-            size_t total_bitmap_rows = 0;
-            for (int32_t const schema_id : matched_schemas) {
-                if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
-                    continue;
-                }
-
-                clp_s::gpu::SchemaScanInfo info;
-                if (0 != clp_s::gpu::build_schema_scan_info(
-                            *m_archive_reader, *m_schema_tree, schema_id,
-                            stream_batch_offsets, m_should_marshal_records,
-                            m_query_runner.get_schema_expr().get(),
-                            m_query_runner.get_string_var_match_map(),
-                            m_query_runner.get_sclp_columns(),
-                            m_query_runner.get_string_query_map(),
-                            info))
-                {
-                    return false;
-                }
-                info.bitmap_word_offset = total_bitmap_words;
-                total_bitmap_words += clp_s::gpu::bitmap_num_words(info.num_rows);
-                total_bitmap_rows += info.num_rows;
-                batched_schemas.push_back(std::move(info));
-            }
-
-            if (false == batched_schemas.empty()) {
-                if (0 != clp_s::gpu::run_batched_scan(
-                            device_buffer.ptr, device_buffer.size,
-                            batched_schemas, *m_shared_batch_bitmap))
-                {
-                    SPDLOG_ERROR("Batched GPU scan failed");
-                    return false;
-                }
-            }
-            clp_s::gpu::sync_default_stream();
-            timing.add_scan(SearchTiming::Clock::now() - scan_start, total_bitmap_rows);
-
-            // 4. Batched gather + single D2H transfer
-            if (false == batched_schemas.empty()) {
-                auto const gather_start = SearchTiming::Clock::now();
-                std::string gather_error;
-                if (0 != clp_s::gpu::batch_gather_encoded_buffers(
-                            device_buffer.ptr, device_buffer.size,
-                            batched_schemas, *m_shared_batch_bitmap,
-                            *m_shared_gather_buffers,
-                            gpu_host_buf, gpu_gather_results, gather_error))
-                {
-                    SPDLOG_ERROR("Batched GPU gather failed: {}", gather_error);
-                    return false;
-                }
-                timing.add_result_transfer(
-                        SearchTiming::Clock::now() - gather_start
-                );
-            }
-            break;
-        }
-
-        case ScanMode::CpuBitmap: {
-            // 1. Decompress all matched streams to CPU
-            if (!clp_s::gpu::decompress_matched_streams_cpu(
-                        *m_archive_reader, matched_schemas, archive_codec,
-                        m_num_threads, timing,
-                        cpu_batch_buffer, cpu_batch_offsets, m_shared_cpu_buffer))
-            {
-                return false;
-            }
-
-            // 2. Prefix-sum all delta/timestamp columns
-            if (false == cpu_batch_offsets.empty()) {
-                auto const prefix_sum_start = SearchTiming::Clock::now();
-                clp_s::gpu::run_cpu_prefix_sum_schemas(
+            clp_s::gpu::PipelineConfig cfg;
+            cfg.has_array = has_array;
+            cfg.has_array_search = has_array_search;
+            cfg.aio_queue_depth = m_aio_queue_depth;
+            cfg.shared_aio = m_shared_aio;
+            cfg.batch_mb = m_batch_mb;
+            cfg.max_cuda_streams = m_cuda_streams;
+            cfg.pipeline_threads = m_pipeline_threads;
+            if (!clp_s::gpu::run_pipelined_gpu_filter(
                         *m_archive_reader, *m_schema_tree, matched_schemas,
-                        cpu_batch_offsets, cpu_batch_buffer, m_num_threads
-                );
-                timing.add_prefix_sum(SearchTiming::Clock::now() - prefix_sum_start);
-            }
-            break;
-        }
-
-        case ScanMode::None:
-            break;
-    }
-
-    // ── Per-mode serialization ──────────────────────────────────────────────
-    switch (m_scan_mode) {
-        case ScanMode::Gpu: {
-            if (gpu_gather_results.empty()) {
-                break;
-            }
-            auto const serialize_start = SearchTiming::Clock::now();
-
-            std::vector<clp_s::gpu::SchemaWork> schema_work;
-            {
-                size_t gi = 0;
-                for (int32_t const schema_id : matched_schemas) {
-                    if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
-                        continue;
-                    }
-                    auto const& gather_result = gpu_gather_results[gi++];
-                    if (0 == gather_result.num_matches) {
-                        continue;
-                    }
-
-                    auto reader = m_archive_reader->create_schema_reader(
-                            schema_id, false, m_should_marshal_records, true
-                    );
-                    reader->reset_read_state(gather_result.num_matches);
-                    try {
-                        reader->load(
-                                gpu_host_buf,
-                                gather_result.host_offset,
-                                gather_result.size
-                        );
-                    } catch (std::exception const& e) {
-                        SPDLOG_ERROR(
-                                "schema {}: encoded buffer load failed ({} matches, "
-                                "buf_size={}): {}",
-                                schema_id,
-                                gather_result.num_matches,
-                                gather_result.size,
-                                e.what()
-                        );
-                        return false;
-                    }
-                    schema_work.push_back({std::move(reader), {}, {}});
-                }
-            }
-
-            if (false == clp_s::gpu::serialize_and_write_schema_work(
-                        schema_work, m_num_threads, *m_output_handler))
+                        archive_codec, m_query_runner,
+                        m_should_marshal_records, m_num_threads,
+                        *m_output_handler, timing, cfg))
             {
                 return false;
             }
-            timing.add_serialization(SearchTiming::Clock::now() - serialize_start);
             break;
         }
 
         case ScanMode::CpuBitmap: {
-            if (m_output_handler->should_output_metadata()) {
-                SPDLOG_ERROR("Column scan does not support metadata output yet.");
+            clp_s::gpu::PipelineConfig cfg;
+            cfg.has_array = has_array;
+            cfg.has_array_search = has_array_search;
+            cfg.aio_queue_depth = m_aio_queue_depth;
+            cfg.shared_aio = m_shared_aio;
+            cfg.batch_mb = m_batch_mb;
+            cfg.cpu_decompress_cache = m_shared_cpu_buffer;
+            if (!clp_s::gpu::run_pipelined_cpu_filter(
+                        *m_archive_reader, *m_schema_tree, matched_schemas,
+                        archive_codec, m_query_runner,
+                        m_should_marshal_records, m_num_threads,
+                        *m_output_handler, timing, cfg))
+            {
                 return false;
-            }
-
-            std::vector<clp_s::gpu::SchemaWork> schema_work;
-
-            for (int32_t const schema_id : matched_schemas) {
-                if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
-                    continue;
-                }
-
-                auto const schema_setup_start = SearchTiming::Clock::now();
-
-                auto const& schema_meta = m_archive_reader->get_schema_metadata(schema_id);
-                auto const& schema = (*m_archive_reader->get_schema_map())[schema_id];
-
-                std::vector<clp_s::gpu::ColumnDesc> column_descs;
-                std::string col_error;
-                if (0 != clp_s::gpu::compute_column_descs_from_metadata(
-                            *m_schema_tree, schema, schema_meta, column_descs, col_error))
-                {
-                    SPDLOG_ERROR(
-                            "schema {}: {} — archive must be compressed with"
-                            " --structurize-clp-strings --structurize-arrays",
-                            schema_id,
-                            col_error
-                    );
-                    return false;
-                }
-
-                auto reader = m_archive_reader->create_schema_reader(
-                        schema_id, false, m_should_marshal_records, true
-                );
-                size_t const batch_offset = cpu_batch_offsets.at(schema_meta.stream_id)
-                                            + schema_meta.stream_offset;
-                reader->load(cpu_batch_buffer, batch_offset, schema_meta.uncompressed_size);
-                reader->initialize_filter(&m_query_runner);
-
-                timing.add_ert_decompress(SearchTiming::Clock::now() - schema_setup_start);
-
-                auto const scan_start = SearchTiming::Clock::now();
-
-                std::vector<clp_s::gpu::ScanClause> clauses;
-                auto scan_compat_error = clp_s::gpu::build_scan_clauses(
-                        m_query_runner.get_schema_expr().get(),
-                        *m_schema_tree,
-                        m_query_runner.get_string_var_match_map(),
-                        m_query_runner.get_sclp_columns(),
-                        m_query_runner.get_string_query_map(),
-                        clauses
-                );
-                if (clp_s::gpu::ScanCompatError::None != scan_compat_error) {
-                    SPDLOG_ERROR(
-                            "schema {}: failed to build scan clauses: {}",
-                            schema_id,
-                            clp_s::gpu::scan_error_to_string(scan_compat_error)
-                    );
-                    return false;
-                }
-
-                size_t const num_rows = reader->get_num_messages();
-
-                size_t const num_words = clp_s::gpu::bitmap_num_words(num_rows);
-                std::vector<uint32_t> bitmap(num_words);
-
-                auto scan_err = clp_s::gpu::run_cpu_scan_to_bitmap_clauses(
-                        *reader, clauses, column_descs,
-                        bitmap.data(), num_rows,
-                        m_num_threads, m_thread_pool.get()
-                );
-                if (clp_s::gpu::ScanCompatError::None != scan_err) {
-                    SPDLOG_ERROR(
-                            "Bitmap scan failed: {}",
-                            clp_s::gpu::scan_error_to_string(scan_err)
-                    );
-                    return false;
-                }
-
-                timing.add_scan(SearchTiming::Clock::now() - scan_start, num_rows);
-
-                auto match_indices = clp_s::gpu::bitmap_extract_indices(
-                        bitmap.data(), num_rows
-                );
-
-                if (false == match_indices.empty()) {
-                    schema_work.push_back(
-                            {std::move(reader), std::move(match_indices), {}}
-                    );
-                }
-            }
-
-            if (false == schema_work.empty()) {
-                auto const serialize_start = SearchTiming::Clock::now();
-                if (false == clp_s::gpu::serialize_and_write_schema_work(
-                            schema_work, m_num_threads, *m_output_handler))
-                {
-                    return false;
-                }
-                timing.add_serialization(SearchTiming::Clock::now() - serialize_start);
             }
             break;
         }
 
         case ScanMode::None: {
+            std::string message;
+            auto const archive_id = m_archive_reader->get_archive_id();
             for (int32_t const schema_id : matched_schemas) {
                 if (EvaluatedValue::False == m_query_runner.schema_init(schema_id)) {
                     continue;
@@ -491,7 +195,6 @@ bool Output::filter() {
             break;
         }
     }
-
 
     auto ecode = m_output_handler->finish();
     if (ErrorCode::ErrorCodeSuccess != ecode) {

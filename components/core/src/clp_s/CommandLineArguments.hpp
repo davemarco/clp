@@ -3,6 +3,8 @@
 
 #include <optional>
 #include <string>
+
+#include "archive_constants.hpp"
 #include <vector>
 
 #include <boost/program_options/option.hpp>
@@ -138,9 +140,23 @@ public:
 
     size_t get_chunk_size() const { return m_chunk_size; }
 
+    size_t get_dict_chunk_size() const { return m_dict_chunk_size; }
+
     size_t get_num_threads() const { return m_num_threads; }
 
     bool get_gpu_direct_storage() const { return m_gpu_direct_storage; }
+
+    bool get_use_hardware_decompression() const { return m_use_hardware_decompression; }
+
+    size_t get_aio_queue_depth() const { return m_aio_queue_depth; }
+
+    size_t get_aio_threads() const { return m_aio_threads; }
+
+    size_t get_batch_mb() const { return m_batch_mb; }
+
+    size_t get_cuda_streams() const { return m_cuda_streams; }
+
+    size_t get_pipeline_threads() const { return m_pipeline_threads; }
 
     size_t get_repeat_count() const { return m_repeat_count; }
 
@@ -239,9 +255,17 @@ private:
     bool m_print_ordered_chunk_stats{false};
     size_t m_minimum_table_size{1ULL * 1024 * 1024};  // 1 MiB
     size_t m_chunk_size{ChunkedZstdCompressor::cDefaultChunkSize};
+    size_t m_dict_chunk_size{constants::cDefaultDictChunkSize};
     bool m_disable_log_order{false};
     size_t m_num_threads{1};
     bool m_gpu_direct_storage{false};
+    bool m_use_hardware_decompression{false};
+
+    size_t m_aio_queue_depth{32};
+    size_t m_aio_threads{16};
+    size_t m_batch_mb{0};
+    size_t m_cuda_streams{16};
+    size_t m_pipeline_threads{16};
     size_t m_repeat_count{1};
     std::string m_timing_output_path;
     bool m_drop_caches{false};

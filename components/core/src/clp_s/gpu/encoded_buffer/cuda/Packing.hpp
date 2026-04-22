@@ -25,30 +25,33 @@ void compute_column_offsets(
  * Counts matching rows for multiple packed bitmap segments via CUB segmented reduce.
  * Offsets are in uint32_t-word units. Does not synchronize.
  */
+/**
+ * @param d_temp Reusable CUB temp workspace (grow-only).
+ * @param d_temp_cap Current capacity of d_temp in bytes.
+ */
 cudaError_t count_bitmap_matches_batched(
         uint32_t const* device_bitmap,
         int const* d_offsets_begin,
         int const* d_offsets_end,
         size_t num_schemas,
-        uint64_t* d_out_counts
+        uint64_t* d_out_counts,
+        void*& d_temp,
+        size_t& d_temp_cap,
+        cudaStream_t stream = 0
 );
 
 /**
- * Extracts matching row indices from a packed bitmap into a device array.
- * The output buffer is reusable — grown as needed, never shrunk.
- * Does not synchronize.
- *
- * @param device_bitmap Device packed bitmap (1 bit per row).
- * @param num_rows Total number of rows in the bitmap.
- * @param row_ids_buf Device buffer for output row indices (reused across calls).
- * @param num_matches Number of set bits (from a prior popcount).
- * @return cudaSuccess on success.
+ * @param d_temp Reusable CUB temp workspace (grow-only, shared with count).
+ * @param d_temp_cap Current capacity of d_temp in bytes.
  */
 cudaError_t bitmap_to_row_ids(
         uint32_t const* device_bitmap,
         size_t num_rows,
         DeviceBuffer& row_ids_buf,
-        uint64_t num_matches
+        uint64_t num_matches,
+        void*& d_temp,
+        size_t& d_temp_cap,
+        cudaStream_t stream = 0
 );
 
 /**
@@ -68,7 +71,8 @@ cudaError_t pack_fixed_column(
         char const* device_ert_base,
         uint32_t const* device_row_ids,
         char* device_output,
-        uint64_t num_matches
+        uint64_t num_matches,
+        cudaStream_t stream = 0
 );
 
 }  // namespace clp_s::gpu

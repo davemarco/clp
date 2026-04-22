@@ -24,51 +24,46 @@ struct DeviceBuffer {
  * @param out Output device buffer
  * @return CUDA status code
  */
-cudaError_t copy_to_device(void const* src, size_t size, DeviceBuffer& out);
+cudaError_t copy_to_device(void const* src, size_t size, DeviceBuffer& out, cudaStream_t stream = 0);
 
 /**
  * Frees a device buffer allocated by copy_to_device.
  * @param buf Buffer to free (reset on return)
+ * @param stream CUDA stream on which to issue the free (must match the allocation stream)
  * @return CUDA status code
  */
-cudaError_t free_device_buffer(DeviceBuffer& buf);
-
-/**
- * Copies a device buffer to newly allocated host memory.
- * @param src Device buffer to copy from
- * @param out_host_ptr Output pointer to allocated host memory (caller must delete[])
- * @return CUDA status code
- */
-cudaError_t copy_to_host(DeviceBuffer const& src, void** out_host_ptr);
-
-/**
- * Frees a host buffer allocated by copy_to_host.
- */
-void free_host_buffer(char* buffer);
+cudaError_t free_device_buffer(DeviceBuffer& buf, cudaStream_t stream = 0);
 
 /**
  * Synchronizes the default CUDA stream (stream 0), ensuring all previously
  * queued GPU work — including async copies — has completed.
- * Call before accessing host buffers filled by copy_to_host.
+ * Call before accessing host buffers filled by async copies.
  */
 void sync_default_stream();
 
 /**
- * RAII wrapper around DeviceBuffer that calls cudaFree on destruction.
+ * RAII wrapper around DeviceBuffer that calls cudaFreeAsync on destruction.
  * Move-only; the moved-from guard's pointer is set to nullptr.
  */
 struct DeviceBufferGuard {
     DeviceBufferGuard() = default;
     DeviceBuffer buf{};
-    ~DeviceBufferGuard() { (void)free_device_buffer(buf); }
+    cudaStream_t stream{0};  ///< Stream used for allocation (must match for async free).
+    ~DeviceBufferGuard() { (void)free_device_buffer(buf, stream); }
 
     DeviceBufferGuard(DeviceBufferGuard const&) = delete;
     DeviceBufferGuard& operator=(DeviceBufferGuard const&) = delete;
 
-    DeviceBufferGuard(DeviceBufferGuard&& other) noexcept : buf(other.buf) { other.buf = {}; }
+    DeviceBufferGuard(DeviceBufferGuard&& other) noexcept
+            : buf(other.buf),
+              stream(other.stream) {
+        other.buf = {};
+        other.stream = 0;
+    }
 
     DeviceBufferGuard& operator=(DeviceBufferGuard&& other) noexcept {
         std::swap(buf, other.buf);
+        std::swap(stream, other.stream);
         return *this;
     }
 };

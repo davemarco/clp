@@ -1,6 +1,7 @@
 #ifndef CLP_S_ARCHIVE_CONSTANTS_HPP
 #define CLP_S_ARCHIVE_CONSTANTS_HPP
 
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -25,6 +26,9 @@ constexpr char cArchiveLogDictFile[] = "/log.dict";
 constexpr char cArchiveVarDictFile[] = "/var.dict";
 constexpr char cArchiveDictChunkMetadataFile[] = "/dict_chunk_metadata";
 constexpr char cArchiveTableChunkMetadataFile[] = "/table_chunk_metadata";
+
+// Default chunk sizes
+constexpr size_t cDefaultDictChunkSize = 512ULL * 1024;  // 512 KB
 
 // Schema tree constants
 constexpr char cRootNodeName[] = "";

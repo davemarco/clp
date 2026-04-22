@@ -30,7 +30,8 @@ namespace clp_s::gpu {
 cudaError_t copy_id_list_to_device(
         ColumnPredicate const& pred,
         DeviceBufferGuard& guard,
-        uint64_t const*& out_d_id_list
+        uint64_t const*& out_d_id_list,
+        cudaStream_t stream = 0
 );
 
 /**
@@ -42,7 +43,7 @@ cudaError_t copy_id_list_to_device(
  * @param[out] out_bitmap Receives the allocated device bitmap.
  * @return cudaSuccess on success.
  */
-cudaError_t alloc_initialized_bitmap(size_t num_rows, MergeOp merge_op, DeviceBuffer& out_bitmap);
+cudaError_t alloc_initialized_bitmap(size_t num_rows, MergeOp merge_op, DeviceBuffer& out_bitmap, cudaStream_t stream = 0);
 
 /**
  * Scans a single column predicate and merges the result into an existing bitmap.
@@ -64,7 +65,8 @@ cudaError_t scan_predicate_into_bitmap(
         uint64_t const* d_id_list,
         size_t num_ids,
         MergeOp merge_op,
-        uint32_t* device_bitmap
+        uint32_t* device_bitmap,
+        cudaStream_t stream = 0
 );
 
 /**
@@ -82,7 +84,10 @@ cudaError_t prefix_sum_columns_batched(
         char* device_ert_base,
         size_t const* offset_bytes_array,
         size_t const* num_rows_array,
-        size_t num_columns
+        size_t num_columns,
+        void*& d_temp,
+        size_t& d_temp_cap,
+        cudaStream_t stream = 0
 );
 
 /**
@@ -93,7 +98,7 @@ cudaError_t prefix_sum_columns_batched(
  * @param num_rows Number of valid rows (bits) in the bitmap.
  * @return cudaSuccess on success.
  */
-cudaError_t memset_bitmap_ones(uint32_t* device_bitmap, size_t num_rows);
+cudaError_t memset_bitmap_ones(uint32_t* device_bitmap, size_t num_rows, cudaStream_t stream = 0);
 
 /**
  * Inverts all bits in a packed device bitmap (bitwise NOT on each word).
@@ -103,7 +108,7 @@ cudaError_t memset_bitmap_ones(uint32_t* device_bitmap, size_t num_rows);
  * @param num_rows Number of valid rows in the bitmap.
  * @return cudaSuccess on success.
  */
-cudaError_t invert_device_bitmap(uint32_t* device_bitmap, size_t num_rows);
+cudaError_t invert_device_bitmap(uint32_t* device_bitmap, size_t num_rows, cudaStream_t stream = 0);
 
 /**
  * Merges @p src bitmap into @p dst bitmap element-wise on the device.
@@ -114,7 +119,7 @@ cudaError_t invert_device_bitmap(uint32_t* device_bitmap, size_t num_rows);
  * @param op Merge operation (AND or OR).
  * @return cudaSuccess on success.
  */
-cudaError_t merge_device_bitmaps(uint32_t* dst, uint32_t const* src, size_t num_rows, MergeOp op);
+cudaError_t merge_device_bitmaps(uint32_t* dst, uint32_t const* src, size_t num_rows, MergeOp op, cudaStream_t stream = 0);
 
 /**
  * Scans a StructuredClpString (SCLP) filter into a packed device bitmap.
@@ -133,7 +138,8 @@ cudaError_t scan_sclp_to_device_bitmap(
         SclpFilter const& info,
         std::span<ColumnDesc const> columns,
         size_t num_rows,
-        uint32_t* device_out_bitmap
+        uint32_t* device_out_bitmap,
+        cudaStream_t stream = 0
 );
 
 }  // namespace clp_s::gpu

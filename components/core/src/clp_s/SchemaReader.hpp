@@ -1,6 +1,7 @@
 #ifndef CLP_S_SCHEMAREADER_HPP
 #define CLP_S_SCHEMAREADER_HPP
 
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -215,23 +216,16 @@ public:
 
     /**
      * Adds serialization tasks to an existing taskflow graph, splitting rows
-     * into @p num_chunks chunks. Each chunk serializes its row range into a separate string.
-     * Each chunk gets its own clone of the serializer and SCLP map since
-     * generate_json_message mutates them and chunks run on different threads.
-     * The caller runs the taskflow after adding tasks from all schemas.
-     *
-     * If @p indices is empty, serializes all rows [0, num_messages).
-     * Otherwise, serializes only the rows at the given indices.
-     *
-     * @param num_chunks Number of chunks to split rows into.
-     * @param taskflow The taskflow graph to add tasks to.
-     * @param[out] chunk_outputs Vector of strings, one per chunk. Resized to num_chunks.
-     * @param indices Row indices to serialize. Empty means all rows.
+     * into @p num_chunks chunks. Each chunk serializes its row range and writes
+     * immediately via write_fn. Each chunk gets its own clone of the serializer
+     * and SCLP map since generate_json_message mutates them and chunks run on
+     * different threads. The caller runs the taskflow after adding tasks from
+     * all schemas. write_fn must be thread-safe.
      */
-    void add_serialization_tasks(
+    void add_serialize_and_write_tasks(
             size_t num_chunks,
             tf::Taskflow& taskflow,
-            std::vector<std::string>& chunk_outputs,
+            std::function<void(std::string_view)> write_fn,
             std::span<size_t const> indices = {}
     );
     /*** GPU integration end ***/

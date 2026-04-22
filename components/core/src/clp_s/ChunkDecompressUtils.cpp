@@ -31,7 +31,7 @@ void decompress_chunks_taskflow(
         return;
     }
 
-    auto& executor = get_taskflow_executor(num_threads);
+    auto& executor = get_cpu_executor(num_threads);
 
     std::atomic<bool> has_error{false};
     tf::Taskflow taskflow;
@@ -81,6 +81,8 @@ void decompress_chunks_taskflow(
                         tl_dctx.get(), chunk.dst, chunk.dst_cap, chunk.src, chunk.src_size
                 );
                 if (ZSTD_isError(result)) {
+                    fprintf(stderr, "[zstd] chunk %zu: %s (src=%zu dst_cap=%zu)\n",
+                            j, ZSTD_getErrorName(result), chunk.src_size, chunk.dst_cap);
                     has_error.store(true, std::memory_order_relaxed);
                 }
             }
@@ -97,7 +99,7 @@ void parallel_prefix_sum(size_t* data, size_t count, size_t num_threads) {
     if (count <= 1) {
         return;
     }
-    auto& executor = get_taskflow_executor(num_threads);
+    auto& executor = get_cpu_executor(num_threads);
     tf::Taskflow taskflow;
     taskflow.inclusive_scan(data, data + count, data, std::plus<size_t>{});
     executor.run(taskflow).wait();

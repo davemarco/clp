@@ -22,6 +22,7 @@ void SearchTiming::reset() {
     m_dict_stats = {};
     m_table_metadata_load = {};
     m_string_query_plan = {};
+    m_dict_io = {};
     m_compressed_io = {};
     m_h2d_transfer = {};
     m_prefix_sum = {};
@@ -66,6 +67,10 @@ void SearchTiming::add_table_metadata_load(std::chrono::nanoseconds duration) {
 
 void SearchTiming::add_string_query_plan(std::chrono::nanoseconds duration) {
     m_string_query_plan += duration;
+}
+
+void SearchTiming::add_dict_io(std::chrono::nanoseconds duration) {
+    m_dict_io += duration;
 }
 
 void SearchTiming::add_compressed_io(std::chrono::nanoseconds duration) {
@@ -145,6 +150,7 @@ void write_run_json(
     json << "},";
     json << "\"table_metadata_load_ms\":" << to_ms(run.table_metadata_load) << ",";
     json << "\"string_query_plan_ms\":" << to_ms(run.string_query_plan) << ",";
+    json << "\"dict_io_ms\":" << to_ms(run.dict_io) << ",";
     json << "\"compressed_io_ms\":" << to_ms(run.compressed_io) << ",";
     json << "\"h2d_transfer_ms\":" << to_ms(run.h2d_transfer) << ",";
     json << "\"prefix_sum_ms\":" << to_ms(run.prefix_sum) << ",";
@@ -182,6 +188,7 @@ void SearchTiming::log_totals() const {
     );
     SPDLOG_INFO("Table metadata load: {:.3f}ms", to_ms(m_table_metadata_load));
     SPDLOG_INFO("String query plan: {:.3f}ms", to_ms(m_string_query_plan));
+    SPDLOG_INFO("Dict IO: {:.3f}ms", to_ms(m_dict_io));
     SPDLOG_INFO("Compressed IO: {:.3f}ms", to_ms(m_compressed_io));
     SPDLOG_INFO("H2D transfer: {:.3f}ms", to_ms(m_h2d_transfer));
     SPDLOG_INFO("Prefix sum: {:.3f}ms", to_ms(m_prefix_sum));
@@ -203,6 +210,7 @@ void SearchTiming::collect_run(size_t run_index) {
     run.dict_stats = m_dict_stats;
     run.table_metadata_load = m_table_metadata_load;
     run.string_query_plan = m_string_query_plan;
+    run.dict_io = m_dict_io;
     run.compressed_io = m_compressed_io;
     run.h2d_transfer = m_h2d_transfer;
     run.prefix_sum = m_prefix_sum;

@@ -9,7 +9,6 @@
 #include "archive_constants.hpp"
 #include "ArchiveReaderAdaptor.hpp"
 #include "ChunkDecompressUtils.hpp"
-#include "ParallelReader.hpp"
 
 namespace clp_s {
 
@@ -270,67 +269,5 @@ void PackedStreamReader::read_stream_compressed(
     {
         throw OperationFailed(static_cast<ErrorCode>(error), __FILE__, __LINE__);
     }
-}
-
-size_t PackedStreamReader::read_streams_compressed_bulk(
-        std::vector<size_t> const& stream_ids,
-        char* dest_buf,
-        size_t dest_buf_size,
-        std::vector<size_t>& stream_offsets,
-        std::vector<size_t>& stream_sizes
-) {
-    if (stream_ids.empty()) {
-        return 0;
-    }
-
-    if (m_state != PackedStreamReaderState::PackedStreamsOpened
-        && m_state != PackedStreamReaderState::ReadingPackedStreams)
-    {
-        throw OperationFailed(ErrorCodeNotReady, __FILE__, __LINE__);
-    }
-    m_state = PackedStreamReaderState::ReadingPackedStreams;
-
-    // Compute per-stream compressed sizes and total
-    stream_offsets.resize(stream_ids.size());
-    stream_sizes.resize(stream_ids.size());
-    size_t total_compressed = 0;
-    for (size_t i = 0; i < stream_ids.size(); ++i) {
-        auto const& meta = m_stream_metadata.at(stream_ids[i]);
-        size_t const compressed = meta.compressed_size;
-        stream_offsets[i] = total_compressed;
-        stream_sizes[i] = compressed;
-        total_compressed += compressed;
-    }
-
-    if (nullptr == dest_buf || dest_buf_size < total_compressed) {
-        throw OperationFailed(ErrorCodeBadParam, __FILE__, __LINE__);
-    }
-
-    // Get the file path for raw I/O
-    std::string tables_path;
-    if (m_adaptor->is_single_file_archive()) {
-        tables_path = m_adaptor->get_path().path;
-    } else {
-        tables_path = m_adaptor->get_path().path + constants::cArchiveTablesFile;
-    }
-
-    // Build read entries for all streams.
-    std::vector<direct_io::ParallelReader::ReadRequest> read_entries;
-    read_entries.reserve(stream_ids.size());
-    for (size_t i = 0; i < stream_ids.size(); ++i) {
-        read_entries.push_back({
-                stream_sizes[i],
-                m_begin_offset + m_stream_metadata[stream_ids[i]].file_offset,
-                stream_offsets[i]
-        });
-    }
-
-    direct_io::ParallelReader reader(tables_path.c_str());
-    if (!reader.read_batch(dest_buf, read_entries)) {
-        throw OperationFailed(ErrorCodeCorrupt, __FILE__, __LINE__);
-    }
-
-    m_prev_stream_id = stream_ids.back();
-    return total_compressed;
 }
 }  // namespace clp_s

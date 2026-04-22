@@ -56,7 +56,10 @@ cudaError_t count_bitmap_matches_batched(
         int const* d_offsets_begin,
         int const* d_offsets_end,
         size_t num_schemas,
-        uint64_t* d_out_counts
+        uint64_t* d_out_counts,
+        void*& d_temp,
+        size_t& d_temp_cap,
+        cudaStream_t stream
 ) {
     if (0 == num_schemas) {
         return cudaSuccess;
@@ -83,37 +86,43 @@ cudaError_t count_bitmap_matches_batched(
             d_in, d_out_counts,
             static_cast<int>(num_schemas),
             d_offsets_begin, d_offsets_end,
-            0  // stream
+            stream
     );
     if (cudaSuccess != status) {
         return status;
     }
 
-    // Allocate temp storage.
-    void* d_temp = nullptr;
-    status = cudaMallocAsync(&d_temp, temp_bytes, 0);
-    if (cudaSuccess != status) {
-        return status;
+    // Grow temp storage if needed (reusable across calls).
+    if (d_temp_cap < temp_bytes) {
+        if (d_temp) cudaFreeAsync(d_temp, stream);
+        status = cudaMallocAsync(&d_temp, temp_bytes, stream);
+        if (cudaSuccess != status) {
+            d_temp = nullptr;
+            d_temp_cap = 0;
+            return status;
+        }
+        d_temp_cap = temp_bytes;
     }
 
     // Run segmented reduction.
-    status = cub::DeviceSegmentedReduce::Sum(
-            d_temp, temp_bytes,
+    size_t reuse = temp_bytes;
+    return cub::DeviceSegmentedReduce::Sum(
+            d_temp, reuse,
             d_in, d_out_counts,
             static_cast<int>(num_schemas),
             d_offsets_begin, d_offsets_end,
-            0  // stream
+            stream
     );
-
-    cudaFreeAsync(d_temp, 0);
-    return status;
 }
 
 cudaError_t bitmap_to_row_ids(
         uint32_t const* device_bitmap,
         size_t num_rows,
         DeviceBuffer& row_ids_buf,
-        uint64_t num_matches
+        uint64_t num_matches,
+        void*& d_temp,
+        size_t& d_temp_cap,
+        cudaStream_t stream
 ) {
     if (0 == num_matches) {
         return cudaSuccess;
@@ -125,9 +134,9 @@ cudaError_t bitmap_to_row_ids(
     size_t const needed = num_matches * sizeof(uint32_t);
     if (nullptr == row_ids_buf.ptr || row_ids_buf.size < needed) {
         if (row_ids_buf.ptr) {
-            cudaFreeAsync(row_ids_buf.ptr, 0);
+            cudaFreeAsync(row_ids_buf.ptr, stream);
         }
-        auto status = cudaMallocAsync(&row_ids_buf.ptr, needed, 0);
+        auto status = cudaMallocAsync(&row_ids_buf.ptr, needed, stream);
         if (cudaSuccess != status) {
             row_ids_buf = {};
             return status;
@@ -152,42 +161,46 @@ cudaError_t bitmap_to_row_ids(
     auto status = cub::DeviceScan::ExclusiveSum(
             nullptr, temp_bytes,
             d_popcounts, static_cast<uint32_t*>(nullptr),
-            static_cast<int>(num_words), 0
+            static_cast<int>(num_words), stream
     );
     if (cudaSuccess != status) {
         return status;
     }
 
-    // Allocate temp storage + offsets array in one device allocation.
+    // Grow temp buffer to hold CUB temp + offsets array.
     size_t const offsets_bytes = num_words * sizeof(uint32_t);
-    void* d_scratch = nullptr;
-    status = cudaMallocAsync(&d_scratch, temp_bytes + offsets_bytes, 0);
-    if (cudaSuccess != status) {
-        return status;
+    size_t const scratch_needed = temp_bytes + offsets_bytes;
+    if (d_temp_cap < scratch_needed) {
+        if (d_temp) cudaFreeAsync(d_temp, stream);
+        status = cudaMallocAsync(&d_temp, scratch_needed, stream);
+        if (cudaSuccess != status) {
+            d_temp = nullptr;
+            d_temp_cap = 0;
+            return status;
+        }
+        d_temp_cap = scratch_needed;
     }
-    auto* d_offsets = static_cast<uint32_t*>(d_scratch);
-    void* d_temp = static_cast<char*>(d_scratch) + offsets_bytes;
+    auto* d_offsets = static_cast<uint32_t*>(d_temp);
+    void* d_cub_temp = static_cast<char*>(d_temp) + offsets_bytes;
 
+    size_t reuse = temp_bytes;
     status = cub::DeviceScan::ExclusiveSum(
-            d_temp, temp_bytes,
+            d_cub_temp, reuse,
             d_popcounts, d_offsets,
-            static_cast<int>(num_words), 0
+            static_cast<int>(num_words), stream
     );
     if (cudaSuccess != status) {
-        cudaFreeAsync(d_scratch, 0);
         return status;
     }
 
     // Pass 2: Each thread processes one word, extracts set bit positions.
     constexpr int threads_per_block = 256;
     int blocks = static_cast<int>((num_words + threads_per_block - 1) / threads_per_block);
-    scatter_set_bits_kernel<<<blocks, threads_per_block>>>(
+    scatter_set_bits_kernel<<<blocks, threads_per_block, 0, stream>>>(
             device_bitmap, d_offsets, num_words, num_rows,
             static_cast<uint32_t*>(row_ids_buf.ptr)
     );
     status = cudaGetLastError();
-
-    cudaFreeAsync(d_scratch, 0);
     return status;
 }
 
@@ -197,30 +210,31 @@ cudaError_t pack_fixed_column(
         char const* device_ert_base,
         uint32_t const* device_row_ids,
         char* device_output,
-        uint64_t num_matches
+        uint64_t num_matches,
+        cudaStream_t stream
 ) {
     auto* d_out = device_output + output_offset;
 
     switch (column.type) {
         case ColumnType::Int64:
             return launch_gather_fixed<int64_t>(
-                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out, stream
             );
         case ColumnType::Double:
             return launch_gather_fixed<double>(
-                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out, stream
             );
         case ColumnType::Boolean:
             return launch_gather_fixed<uint8_t>(
-                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out, stream
             );
         case ColumnType::VarString:
             return launch_gather_fixed<uint64_t>(
-                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out, stream
             );
         case ColumnType::DateString: {
             auto status = launch_gather_fixed<int64_t>(
-                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out, stream
             );
             if (cudaSuccess == status) {
                 status = launch_gather_fixed<int64_t>(
@@ -228,7 +242,8 @@ cudaError_t pack_fixed_column(
                         column.secondary_offset_bytes,
                         device_row_ids,
                         num_matches,
-                        d_out + num_matches * sizeof(int64_t)
+                        d_out + num_matches * sizeof(int64_t),
+                        stream
                 );
             }
             return status;
@@ -237,7 +252,7 @@ cudaError_t pack_fixed_column(
             // ERT primary column has been prefix-summed to absolute values.
             // Gather absolute values directly — the reader uses absolute_mode.
             auto status = launch_gather_fixed<int64_t>(
-                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out, stream
             );
             if (cudaSuccess == status) {
                 status = launch_gather_fixed<int64_t>(
@@ -245,7 +260,8 @@ cudaError_t pack_fixed_column(
                         column.secondary_offset_bytes,
                         device_row_ids,
                         num_matches,
-                        d_out + num_matches * sizeof(int64_t)
+                        d_out + num_matches * sizeof(int64_t),
+                        stream
                 );
             }
             return status;
@@ -254,12 +270,12 @@ cudaError_t pack_fixed_column(
             // ERT has been prefix-summed to absolute values.
             // Gather absolute values directly — the reader uses absolute_mode.
             return launch_gather_fixed<int64_t>(
-                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out, stream
             );
         }
         case ColumnType::FormattedDouble: {
             auto status = launch_gather_fixed<double>(
-                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out, stream
             );
             if (cudaSuccess == status) {
                 status = launch_gather_fixed<uint16_t>(
@@ -267,14 +283,15 @@ cudaError_t pack_fixed_column(
                         column.secondary_offset_bytes,
                         device_row_ids,
                         num_matches,
-                        d_out + num_matches * sizeof(double)
+                        d_out + num_matches * sizeof(double),
+                        stream
                 );
             }
             return status;
         }
         case ColumnType::DictionaryFloat:
             return launch_gather_fixed<int64_t>(
-                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out
+                    device_ert_base, column.primary_offset_bytes, device_row_ids, num_matches, d_out, stream
             );
         default:
             return cudaErrorInvalidValue;

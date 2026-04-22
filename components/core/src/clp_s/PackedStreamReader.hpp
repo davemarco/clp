@@ -121,28 +121,6 @@ public:
     );
 
     /**
-     * Reads compressed data for multiple streams in a single I/O operation.
-     * All streams are read into one contiguous buffer. Stream IDs must be
-     * sorted in ascending order.
-     *
-     * @param stream_ids sorted stream IDs to read
-     * @param dest_buf pre-allocated buffer to read into (must be at least
-     *                 total_compressed bytes, aligned for O_DIRECT if non-null).
-     *                 If nullptr, an internal buffer is allocated.
-     * @param dest_buf_size size of dest_buf (ignored if dest_buf is nullptr)
-     * @param[out] stream_offsets byte offset of each stream within the buffer
-     * @param[out] stream_sizes compressed size of each stream
-     * @return total bytes read
-     */
-    size_t read_streams_compressed_bulk(
-            std::vector<size_t> const& stream_ids,
-            char* dest_buf,
-            size_t dest_buf_size,
-            std::vector<size_t>& stream_offsets,
-            std::vector<size_t>& stream_sizes
-    );
-
-    /**
      * @return the metadata for a given stream
      */
     [[nodiscard]] PackedStreamMetadata const& get_stream_metadata(size_t stream_id) const {
