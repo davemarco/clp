@@ -323,6 +323,8 @@ set(
         SchemaReader.hpp
         SchemaTree.cpp
         SchemaTree.hpp
+        SearchTiming.cpp
+        SearchTiming.hpp
         TimestampDictionaryReader.cpp
         TimestampDictionaryReader.hpp
         TimestampEntry.cpp
@@ -339,6 +341,7 @@ if(CLP_BUILD_CLP_S_ARCHIVEREADER)
         )
         add_library(clp_s::archive_reader ALIAS clp_s_archive_reader)
         target_compile_features(clp_s_archive_reader PRIVATE cxx_std_20)
+        target_compile_definitions(clp_s_archive_reader PUBLIC CLP_S_SEARCH_TIMING_ENABLED)
         target_include_directories(clp_s_archive_reader PUBLIC ../)
         target_link_libraries(
                 clp_s_archive_reader

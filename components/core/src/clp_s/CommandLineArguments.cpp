@@ -532,6 +532,22 @@ CommandLineArguments::parse_arguments(int argc, char const** argv) {
                 "Type of authentication required for network requests (s3 | none). Authentication"
                 " with s3 requires the AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment"
                 " variables, and optionally the AWS_SESSION_TOKEN environment variable."
+            )(
+                "repeat",
+                po::value<size_t>(&m_repeat_count)
+                    ->default_value(m_repeat_count)
+                    ->value_name("N"),
+                "Run the query N times in the same process and output all timings"
+            )(
+                "timing-output",
+                po::value<std::string>(&m_timing_output_path)
+                    ->default_value(m_timing_output_path)
+                    ->value_name("PATH"),
+                "Path for the search timing JSON output file"
+            )(
+                "drop-caches",
+                po::bool_switch(&m_drop_caches),
+                "Advise OS to drop page cache for archive files between repeat runs"
             );
             // clang-format on
             search_options.add(match_options);

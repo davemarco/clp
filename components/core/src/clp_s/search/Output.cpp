@@ -7,6 +7,7 @@
 
 #include "../../clp/type_utils.hpp"
 #include "../SchemaTree.hpp"
+#include "../SearchTiming.hpp"
 #include "../Utils.hpp"
 #include "ast/AndExpr.hpp"
 #include "ast/ColumnDescriptor.hpp"
@@ -65,6 +66,9 @@ bool Output::filter() {
         return true;
     }
 
+    auto& timing = clp_s::SearchTiming::instance();
+
+    auto const dict_start = clp_s::SearchTiming::Clock::now();
     m_archive_reader->read_variable_dictionary();
     m_archive_reader->read_log_type_dictionary();
 
@@ -75,8 +79,14 @@ bool Output::filter() {
             m_archive_reader->read_array_dictionary(true);
         }
     }
+    timing.add_dict_io(clp_s::SearchTiming::Clock::now() - dict_start);
 
+    auto const string_query_plan_start = clp_s::SearchTiming::Clock::now();
     m_query_runner.global_init();
+    timing.add_string_query_plan(
+            clp_s::SearchTiming::Clock::now() - string_query_plan_start
+    );
+
     m_archive_reader->open_packed_streams();
 
     std::string message;
@@ -86,13 +96,16 @@ bool Output::filter() {
             continue;
         }
 
+        auto const schema_table_start = clp_s::SearchTiming::Clock::now();
         auto& reader = m_archive_reader->read_schema_table(
                 schema_id,
                 m_output_handler->should_output_metadata(),
                 m_should_marshal_records
         );
+        timing.add_ert_decompress(clp_s::SearchTiming::Clock::now() - schema_table_start);
         reader.initialize_filter(&m_query_runner);
 
+        auto const scan_start = clp_s::SearchTiming::Clock::now();
         if (m_output_handler->should_output_metadata()) {
             epochtime_t timestamp{};
             int64_t log_event_idx{};
@@ -110,6 +123,11 @@ bool Output::filter() {
                 m_output_handler->write(message);
             }
         }
+        timing.add_scan(
+                clp_s::SearchTiming::Clock::now() - scan_start,
+                reader.get_num_messages()
+        );
+
         auto ecode = m_output_handler->flush();
         if (ErrorCode::ErrorCodeSuccess != ecode) {
             SPDLOG_ERROR(

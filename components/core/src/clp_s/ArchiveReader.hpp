@@ -14,6 +14,7 @@
 #include "ReaderUtils.hpp"
 #include "SchemaReader.hpp"
 #include "search/Projection.hpp"
+#include "SearchTiming.hpp"
 #include "SingleFileArchiveDefs.hpp"
 #include "TimestampDictionaryReader.hpp"
 
@@ -53,7 +54,13 @@ public:
      * @return the variable dictionary reader
      */
     std::shared_ptr<VariableDictionaryReader> read_variable_dictionary(bool lazy = false) {
+        auto const start = SearchTiming::Clock::now();
         m_var_dict->read_entries(lazy);
+        SearchTiming::instance().add_dict_load(
+                DictionaryType::Variable,
+                SearchTiming::Clock::now() - start,
+                m_var_dict->get_entries().size()
+        );
         return m_var_dict;
     }
 
@@ -63,7 +70,13 @@ public:
      * @return the log type dictionary reader
      */
     std::shared_ptr<LogTypeDictionaryReader> read_log_type_dictionary(bool lazy = false) {
+        auto const start = SearchTiming::Clock::now();
         m_log_dict->read_entries(lazy);
+        SearchTiming::instance().add_dict_load(
+                DictionaryType::LogType,
+                SearchTiming::Clock::now() - start,
+                m_log_dict->get_entries().size()
+        );
         return m_log_dict;
     }
 
@@ -73,7 +86,13 @@ public:
      * @return the array dictionary reader
      */
     std::shared_ptr<LogTypeDictionaryReader> read_array_dictionary(bool lazy = false) {
+        auto const start = SearchTiming::Clock::now();
         m_array_dict->read_entries(lazy);
+        SearchTiming::instance().add_dict_load(
+                DictionaryType::Array,
+                SearchTiming::Clock::now() - start,
+                m_array_dict->get_entries().size()
+        );
         return m_array_dict;
     }
 

@@ -91,6 +91,12 @@ public:
 
     bool get_ignore_case() const { return m_ignore_case; }
 
+    size_t get_repeat_count() const { return m_repeat_count; }
+
+    std::string const& get_timing_output_path() const { return m_timing_output_path; }
+
+    bool get_drop_caches() const { return m_drop_caches; }
+
     std::string const& get_reducer_host() const { return m_reducer_host; }
 
     int get_reducer_port() const { return m_reducer_port; }
@@ -227,6 +233,9 @@ private:
     std::optional<epochtime_t> m_search_end_ts;
     bool m_ignore_case{false};
     std::vector<std::string> m_projection_columns;
+    size_t m_repeat_count{1};
+    std::string m_timing_output_path;
+    bool m_drop_caches{false};
 
     // Search aggregation variables
     std::string m_reducer_host;

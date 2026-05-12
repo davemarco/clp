@@ -1,12 +1,15 @@
 #include <cstdlib>
 #include <exception>
+#include <fcntl.h>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <unistd.h>
 #include <utility>
+#include <vector>
 
 #include <mongocxx/instance.hpp>
 #include <nlohmann/json.hpp>
@@ -39,6 +42,7 @@
 #include "search/OutputHandler.hpp"
 #include "search/Projection.hpp"
 #include "search/SchemaMatch.hpp"
+#include "SearchTiming.hpp"
 #include "SingleFileArchiveDefs.hpp"
 
 using namespace clp_s::search;
@@ -292,6 +296,32 @@ bool search_archive(
     );
     return output.filter();
 }
+
+void try_drop_page_cache(std::vector<std::string> const& paths) {
+    sync();
+    auto evict = [](std::string const& p) {
+        int fd = ::open(p.c_str(), O_RDONLY);
+        if (fd < 0) {
+            return;
+        }
+        posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+        ::close(fd);
+    };
+    for (auto const& p : paths) {
+        std::error_code ec;
+        if (std::filesystem::is_directory(p, ec)) {
+            for (auto const& entry :
+                 std::filesystem::recursive_directory_iterator(p, ec))
+            {
+                if (entry.is_regular_file()) {
+                    evict(entry.path().string());
+                }
+            }
+        } else if (std::filesystem::is_regular_file(p, ec)) {
+            evict(p);
+        }
+    }
+}
 }  // namespace
 
 int main(int argc, char const* argv[]) {
@@ -378,74 +408,111 @@ int main(int argc, char const* argv[]) {
             }
         }
 
-        auto archive_reader = std::make_shared<clp_s::ArchiveReader>();
-        for (auto const& input_path : command_line_arguments.get_input_paths()) {
-            if (std::string::npos != input_path.path.find(clp::ir::cIrFileExtension)) {
-                auto const result{clp_s::search_kv_ir_stream(
-                        input_path,
-                        command_line_arguments,
-                        expr->copy(),
-                        reducer_socket_fd
-                )};
-                if (false == result.has_error()) {
-                    continue;
+        auto& timing = clp_s::SearchTiming::instance();
+        auto const repeat_count = command_line_arguments.get_repeat_count();
+        auto const drop_caches = command_line_arguments.get_drop_caches();
+
+        std::vector<std::string> cache_paths;
+        if (drop_caches) {
+            for (auto const& p : command_line_arguments.get_input_paths()) {
+                cache_paths.push_back(p.path);
+            }
+        }
+
+        for (size_t run = 0; run < repeat_count; ++run) {
+            timing.reset();
+            auto const run_start = clp_s::SearchTiming::Clock::now();
+
+            if (repeat_count > 1) {
+                SPDLOG_INFO("=== Run {}/{} ===", run + 1, repeat_count);
+            }
+
+            auto archive_reader = std::make_shared<clp_s::ArchiveReader>();
+            for (auto const& input_path : command_line_arguments.get_input_paths()) {
+                if (std::string::npos != input_path.path.find(clp::ir::cIrFileExtension)) {
+                    auto const result{clp_s::search_kv_ir_stream(
+                            input_path,
+                            command_line_arguments,
+                            expr->copy(),
+                            reducer_socket_fd
+                    )};
+                    if (false == result.has_error()) {
+                        continue;
+                    }
+
+                    auto const error{result.error()};
+                    if (std::errc::result_out_of_range == error) {
+                        // To support real-time search, we will allow incomplete IR streams.
+                        // TODO: Use dedicated error code for this case once issue #904 is resolved.
+                        SPDLOG_WARN("IR stream `{}` is truncated", input_path.path);
+                        continue;
+                    }
+
+                    if (KvIrSearchError{KvIrSearchErrorEnum::ProjectionSupportNotImplemented}
+                                == error
+                        || KvIrSearchError{KvIrSearchErrorEnum::UnsupportedOutputHandlerType}
+                                   == error
+                        || KvIrSearchError{KvIrSearchErrorEnum::CountSupportNotImplemented}
+                                   == error)
+                    {
+                        // These errors are treated as non-fatal because they result from
+                        // unsupported features. However, this approach may cause archives with this
+                        // extension to be skipped if the search uses advanced features that are not
+                        // yet implemented. To mitigate this, we log a warning and proceed to search
+                        // the input as an archive.
+                        SPDLOG_WARN(
+                                "Attempted to search an IR stream using unsupported features."
+                                " Falling back to searching the input as an archive."
+                        );
+                    } else if (KvIrSearchError{KvIrSearchErrorEnum::DeserializerCreationFailure}
+                               != error)
+                    {
+                        // If the error is `DeserializerCreationFailure`, we may continue to treat
+                        // the input as an archive and retry. Otherwise, it should be considered as
+                        // a non-recoverable failure and return directly.
+                        SPDLOG_ERROR(
+                                "Failed to search '{}' as an IR stream, error_category={},"
+                                " error={}",
+                                input_path.path,
+                                error.category().name(),
+                                error.message()
+                        );
+                        return 1;
+                    }
                 }
 
-                auto const error{result.error()};
-                if (std::errc::result_out_of_range == error) {
-                    // To support real-time search, we will allow incomplete IR streams.
-                    // TODO: Use dedicated error code for this case once issue #904 is resolved.
-                    SPDLOG_WARN("IR stream `{}` is truncated", input_path.path);
-                    continue;
-                }
-
-                if (KvIrSearchError{KvIrSearchErrorEnum::ProjectionSupportNotImplemented} == error
-                    || KvIrSearchError{KvIrSearchErrorEnum::UnsupportedOutputHandlerType} == error
-                    || KvIrSearchError{KvIrSearchErrorEnum::CountSupportNotImplemented} == error)
-                {
-                    // These errors are treated as non-fatal because they result from unsupported
-                    // features. However, this approach may cause archives with this extension to be
-                    // skipped if the search uses advanced features that are not yet implemented. To
-                    // mitigate this, we log a warning and proceed to search the input as an
-                    // archive.
-                    SPDLOG_WARN(
-                            "Attempted to search an IR stream using unsupported features. Falling"
-                            " back to searching the input as an archive."
-                    );
-                } else if (KvIrSearchError{KvIrSearchErrorEnum::DeserializerCreationFailure}
-                           != error)
-                {
-                    // If the error is `DeserializerCreationFailure`, we may continue to treat the
-                    // input as an archive and retry. Otherwise, it should be considered as a
-                    // non-recoverable failure and return directly.
-                    SPDLOG_ERROR(
-                            "Failed to search '{}' as an IR stream, error_category={}, error={}",
-                            input_path.path,
-                            error.category().name(),
-                            error.message()
-                    );
+                try {
+                    archive_reader->open(input_path, command_line_arguments.get_network_auth());
+                } catch (std::exception const& e) {
+                    SPDLOG_ERROR("Failed to open archive - {}", e.what());
                     return 1;
                 }
+                {
+                    clp_s::SearchTiming::Scope archive_scope{timing, input_path.path};
+                    if (false
+                        == search_archive(
+                                command_line_arguments,
+                                archive_reader,
+                                expr->copy(),
+                                reducer_socket_fd
+                        ))
+                    {
+                        return 1;
+                    }
+                }
+                archive_reader->close();
             }
 
-            try {
-                archive_reader->open(input_path, command_line_arguments.get_network_auth());
-            } catch (std::exception const& e) {
-                SPDLOG_ERROR("Failed to open archive - {}", e.what());
-                return 1;
+            timing.set_wall_clock(clp_s::SearchTiming::Clock::now() - run_start);
+            timing.log_totals();
+            timing.collect_run(run);
+
+            if (drop_caches && run + 1 < repeat_count) {
+                try_drop_page_cache(cache_paths);
             }
-            if (false
-                == search_archive(
-                        command_line_arguments,
-                        archive_reader,
-                        expr->copy(),
-                        reducer_socket_fd
-                ))
-            {
-                return 1;
-            }
-            archive_reader->close();
         }
+
+        timing.log_all_runs(command_line_arguments.get_timing_output_path());
     }
 
     return 0;
