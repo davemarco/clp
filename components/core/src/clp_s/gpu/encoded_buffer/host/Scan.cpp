@@ -231,31 +231,41 @@ int run_batched_scan(
         out_bitmap.size = total_bytes;
     }
 
-    // Bitmap must be initialized to the identity value for the clause's merge op:
-    // - AND merge: identity is all 1s (any row AND 1 = that row). A predicate
-    //   clears bits for non-matching rows.
-    // - OR merge: identity is all 0s (any row OR 0 = that row). A predicate
-    //   sets bits for matching rows.
-    bool const init_all_ones = false == schemas[0].clauses.empty()
-                               && schemas[0].clauses[0].column_predicates.merge_op
-                                          == MergeOp::And;
-    if (init_all_ones) {
-        for (auto const& info : schemas) {
-            auto* schema_bitmap = static_cast<uint32_t*>(out_bitmap.ptr)
-                                  + info.bitmap_word_offset;
-            memset_bitmap_ones(schema_bitmap, info.num_rows, stream);
-        }
-    } else {
-        cudaMemsetAsync(out_bitmap.ptr, 0x00, total_bytes, stream);
-    }
-
-    // Scan each schema's predicates and SCLP filters into its bitmap region
+    // Clauses are OR'd (DNF). Multi-clause schemas scan each clause into a
+    // temp bitmap and OR it into the schema bitmap.
     for (auto const& info : schemas) {
-        auto* bitmap_ptr = static_cast<uint32_t*>(out_bitmap.ptr) + info.bitmap_word_offset;
+        auto* schema_bitmap = static_cast<uint32_t*>(out_bitmap.ptr) + info.bitmap_word_offset;
+        size_t const num_bytes = bitmap_num_bytes(info.num_rows);
+
+        if (info.clauses.empty()) {
+            cudaMemsetAsync(schema_bitmap, 0x00, num_bytes, stream);
+            continue;
+        }
+
         auto const adj_cols = offset_columns(info.column_descs, info.stream_offset);
+        bool const multi_clause = info.clauses.size() > 1;
+        DeviceBufferGuard temp_guard;
+        uint32_t* clause_bitmap = schema_bitmap;
+        if (multi_clause) {
+            auto status = cudaMallocAsync(&temp_guard.buf.ptr, num_bytes, stream);
+            if (cudaSuccess != status) {
+                return 1;
+            }
+            temp_guard.buf.size = num_bytes;
+            temp_guard.stream = stream;
+            clause_bitmap = static_cast<uint32_t*>(temp_guard.buf.ptr);
+            cudaMemsetAsync(schema_bitmap, 0x00, num_bytes, stream);
+        }
 
         for (auto const& clause : info.clauses) {
-            // Base predicates
+            auto const merge_op = clause.column_predicates.merge_op;
+
+            if (MergeOp::And == merge_op) {
+                memset_bitmap_ones(clause_bitmap, info.num_rows, stream);
+            } else {
+                cudaMemsetAsync(clause_bitmap, 0x00, num_bytes, stream);
+            }
+
             for (auto const& pred : clause.column_predicates.predicates) {
                 ColumnDesc const* col_ptr = nullptr;
                 for (auto const& cd : adj_cols) {
@@ -279,22 +289,20 @@ int run_batched_scan(
                         pred,
                         d_id_list,
                         pred.id_list.size(),
-                        clause.column_predicates.merge_op,
-                        bitmap_ptr,
+                        merge_op,
+                        clause_bitmap,
                         stream
                 );
             }
 
-            // SCLP filters
             for (auto const& sclp : clause.sclp_filters) {
                 DeviceBufferGuard sclp_guard;
                 sclp_guard.stream = stream;
-                size_t const sclp_bytes = bitmap_num_bytes(info.num_rows);
-                auto sclp_status = cudaMallocAsync(&sclp_guard.buf.ptr, sclp_bytes, stream);
+                auto sclp_status = cudaMallocAsync(&sclp_guard.buf.ptr, num_bytes, stream);
                 if (cudaSuccess != sclp_status) {
                     return 1;
                 }
-                sclp_guard.buf.size = sclp_bytes;
+                sclp_guard.buf.size = num_bytes;
 
                 scan_sclp_to_device_bitmap(
                         static_cast<char const*>(d_ert),
@@ -304,10 +312,20 @@ int run_batched_scan(
                 );
 
                 merge_device_bitmaps(
-                        bitmap_ptr,
+                        clause_bitmap,
                         static_cast<uint32_t const*>(sclp_guard.buf.ptr),
                         info.num_rows,
-                        clause.column_predicates.merge_op,
+                        merge_op,
+                        stream
+                );
+            }
+
+            if (multi_clause) {
+                merge_device_bitmaps(
+                        schema_bitmap,
+                        clause_bitmap,
+                        info.num_rows,
+                        MergeOp::Or,
                         stream
                 );
             }
