@@ -87,6 +87,8 @@ set(
         ../ArchiveReader.hpp
         ../ArchiveReaderAdaptor.cpp
         ../ArchiveReaderAdaptor.hpp
+        ../ChunkDecompressUtils.cpp
+        ../ChunkDecompressUtils.hpp
         ../ColumnReader.cpp
         ../ColumnReader.hpp
         ../DictionaryReader.hpp
@@ -110,6 +112,8 @@ set(
         ../SchemaTree.hpp
         ../search/ast/SearchUtils.cpp
         ../search/ast/SearchUtils.hpp
+        ../TaskflowExecutor.cpp
+        ../TaskflowExecutor.hpp
         ../TimestampDictionaryReader.cpp
         ../TimestampDictionaryReader.hpp
         ../TimestampEntry.cpp
@@ -136,6 +140,7 @@ if(CLP_BUILD_EXECUTABLES)
         target_compile_features(indexer PRIVATE cxx_std_20)
         target_include_directories(indexer PRIVATE ../../)
         target_include_directories(indexer SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/cross_dependencies/dependencies/taskflow)
+        target_include_directories(indexer SYSTEM PRIVATE ${LIBDEFLATE_INCLUDE_DIR})
         target_link_libraries(indexer
                 PRIVATE
                 absl::flat_hash_map
@@ -144,6 +149,7 @@ if(CLP_BUILD_EXECUTABLES)
                 clp::string_utils
                 clp_s::timestamp_parser
                 date::date
+                ${LIBDEFLATE_LIBRARY}
                 MariaDBClient::MariaDBClient
                 msgpack-cxx
                 nlohmann_json::nlohmann_json

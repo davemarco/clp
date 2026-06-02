@@ -12,7 +12,6 @@
 #include "../../../ArchiveReader.hpp"
 #include "../../../SchemaReader.hpp"
 #include "../../../SchemaTree.hpp"
-#include "../../../ThreadPool.hpp"
 #include "../../common/host/ScanRequest.hpp"
 
 namespace clp_s::gpu {
@@ -27,8 +26,7 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
         std::span<ColumnDesc const> columns,
         uint32_t* out_bitmap,
         size_t num_rows,
-        size_t num_threads = 1,
-        clp_s::ThreadPool* thread_pool = nullptr
+        size_t num_threads = 1
 );
 /**
  * Prefix-sums all delta/timestamp columns across matched schemas on the CPU

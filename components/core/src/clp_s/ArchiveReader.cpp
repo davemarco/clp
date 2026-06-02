@@ -65,6 +65,8 @@ void ArchiveReader::read_metadata() {
         throw OperationFailed(error, __FILENAME__, __LINE__);
     }
 
+    SPDLOG_INFO("[ert-count] archive={} num_ERTs={}", m_archive_id, num_schemas);
+
     bool prev_metadata_initialized{false};
     SchemaReader::SchemaMetadata prev_metadata{};
     int32_t prev_schema_id{};

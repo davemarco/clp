@@ -630,7 +630,7 @@ int cpu_scan_schema(
 
     auto scan_err = run_cpu_scan_to_bitmap_clauses(
             *reader, clauses, column_descs,
-            bitmap.data(), num_rows, num_threads, nullptr
+            bitmap.data(), num_rows, num_threads
     );
     if (ScanCompatError::None != scan_err) {
         spdlog::error("Bitmap scan failed: {}", scan_error_to_string(scan_err));

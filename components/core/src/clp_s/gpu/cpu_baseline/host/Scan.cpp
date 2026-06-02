@@ -319,8 +319,7 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
         std::span<ColumnDesc const> columns,
         uint32_t* out_bitmap,
         size_t num_rows,
-        size_t num_threads,
-        clp_s::ThreadPool* thread_pool
+        size_t num_threads
 ) {
     if (clauses.empty()) {
         return ScanCompatError::UnsupportedExpressionType;
@@ -331,9 +330,6 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
     constexpr size_t cMinRowsPerThread = 8192;
     size_t const max_useful_threads = std::max(num_rows / cMinRowsPerThread, size_t{1});
     size_t actual_threads = std::min(num_threads, max_useful_threads);
-    if (nullptr == thread_pool) {
-        actual_threads = 1;
-    }
 
     if (actual_threads <= 1) {
         return scan_all_clauses_for_range(
@@ -351,6 +347,8 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
 
     std::vector<ScanCompatError> errors(actual_threads, ScanCompatError::None);
 
+    auto& executor = clp_s::get_cpu_executor(num_threads);
+    tf::Taskflow taskflow;
     for (size_t t = 0; t < actual_threads; ++t) {
         size_t const word_start = t * words_per_thread + std::min(t, word_remainder);
         size_t const word_count = words_per_thread + (t < word_remainder ? 1 : 0);
@@ -359,15 +357,15 @@ ScanCompatError run_cpu_scan_to_bitmap_clauses(
                                          ? (num_rows - start_row)
                                          : (word_count * 32);
 
-        thread_pool->submit([&buffer_view, &clauses, &columns, out_bitmap, &errors,
-                             word_start, start_row, row_count, t]() {
+        taskflow.emplace([&buffer_view, &clauses, &columns, out_bitmap, &errors,
+                          word_start, start_row, row_count, t]() {
             errors[t] = scan_all_clauses_for_range(
                     buffer_view, clauses, columns,
                     start_row, row_count, out_bitmap + word_start
             );
         });
     }
-    thread_pool->wait_all();
+    executor.run(taskflow).wait();
 
     for (size_t t = 0; t < actual_threads; ++t) {
         if (ScanCompatError::None != errors[t]) {
